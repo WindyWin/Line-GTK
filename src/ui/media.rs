@@ -1131,6 +1131,7 @@ pub(super) fn send_local_image_file(state: &AppState, path: &std::path::Path) ->
                     file_path: Some(path_str),
                     duration_ms: None,
                     flex: None,
+                    call_history: None,
                     decryption_failed: false,
                 },
             );

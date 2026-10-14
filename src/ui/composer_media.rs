@@ -321,6 +321,7 @@ pub(super) fn send_sticker_now(
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    call_history: None,
                     decryption_failed: false,
                 },
             );
@@ -664,6 +665,7 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                     file_path,
                     duration_ms: duration_ms.map(|v| v as i64),
                     flex: None,
+                    call_history: None,
                     decryption_failed: false,
                 },
             );
@@ -879,6 +881,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     file_path: Some(path_str),
                     duration_ms: Some(duration_ms as i64),
                     flex: None,
+                    call_history: None,
                     decryption_failed: false,
                 },
             );

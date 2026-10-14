@@ -199,6 +199,8 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .action_name("app.repair-e2ee")
             .build();
         bubble.append(&repair);
+    } else if msg.content_type.eq_ignore_ascii_case("CALL") {
+        call_history::append_history_card(&bubble, msg);
     } else if let Some(flex) = msg.flex.as_ref() {
         append_flex_card(state, &bubble, msg, flex);
     } else if is_audio {
@@ -981,6 +983,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,
+        call_history: None,
         decryption_failed: false,
     };
     append_voice_card(state, &bubble, &msg, true);
@@ -1267,6 +1270,9 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
 }
 
 pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
+    if let Some(preview) = call_history::history_preview(msg) {
+        return preview;
+    }
     let ct = msg.content_type.to_ascii_uppercase();
     match ct.as_str() {
         "IMAGE" => crate::i18n::t("preview_photo"),

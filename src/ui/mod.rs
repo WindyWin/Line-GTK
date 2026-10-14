@@ -1,3 +1,4 @@
+mod call_history;
 mod call_window;
 mod calls;
 mod chats;
@@ -978,6 +979,7 @@ fn send_current(state: &AppState) {
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    call_history: None,
                     decryption_failed: false,
                 },
             );
