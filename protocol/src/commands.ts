@@ -1,11 +1,12 @@
 import { type Client, loginWithQR, type TalkMessage } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { join } from "@std/path";
+import { restoreSession } from "./auth.ts";
+import { authenticateEmail } from "./email_login.ts";
 import { atomicWriteJson } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
 import { friendName, picturePathOf } from "./contacts.ts";
-import { type LineDevice, restoreSession } from "./auth.ts";
-import { authenticateEmail } from "./email_login.ts";
+import type { LineDevice } from "./auth.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
