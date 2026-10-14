@@ -36,6 +36,7 @@ function commandFixture(
   });
   let networkCalls = 0;
   let hydrated = 0;
+  let receiptsRefreshed = 0;
   let activity = 20;
   const client = {
     base: {
@@ -92,6 +93,10 @@ function commandFixture(
       return Promise.resolve();
     },
     updateChatPreview: previews.updateFromMessages,
+    refreshReadReceipts: () => {
+      receiptsRefreshed++;
+      return Promise.resolve();
+    },
     bumpMediaEpoch: () => 0,
     loadDiskMessages: () =>
       Promise.resolve(source === "ディスク" ? [message] : null),
@@ -122,6 +127,7 @@ function commandFixture(
     okResults,
     networkCalls: () => networkCalls,
     hydrated: () => hydrated,
+    receiptsRefreshed: () => receiptsRefreshed,
     setActivity: (next: number) => {
       activity = next;
     },
@@ -144,6 +150,7 @@ for (const source of ["通信", "メモリ", "ディスク"] as const) {
       }],
     );
     assertEquals(fixture.okResults.length, 1);
+    assertEquals(fixture.receiptsRefreshed(), 1);
     assertEquals(fixture.networkCalls(), source === "メモリ" ? 0 : 1);
   });
 }

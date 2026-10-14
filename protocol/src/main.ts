@@ -26,6 +26,7 @@ import { createCommandService } from "./commands.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
+import { createReadReceipts } from "./read_receipts.ts";
 import { createChatPreviews } from "./chat_previews.ts";
 
 type Json = Record<string, unknown>;
@@ -308,6 +309,12 @@ const chatPreviews = createChatPreviews({
   },
 });
 
+const readReceipts = createReadReceipts({
+  getClient: () => client,
+  selfMid: myMid,
+  emit: emitEvent,
+});
+
 const listener = createListener({
   getClient: () => client,
   isListening: () => listening,
@@ -320,6 +327,7 @@ const listener = createListener({
   upsertChatFromMessage,
   hydrateLiveMedia,
   upsertChatFromContact,
+  handleReadReceipt: readReceipts.handleOperation,
   emitEvent,
 });
 
@@ -356,6 +364,7 @@ const commands = createCommandService({
   hydrateAvatars,
   hydratePreviews,
   updateChatPreview: chatPreviews.updateFromMessages,
+  refreshReadReceipts: readReceipts.refresh,
   bumpMediaEpoch,
   loadDiskMessages,
   saveDiskMessages,
