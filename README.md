@@ -1,5 +1,7 @@
 Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protocol sidecar ([linejs](https://github.com/evex-dev/linejs)).
 
+> このforkの開発ブランチは `main` です。日本語UI・フォント、メッセージ復号・グループ名、メールログインの変更を統合して開発しています。
+> トーク一覧のプレビューは本文の取得時にも更新し、背景取得は同時2件で一覧全体を処理します。最新の本文を取得できない場合は「タップして開く」に戻し、読み込み中の表示を残しません。
 
 ![main](./assets/761546283_1013837091419784_4898538377611644175_n.jpg)
 
