@@ -875,8 +875,8 @@ fn spawn_timeout_worker(
                     deadlines.push(item);
                 }
                 let now = Instant::now();
-                deadlines.retain(|(id, started)| {
-                    if now < *started {
+                deadlines.retain(|(id, deadline)| {
+                    if now < *deadline {
                         return true;
                     }
                     let timed_out = pending_ids
