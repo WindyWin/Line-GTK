@@ -30,6 +30,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     const ct = normType(msg.contentType);
     const text = String(msg.text ?? "").trim();
     const L = previewLang();
+    if (msg.decryptionFailed === true) return L.encrypted;
     if (ct === "IMAGE") return L.photo;
     if (ct === "VIDEO") return L.video;
     if (ct === "STICKER") return L.sticker;
@@ -148,6 +149,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
   /** Serve disk-cached stickers/thumbs immediately; only hydrate misses. */
   async function forUiMessages(messages: Json[]): Promise<Json[]> {
     return await Promise.all(messages.map(async (m) => {
+      if (m.decryptionFailed === true) return { ...m, needsMedia: false };
       const ct = normType(m.contentType);
       const id = String(m.id ?? "");
       let imagePath: string | null = (m.imagePath as string) || null;
