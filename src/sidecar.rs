@@ -792,12 +792,32 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
+                            user_mid: resp
+                                .extra
+                                .get("userMid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
                             message_id: resp
                                 .extra
                                 .get("messageId")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or_default()
                                 .to_string(),
+                        },
+                        "read_ranges" => ProtocolEvent::ReadRanges {
+                            chat_mid: resp
+                                .extra
+                                .get("chatMid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            readers: resp
+                                .extra
+                                .get("readers")
+                                .cloned()
+                                .and_then(|value| serde_json::from_value(value).ok())
+                                .unwrap_or_default(),
                         },
                         "call_incoming" => ProtocolEvent::CallIncoming {
                             call_id: resp
@@ -959,5 +979,27 @@ mod authentication_tests {
         assert!(rx.try_recv().is_err());
         read_loop(&pin[..], tx, pending, &generation, 2);
         assert!(matches!(rx.try_recv().unwrap(), ProtocolEvent::Pin { pin } if pin == "123456"));
+    }
+    #[test]
+    fn read_events_preserve_reader_and_range_bounds() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let events = concat!(
+            "{\"event\":\"read_receipt\",\"chatMid\":\"c-group\",\"userMid\":\"u-one\",\"messageId\":\"9007199254740993\"}\n",
+            "{\"event\":\"read_ranges\",\"chatMid\":\"c-group\",\"readers\":[{\"userMid\":\"u-two\",\"ranges\":[{\"startMessageId\":\"9007199254740992\",\"endMessageId\":\"9007199254740993\"}]}]}\n"
+        );
+        read_loop(events.as_bytes(), tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::ReadReceipt { user_mid, message_id, .. } if user_mid == "u-one" && message_id == "9007199254740993")
+        );
+        match rx.try_recv().unwrap() {
+            ProtocolEvent::ReadRanges { readers, .. } => {
+                assert_eq!(readers[0].user_mid, "u-two");
+                assert_eq!(readers[0].ranges[0].start_message_id, "9007199254740992");
+                assert_eq!(readers[0].ranges[0].end_message_id, "9007199254740993");
+            }
+            _ => panic!("既読範囲のイベントではありません"),
+        }
     }
 }

@@ -244,9 +244,29 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::ReadReceipt {
             chat_mid,
+            user_mid,
             message_id,
         } => {
-            apply_peer_read(state, &chat_mid, &message_id);
+            let self_mid = state.self_mid.borrow().clone().unwrap_or_default();
+            if state
+                .peer_reads
+                .borrow_mut()
+                .observe(&chat_mid, &user_mid, &message_id, &self_mid)
+                && state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+            {
+                refresh_read_labels(state);
+            }
+        }
+        ProtocolEvent::ReadRanges { chat_mid, readers } => {
+            let self_mid = state.self_mid.borrow().clone().unwrap_or_default();
+            if state
+                .peer_reads
+                .borrow_mut()
+                .apply_snapshot(&chat_mid, &readers, &self_mid)
+                && state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+            {
+                refresh_read_labels(state);
+            }
         }
         ProtocolEvent::Chats { chats, cached } => {
             apply_chats(state, chats, cached);
@@ -695,6 +715,9 @@ pub(super) fn recover_sidecar(state: &AppState) {
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
+            if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
+                state.peer_reads.borrow_mut().clear();
+            }
             state.login.password_entry.set_text("");
             login::set_busy(&state.login, false);
             *state.login.error.borrow_mut() = None;

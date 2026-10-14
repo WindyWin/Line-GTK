@@ -184,6 +184,8 @@
   "chat_prefix": "トーク · {name}",
   "status_sent": "送信済み",
   "status_read": "既読",
+  "status_read_count": "既読 {n}",
+  "status_read_unconfirmed": "送信済み（既読情報は未確認です）",
   "search": "検索",
   "voice_message": "ボイスメッセージ",
   "play_voice": "再生",
