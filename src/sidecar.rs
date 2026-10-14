@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn request_timeout(method: &str) -> Duration {
-    if method == "login_qr" {
+    if method.starts_with("login_") {
         Duration::from_secs(420)
     } else {
         REQUEST_TIMEOUT
