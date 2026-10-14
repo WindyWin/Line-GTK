@@ -23,6 +23,8 @@ pub struct Response {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
     pub mid: String,
+    #[serde(default)]
+    pub device: String,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "statusMessage", default)]
@@ -114,6 +116,7 @@ pub enum ProtocolEvent {
     },
     Session {
         mid: String,
+        device: String,
         display_name: String,
         status_message: String,
         picture_path: Option<String>,

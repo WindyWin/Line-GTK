@@ -60,11 +60,11 @@ impl Sidecar {
             repo_root: repo_root.to_path_buf(),
             data_dir: data_dir.to_path_buf(),
         };
-        sidecar.start_process()?;
+        sidecar.start_process(true)?;
         Ok(sidecar)
     }
 
-    fn start_process(&self) -> Result<()> {
+    fn start_process(&self, restore_session: bool) -> Result<()> {
         let script = self.repo_root.join("protocol/src/main.ts");
         let compiled = self.repo_root.join("protocol/line-gtk-protocol");
         if !compiled.is_file() && !script.exists() {
@@ -90,7 +90,7 @@ impl Sidecar {
                 .arg("--allow-net")
                 .arg("--allow-run=ffmpeg,ffprobe")
                 .arg("--allow-sys")
-                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
+                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_SKIP_RESTORE,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
                 .arg(&script);
             (command, deno)
         };
@@ -98,6 +98,10 @@ impl Sidecar {
         let mut child = command
             .current_dir(self.repo_root.join("protocol"))
             .env("LINE_GTK_DATA", &self.data_dir)
+            .env(
+                "LINE_GTK_SKIP_RESTORE",
+                if restore_session { "0" } else { "1" },
+            )
             .env("LINE_GTK_LANG", cfg.language.clone())
             .env("LINE_GTK_CACHE_RETENTION", cfg.cache_retention.clone())
             .env("LINE_GTK_AUDIO_INPUT", {
@@ -140,7 +144,13 @@ impl Sidecar {
         thread::Builder::new()
             .name("line-sidecar-stdout".into())
             .spawn(move || {
-                read_loop(stdout, tx.clone(), pending_ids);
+                read_loop(
+                    stdout,
+                    tx.clone(),
+                    pending_ids,
+                    &current_generation,
+                    generation,
+                );
                 if current_generation.load(Ordering::SeqCst) == generation {
                     let _ = tx.send_blocking(ProtocolEvent::Exited(-1));
                 }
@@ -168,13 +178,20 @@ impl Sidecar {
         for name in ["auth-token.txt", "auth-device.txt"] {
             let _ = std::fs::remove_file(self.data_dir.join(name));
         }
-        self.start_process()
+        self.start_process(false)
+    }
+
+    /// 実行中の認証をキャンセルし、保存済みのセッションは維持する。
+    pub fn restart_for_login(&self) -> Result<()> {
+        self.stop_process();
+        while self.events.try_recv().is_ok() {}
+        self.start_process(false)
     }
 
     /// Restart after an unexpected crash while preserving the linked session.
     pub fn recover(&self) -> Result<()> {
         self.stop_process();
-        self.start_process()
+        self.start_process(true)
     }
 
     pub fn status(&self) -> SidecarStatus {
@@ -253,6 +270,13 @@ impl Sidecar {
 
     pub fn login_qr(&self) -> Result<u64> {
         self.request("login_qr", None)
+    }
+
+    pub fn login_email(&self, email: &str, password: &str) -> Result<u64> {
+        self.request(
+            "login_email",
+            Some(json!({ "email": email, "password": password })),
+        )
     }
 
     pub fn list_chats(&self) -> Result<u64> {
@@ -468,9 +492,14 @@ fn read_loop<R: std::io::Read>(
     stdout: R,
     tx: Sender<ProtocolEvent>,
     pending_ids: Arc<Mutex<HashSet<u64>>>,
+    generation_counter: &AtomicU64,
+    generation: u64,
 ) {
     let reader = BufReader::new(stdout);
     for line in reader.lines() {
+        if generation_counter.load(Ordering::SeqCst) != generation {
+            break;
+        }
         let Ok(line) = line else { break };
         let line = line.trim();
         if line.is_empty() {
@@ -493,6 +522,12 @@ fn read_loop<R: std::io::Read>(
                                 .unwrap_or(false),
                         },
                         "session" => ProtocolEvent::Session {
+                            device: resp
+                                .extra
+                                .get("device")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
                             mid: resp
                                 .extra
                                 .get("mid")
@@ -900,5 +935,29 @@ fn spawn_timeout_worker(
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.stop_process();
+    }
+}
+
+#[cfg(test)]
+mod authentication_tests {
+    use super::*;
+
+    #[test]
+    fn authentication_allows_mobile_verification_time() {
+        assert_eq!(request_timeout("ping"), Duration::from_secs(30));
+        assert!(request_timeout("login_email") > Duration::from_secs(360));
+        assert!(request_timeout("login_qr") > Duration::from_secs(360));
+    }
+
+    #[test]
+    fn cancelled_process_cannot_deliver_a_late_pin() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(2);
+        let pin = b"{\"event\":\"pin\",\"pin\":\"123456\"}\n";
+        read_loop(&pin[..], tx.clone(), pending.clone(), &generation, 1);
+        assert!(rx.try_recv().is_err());
+        read_loop(&pin[..], tx, pending, &generation, 2);
+        assert!(matches!(rx.try_recv().unwrap(), ProtocolEvent::Pin { pin } if pin == "123456"));
     }
 }
