@@ -1,3 +1,5 @@
+import { isLegacyCallPreview } from "./call_history.ts";
+
 type Json = Record<string, unknown>;
 
 export type PreviewChat = {
@@ -32,11 +34,12 @@ function newestMessage(messages: Json[]): Json | undefined {
 
 // 言語切り替え前のキャッシュにある案内文も再取得の対象にする。
 export function needsChatPreview(chat: PreviewChat): boolean {
-  return chat.lastActivity > 0 && (!chat.preview || [
-    "Tap to open",
-    "แตะเพื่อเปิด",
-    "タップして開く",
-  ].includes(chat.preview));
+  return chat.lastActivity > 0 &&
+    (!chat.preview || isLegacyCallPreview(chat.preview) || [
+      "Tap to open",
+      "แตะเพื่อเปิด",
+      "タップして開く",
+    ].includes(chat.preview));
 }
 
 export function createChatPreviews(runtime: PreviewRuntime) {

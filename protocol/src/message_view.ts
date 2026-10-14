@@ -1,4 +1,5 @@
 import { isMediaType } from "./messages.ts";
+import { callHistoryOf, callHistoryPreview } from "./call_history.ts";
 import { join } from "@std/path";
 
 type Json = Record<string, unknown>;
@@ -31,6 +32,8 @@ export function createMessageView(runtime: MessageViewRuntime) {
     const text = String(msg.text ?? "").trim();
     const L = previewLang();
     if (msg.decryptionFailed === true) return L.encrypted;
+    const call = callHistoryPreview(msg, L);
+    if (call) return call;
     if (ct === "IMAGE") return L.photo;
     if (ct === "VIDEO") return L.video;
     if (ct === "STICKER") return L.sticker;
@@ -46,6 +49,14 @@ export function createMessageView(runtime: MessageViewRuntime) {
     if (code === "ja" || code === "ja-jp" || code === "ja_jp") {
       return {
         you: "自分",
+        callIncoming: "着信がありました",
+        callOutgoing: "発信しました",
+        callMissed: "不在着信",
+        callUnanswered: "応答なし",
+        videoIncoming: "ビデオ通話の着信",
+        videoOutgoing: "ビデオ通話の発信",
+        videoMissed: "ビデオ通話の不在着信",
+        videoUnanswered: "ビデオ通話の応答なし",
         they: "相手",
         photo: "写真",
         video: "動画",
@@ -62,6 +73,14 @@ export function createMessageView(runtime: MessageViewRuntime) {
     return th
       ? {
         you: "คุณ",
+        callIncoming: "มีสายเรียกเข้า",
+        callOutgoing: "โทรออก",
+        callMissed: "สายที่ไม่ได้รับ",
+        callUnanswered: "ไม่มีผู้รับสาย",
+        videoIncoming: "สายวิดีโอเรียกเข้า",
+        videoOutgoing: "โทรวิดีโอออก",
+        videoMissed: "สายวิดีโอที่ไม่ได้รับ",
+        videoUnanswered: "ไม่มีผู้รับสายวิดีโอ",
         they: "เขา",
         photo: "รูปภาพ",
         video: "วิดีโอ",
@@ -75,6 +94,14 @@ export function createMessageView(runtime: MessageViewRuntime) {
       }
       : {
         you: "You",
+        callIncoming: "Incoming call",
+        callOutgoing: "Outgoing call",
+        callMissed: "Missed call",
+        callUnanswered: "Unanswered call",
+        videoIncoming: "Incoming video call",
+        videoOutgoing: "Outgoing video call",
+        videoMissed: "Missed video call",
+        videoUnanswered: "Unanswered video call",
         they: "They",
         photo: "Photo",
         video: "Video",
@@ -150,6 +177,10 @@ export function createMessageView(runtime: MessageViewRuntime) {
   async function forUiMessages(messages: Json[]): Promise<Json[]> {
     return await Promise.all(messages.map(async (m) => {
       if (m.decryptionFailed === true) return { ...m, needsMedia: false };
+      const callHistory = callHistoryOf(m);
+      if (callHistory) {
+        return { ...m, contentType: "CALL", callHistory, needsMedia: false };
+      }
       const ct = normType(m.contentType);
       const id = String(m.id ?? "");
       let imagePath: string | null = (m.imagePath as string) || null;
