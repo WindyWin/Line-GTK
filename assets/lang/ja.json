@@ -434,5 +434,10 @@
   "hidden_chat_done": "トークを非表示にしました",
   "hidden_chat_restored": "トークを一覧に戻しました",
   "hidden_chat_save_failed": "設定を保存できませんでした。変更は適用していません。",
-  "hidden_chat_open_hint": "設定 → 機能 → 非表示のトークから再表示できます"
+  "hidden_chat_open_hint": "設定 → 機能 → 非表示のトークから再表示できます",
+  "chat_read_pause_enable": "この友だちは既読をつけない",
+  "chat_read_pause_disable": "この友だちの既読停止を解除",
+  "chat_read_pause_active": "この友だちは既読をつけない：オン",
+  "chat_read_pause_enabled": "この友だちには既読をつけません",
+  "chat_read_pause_disabled": "この友だちの既読停止を解除しました。次の通常操作から再開します"
 }

@@ -14,6 +14,7 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
 
     for chat in &chats {
         let (row, avatar, preview, badge) = build_chat_row(chat, *state.sidebar_compact.borrow());
+        hidden_chats::wire_context(state, &row, chat);
         state
             .chat_avatars
             .borrow_mut()
@@ -125,6 +126,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
     }
 
     let (row, avatar, preview, badge) = build_chat_row(&chat, *state.sidebar_compact.borrow());
+    hidden_chats::wire_context(state, &row, &chat);
     state.chat_avatars.borrow_mut().insert(mid.clone(), avatar);
     state
         .chat_previews
@@ -298,6 +300,16 @@ pub(super) fn build_chat_row(
         .visible(chat.unread > 0)
         .build();
     avatar_overlay.add_overlay(&badge);
+    let read_paused = gtk::Image::builder()
+        .icon_name("view-conceal-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .visible(false)
+        .css_classes(["line-chat-read-paused"])
+        .build();
+    avatar_overlay.add_overlay(&read_paused);
+    avatar_overlay.set_measure_overlay(&read_paused, false);
 
     let text_col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -353,7 +365,6 @@ pub(super) fn build_chat_row(
     box_.append(&avatar_overlay);
     box_.append(&text_col);
     row.set_child(Some(&box_));
-    hidden_chats::wire_context(&row, &chat.mid);
     (row, avatar, preview, badge)
 }
 
@@ -386,7 +397,7 @@ pub(super) fn clear_list(list: &gtk::ListBox) {
 }
 
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
-    if !state.config.borrow().can_mark_read() {
+    if !read_pause::can_mark_read(state, chat_mid) {
         return;
     }
     let Some(last_id) = state.last_incoming_id.borrow().clone() else {
@@ -399,7 +410,7 @@ pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
 }
 
 pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
-    if state.config.borrow().pause_read_receipts {
+    if read_pause::is_paused(state, chat_mid) {
         return;
     }
     if let Some(chat) = state

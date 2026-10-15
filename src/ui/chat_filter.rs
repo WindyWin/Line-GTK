@@ -97,6 +97,7 @@ pub(super) fn refresh(state: &AppState) {
     let mut visible = 0;
     for (index, chat) in chats.iter().enumerate() {
         if let Some(row) = state.chat_list.row_at_index(index as i32) {
+            read_pause::refresh_chat_row(state, chat, &row);
             let matches =
                 !hidden_chats::is_hidden(state, &chat.mid) && category.matches(chat, &query);
             row.set_visible(matches);

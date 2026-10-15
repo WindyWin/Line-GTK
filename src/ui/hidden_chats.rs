@@ -74,7 +74,7 @@ fn hide(state: &AppState, mid: &str) {
     toast(state, &crate::i18n::t("hidden_chat_done"));
 }
 
-pub(super) fn wire_context(row: &gtk::ListBoxRow, mid: &str) {
+pub(super) fn wire_context(state: &AppState, row: &gtk::ListBoxRow, chat: &ChatInfo) {
     row.connect_unrealize(|row| {
         let mut child = row.first_child();
         while let Some(widget) = child {
@@ -84,12 +84,22 @@ pub(super) fn wire_context(row: &gtk::ListBoxRow, mid: &str) {
             }
         }
     });
-    let mid = mid.to_string();
+    let mid = chat.mid.clone();
+    let eligible = read_pause::eligible(chat);
+    let config = state.config.clone();
+    let account = state.self_mid.clone();
     let popup = Rc::new(move |row: &gtk::ListBoxRow, x: f64, y: f64| {
         let menu = gio::Menu::new();
         let item = gio::MenuItem::new(Some(&crate::i18n::t("hide_chat")), None);
         item.set_action_and_target_value(Some("win.hide-chat"), Some(&mid.to_variant()));
         menu.append_item(&item);
+        if eligible {
+            let paused = account
+                .borrow()
+                .as_deref()
+                .is_some_and(|account| config.borrow().chat_read_receipts_paused(account, &mid));
+            read_pause::append_chat_menu(&menu, &mid, paused);
+        }
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(row);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));

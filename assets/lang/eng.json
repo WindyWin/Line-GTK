@@ -434,5 +434,10 @@
   "hidden_chat_done": "Chat hidden",
   "hidden_chat_restored": "Chat restored to the list",
   "hidden_chat_save_failed": "Could not save settings. No changes were applied.",
-  "hidden_chat_open_hint": "Restore this chat in Settings → Features → Hidden chats"
+  "hidden_chat_open_hint": "Restore this chat in Settings → Features → Hidden chats",
+  "chat_read_pause_enable": "Do not mark this friend’s messages as read",
+  "chat_read_pause_disable": "Resume read receipts for this friend",
+  "chat_read_pause_active": "Read receipts paused for this friend",
+  "chat_read_pause_enabled": "Read receipts paused for this friend",
+  "chat_read_pause_disabled": "Read receipts will resume on your next normal interaction"
 }
