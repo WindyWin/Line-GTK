@@ -1,6 +1,7 @@
 use gtk::CssProvider;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,8 @@ pub struct AppConfig {
     pub pause_read_receipts: bool,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
+    /// アカウントごとの非表示トーク（トークID → 復元画面用の名前）。
+    pub hidden_chats: BTreeMap<String, BTreeMap<String, String>>,
     /// PulseAudio / PipeWire source name, or empty / "default".
     pub audio_input: String,
     /// PulseAudio / PipeWire sink name, or empty / "default".
@@ -79,6 +82,7 @@ impl Default for AppConfig {
             auto_mark_read: true,
             pause_read_receipts: false,
             last_chat_mid: String::new(),
+            hidden_chats: BTreeMap::new(),
             audio_input: String::new(),
             audio_output: String::new(),
             call_mic_volume: 1.0,
@@ -103,6 +107,49 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn is_chat_hidden(&self, account: &str, mid: &str) -> bool {
+        self.hidden_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains_key(mid))
+    }
+
+    pub fn set_chat_hidden(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        name: Option<&str>,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.hidden_chats.clone();
+        let last_chat = self.last_chat_mid.clone();
+        if let Some(name) = name {
+            self.hidden_chats.entry(account.into()).or_default().insert(
+                mid.into(),
+                if name.trim().is_empty() { mid } else { name }.into(),
+            );
+            if self.last_chat_mid == mid {
+                self.last_chat_mid.clear();
+            }
+        } else if let Some(chats) = self.hidden_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.hidden_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.hidden_chats = previous;
+            self.last_chat_mid = last_chat;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn can_mark_read(&self) -> bool {
         self.auto_mark_read && !self.pause_read_receipts
     }
@@ -212,6 +259,10 @@ impl AppConfig {
         self.call_spk_volume = finite_or(self.call_spk_volume, 1.0).clamp(0.0, 2.5);
         self.sidebar_width = self.sidebar_width.clamp(80, 520);
         self.notifications_muted_until = self.notifications_muted_until.max(0);
+        self.hidden_chats.retain(|account, chats| {
+            chats.retain(|mid, _| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
     }
 
     /// Discord Application ID from settings, env, or the built-in default.
@@ -382,6 +433,65 @@ mod tests {
         assert!(cfg.pause_read_receipts);
         assert!(AppConfig::load(&dir).pause_read_receipts);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_chats_persist_per_account_without_changing_read_policy() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-hidden-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.hidden_chats.is_empty());
+        cfg.last_chat_mid = "c-group".into();
+        cfg.set_chat_hidden(&dir, "u-first", "c-group", Some("検証グループ"))
+            .unwrap();
+        let mut loaded = AppConfig::load(&dir);
+        assert!(loaded.is_chat_hidden("u-first", "c-group"));
+        assert!(!loaded.is_chat_hidden("u-second", "c-group"));
+        assert_eq!(loaded.hidden_chats["u-first"]["c-group"], "検証グループ");
+        assert!(loaded.last_chat_mid.is_empty());
+        assert!(loaded.can_mark_read());
+        loaded
+            .set_chat_hidden(&dir, "u-second", "c-group", Some("別アカウント"))
+            .unwrap();
+        loaded
+            .set_chat_hidden(&dir, "u-first", "c-group", None)
+            .unwrap();
+        let loaded = AppConfig::load(&dir);
+        assert!(!loaded.is_chat_hidden("u-first", "c-group"));
+        assert!(loaded.is_chat_hidden("u-second", "c-group"));
+        assert!(!loaded.hidden_chats.contains_key("u-first"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_chat_save_failure_restores_visibility_and_last_chat() {
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-hidden-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig {
+            last_chat_mid: "u-friend".into(),
+            ..AppConfig::default()
+        };
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_hidden(&dir, "u-self", "u-friend", Some("友だち"))
+                .is_err()
+        );
+        assert!(!cfg.is_chat_hidden("u-self", "u-friend"));
+        assert_eq!(cfg.last_chat_mid, "u-friend");
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_chat_hidden(&dir, "u-self", "u-friend", Some("友だち"))
+            .unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_hidden(&dir, "u-self", "u-friend", None)
+                .is_err()
+        );
+        assert!(cfg.is_chat_hidden("u-self", "u-friend"));
+        assert!(AppConfig::load(&dir).is_chat_hidden("u-self", "u-friend"));
+        assert!(cfg.set_chat_hidden(&dir, "", "u-friend", None).is_err());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
