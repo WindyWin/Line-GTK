@@ -7,6 +7,8 @@ type Json = Record<string, unknown>;
 
 export type ListenerRuntime = {
   getClient: () => Client | null;
+  observeMessage?: (message: Json) => void;
+  refreshMessageSender?: (mid: string) => void;
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
   invalidateMessages: (chatMid: string) => void;
@@ -49,6 +51,7 @@ export function createListener(runtime: ListenerRuntime) {
       try {
         const tm = msg as TalkMessage;
         const message = await summarizeTalkMessage(tm, { withMedia: false });
+        runtime.observeMessage?.(message);
         const peer = conversationMid(message);
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
@@ -85,6 +88,9 @@ export function createListener(runtime: ListenerRuntime) {
           type === "NOTIFIED_UPDATE_PROFILE"
         ) {
           const mid = String(op.param1 ?? op.param2 ?? "");
+          if (type === "NOTIFIED_UPDATE_PROFILE" && mid) {
+            runtime.refreshMessageSender?.(mid);
+          }
           if (mid) void upsertChatFromContact(mid);
         }
       } catch (e) {

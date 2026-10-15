@@ -31,6 +31,7 @@ import { createReadReceipts } from "./read_receipts.ts";
 import { readReceiptPermission } from "./read_policy.ts";
 import { createChatPreviews } from "./chat_previews.ts";
 import { createAlbumService } from "./albums.ts";
+import { createMessageSenders } from "./message_senders.ts";
 
 type Json = Record<string, unknown>;
 
@@ -226,7 +227,11 @@ const messageView = createMessageView({
   uiMediaPath,
   stickerDir,
 });
-const { previewLang, previewLine, extractFlex, forUiMessages } = messageView;
+const { previewLang, previewLine, extractFlex } = messageView;
+function forUiMessages(messages: Json[]) {
+  messageSenders.observe(messages);
+  return messageView.forUiMessages(messages);
+}
 
 const stickers = createStickerService({
   getClient: () => client,
@@ -298,6 +303,12 @@ type BoxCursor = {
   deliveredTime: bigint | number;
 };
 const boxCursor = new Map<string, BoxCursor>();
+const messageSenders = createMessageSenders({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  knownName: (mid) => contactIndex.get(mid)?.name,
+  emit: (mid, name) => emitEvent("sender_profile", { mid, name }),
+});
 
 const chatPreviews = createChatPreviews({
   getChats: () => chatCache?.chats ?? [],
@@ -325,6 +336,8 @@ const readReceipts = createReadReceipts({
 
 const listener = createListener({
   getClient: () => client,
+  observeMessage: (message) => messageSenders.observe([message]),
+  refreshMessageSender: messageSenders.refresh,
   isListening: () => listening,
   setListening: (next) => {
     listening = next;
