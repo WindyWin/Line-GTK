@@ -30,6 +30,7 @@ import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
 import { readReceiptPermission } from "./read_policy.ts";
 import { createChatPreviews } from "./chat_previews.ts";
+import { createAlbumService } from "./albums.ts";
 
 type Json = Record<string, unknown>;
 
@@ -173,6 +174,11 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
 });
 
 let client: Client | null = null;
+const albums = createAlbumService({
+  getClient: () => client,
+  sessionId: () => myMid(),
+  mediaDir,
+});
 let listening = false;
 
 calls.configureCallRuntime({
@@ -1764,6 +1770,31 @@ async function handle(req: Json) {
       case "list_chats":
         await commands.listChats(id, !!params.force);
         break;
+      case "list_albums":
+      case "list_album_photos":
+      case "download_album_photo": {
+        try {
+          const chatMid = String(params.chatMid ?? "");
+          const albumId = String(params.albumId ?? "");
+          const result = method === "list_albums"
+            ? await albums.listAlbums(chatMid, params.cursor)
+            : method === "list_album_photos"
+            ? await albums.listPhotos(chatMid, albumId, params.cursor)
+            : await albums.downloadPhoto(
+              chatMid,
+              albumId,
+              String(params.photoId ?? ""),
+            );
+          ok(id, result);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          fail(
+            id,
+            /^album_[a-z_]+$/.test(code) ? code : "album_request_failed",
+          );
+        }
+        break;
+      }
       case "fetch_messages":
         await commands.fetchMessages(
           id,
