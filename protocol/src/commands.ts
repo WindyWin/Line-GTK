@@ -9,6 +9,7 @@ import type { LineDevice } from "./auth.ts";
 import { needsDecryptionRefresh } from "./e2ee_guard.ts";
 import { fetchGroupProfiles } from "./groups.ts";
 import type { ReadPermission } from "./read_policy.ts";
+import { replyMessageId, replySnapshot } from "./replies.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -669,6 +670,7 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     text: string,
+    replyToMessageId?: unknown,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -680,6 +682,20 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
 
+    const relatedMessageId = replyToMessageId == null
+      ? undefined
+      : replyMessageId(replyToMessageId);
+    if (relatedMessageId === null) {
+      fail(id, "invalid_reply_target");
+      return;
+    }
+    const original = msgCache.get(chatMid)?.messages.find((m) =>
+      m.id === relatedMessageId
+    );
+    const replyTo = relatedMessageId
+      ? (original ? replySnapshot(original) : { messageId: relatedMessageId })
+      : null;
+
     let sent:
       | { id?: unknown; createdTime?: unknown; contentType?: unknown }
       | null = null;
@@ -689,6 +705,7 @@ export function createCommandService(runtime: CommandRuntime) {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
+        relatedMessageId,
         e2ee: false,
       }) as unknown as typeof sent;
     } catch (e1) {
@@ -696,12 +713,13 @@ export function createCommandService(runtime: CommandRuntime) {
         sent = await client.base.talk.sendMessage({
           to: chatMid,
           text,
+          relatedMessageId,
           e2ee: true,
         }) as unknown as typeof sent;
       } catch (e2) {
         try {
           const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage(text);
+          const m = await chat.sendMessage({ text, relatedMessageId });
           const message = await summarizeTalkMessage(m, { withMedia: false })
             .catch(() =>
               sentMessagePayload(
@@ -713,6 +731,7 @@ export function createCommandService(runtime: CommandRuntime) {
                 text,
               )
             );
+          message.replyTo = replyTo;
           msgCache.delete(chatMid);
           runtime.setChatCache(null);
           touchChatPreviewFromMessage(message);
@@ -736,7 +755,7 @@ export function createCommandService(runtime: CommandRuntime) {
 
     msgCache.delete(chatMid);
     runtime.setChatCache(null);
-    const message = sentMessagePayload(sent, chatMid, text);
+    const message = { ...sentMessagePayload(sent, chatMid, text), replyTo };
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }

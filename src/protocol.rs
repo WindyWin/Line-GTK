@@ -103,7 +103,23 @@ pub struct CallHistory {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ReplyInfo {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub mine: bool,
+    #[serde(rename = "contentType", default)]
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MessageInfo {
+    #[serde(rename = "replyTo", default)]
+    pub reply_to: Option<ReplyInfo>,
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -160,7 +176,7 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
-    Message(MessageInfo),
+    Message(Box<MessageInfo>),
     Chats {
         chats: Vec<ChatInfo>,
         cached: bool,
