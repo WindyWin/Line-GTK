@@ -422,5 +422,7 @@
   "album_photo_expired": "写真情報が更新されました。アルバムを更新してください。",
   "album_image_unsupported": "この画像形式は表示できません",
   "album_image_too_large": "画像が大きすぎるため表示できません（上限50MB）",
-  "album_other_chat": "別のトーク"
+  "album_other_chat": "別のトーク",
+  "message_sender_unknown": "送信者不明",
+  "message_sender_pending": "メンバー ({id})"
 }

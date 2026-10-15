@@ -71,6 +71,8 @@ pub(super) struct AppState {
     pub chat_avatars: Rc<RefCell<HashMap<String, gtk::Picture>>>,
     pub chat_previews: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub chat_unread_badges: Rc<RefCell<HashMap<String, gtk::Label>>>,
+    pub sender_names: Rc<RefCell<HashMap<String, String>>>,
+    pub sender_labels: Rc<RefCell<HashMap<String, Vec<gtk::Label>>>>,
     pub media_slots: Rc<RefCell<HashMap<String, gtk::Box>>>,
     pub media_msgs: Rc<RefCell<HashMap<String, MessageInfo>>>,
     pub receipt_slots: Rc<RefCell<HashMap<String, gtk::Label>>>,

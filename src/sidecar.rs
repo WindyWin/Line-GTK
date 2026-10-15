@@ -567,6 +567,20 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
+                        "sender_profile" => ProtocolEvent::SenderProfile {
+                            mid: resp
+                                .extra
+                                .get("mid")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            name: resp
+                                .extra
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        },
                         "session_failed" => ProtocolEvent::SessionFailed {
                             error: resp
                                 .extra
@@ -1006,5 +1020,19 @@ mod authentication_tests {
             }
             _ => panic!("既読範囲のイベントではありません"),
         }
+    }
+
+    #[test]
+    fn sender_profiles_preserve_names_without_becoming_messages() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event =
+            "{\"event\":\"sender_profile\",\"mid\":\"u-member\",\"name\":\"グループのメンバー\"}\n";
+        read_loop(event.as_bytes(), tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::SenderProfile { mid, name } if mid == "u-member" && name == "グループのメンバー")
+        );
+        assert!(rx.try_recv().is_err());
     }
 }

@@ -371,17 +371,42 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         outer.append(&col);
     } else {
         // Incoming: bubble + time on the right (mobile style).
+        let incoming = if message_senders::is_group(state) {
+            let column = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(3)
+                .hexpand(true)
+                .build();
+            let name = message_senders::name(state, &msg.from);
+            let sender = gtk::Label::builder()
+                .label(&name)
+                .tooltip_text(&name)
+                .xalign(0.0)
+                .halign(gtk::Align::Start)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(36)
+                .css_classes(["line-message-sender"])
+                .build();
+            message_senders::register(state, &msg.from, &sender);
+            column.append(&sender);
+            let content = gtk::Box::builder().spacing(8).hexpand(true).build();
+            column.append(&content);
+            outer.append(&column);
+            content
+        } else {
+            outer.clone()
+        };
         let time = gtk::Label::builder()
             .label(&time_txt)
             .valign(gtk::Align::End)
             .css_classes(["line-msg-time"])
             .build();
-        outer.append(&bubble);
+        incoming.append(&bubble);
         if let Some(reply) = replies::button(msg) {
-            outer.append(&reply);
+            incoming.append(&reply);
         }
-        outer.append(&time);
-        outer.append(&gtk::Box::builder().hexpand(true).build());
+        incoming.append(&time);
+        incoming.append(&gtk::Box::builder().hexpand(true).build());
     }
 
     row.append(&outer);
@@ -1256,6 +1281,7 @@ pub(super) fn clear_messages(state: &AppState) {
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
+    state.sender_labels.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
     state.pending_rows.borrow_mut().clear();
     *state.last_msg_day.borrow_mut() = None;

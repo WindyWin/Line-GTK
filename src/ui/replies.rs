@@ -53,6 +53,9 @@ fn author(state: &AppState, quote: &ReplyInfo) -> String {
     if quote.mine {
         return crate::i18n::t("you");
     }
+    if let Some(name) = message_senders::known_name(state, &quote.from) {
+        return name;
+    }
     let chats = state.chats.borrow();
     if let Some(sender) = chats.iter().find(|chat| chat.mid == quote.from) {
         return sender.name.clone();
@@ -156,15 +159,17 @@ pub(super) fn append_quote(state: &AppState, bubble: &gtk::Box, quote: &ReplyInf
         .spacing(2)
         .css_classes(["line-reply-quote"])
         .build();
-    card.append(
-        &gtk::Label::builder()
-            .label(author(state, quote))
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(36)
-            .xalign(0.0)
-            .css_classes(["heading", "caption"])
-            .build(),
-    );
+    let author_label = gtk::Label::builder()
+        .label(author(state, quote))
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(36)
+        .xalign(0.0)
+        .css_classes(["heading", "caption"])
+        .build();
+    if !quote.mine {
+        message_senders::register(state, &quote.from, &author_label);
+    }
+    card.append(&author_label);
     card.append(
         &gtk::Label::builder()
             .label(quote_text(quote))

@@ -11,6 +11,7 @@ mod events;
 mod friends;
 mod login;
 mod media;
+mod message_senders;
 mod messages;
 mod notifications;
 mod read_pause;
@@ -174,6 +175,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
         chat_unread_badges: Rc::new(RefCell::new(HashMap::new())),
+        sender_names: Rc::new(RefCell::new(HashMap::new())),
+        sender_labels: Rc::new(RefCell::new(HashMap::new())),
         media_slots: Rc::new(RefCell::new(HashMap::new())),
         media_msgs: Rc::new(RefCell::new(HashMap::new())),
         receipt_slots: Rc::new(RefCell::new(HashMap::new())),

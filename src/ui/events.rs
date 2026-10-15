@@ -280,6 +280,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 apply_messages(state, messages);
             }
         }
+        ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
@@ -745,6 +746,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    state.sender_names.borrow_mut().clear();
     albums::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
@@ -819,6 +821,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    state.sender_names.borrow_mut().clear();
     albums::close(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);

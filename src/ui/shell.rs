@@ -1119,6 +1119,11 @@ pub fn load_css() {
             font-weight: 600;
             color: @accent_color;
         }
+        .line-message-sender {
+            font-size: 0.82em;
+            font-weight: 600;
+            color: alpha(@window_fg_color, 0.72);
+        }
         .line-msg-time {
             font-size: 0.70em;
             opacity: 0.55;

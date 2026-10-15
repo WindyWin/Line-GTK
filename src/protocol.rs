@@ -189,6 +189,10 @@ pub enum ProtocolEvent {
         mid: String,
         avatar_path: String,
     },
+    SenderProfile {
+        mid: String,
+        name: String,
+    },
     FriendsUpdated {
         friends: Vec<ChatInfo>,
     },
