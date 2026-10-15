@@ -123,6 +123,8 @@ fn open(state: &AppState) {
         .build();
     let title = gtk::Label::builder()
         .label(crate::i18n::t("albums"))
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .max_width_chars(36)
         .css_classes(["heading"])
         .build();
     let context = gtk::Label::builder()
