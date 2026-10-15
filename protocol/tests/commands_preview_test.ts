@@ -35,12 +35,19 @@ function commandFixture(
     save: () => Promise.resolve(),
   });
   let networkCalls = 0;
+  let marks = 0;
+  let sequenceHook = () => Promise.resolve(1);
   let hydrated = 0;
   let receiptsRefreshed = 0;
   let activity = 20;
   const client = {
     base: {
+      getReqseq: () => sequenceHook(),
       talk: {
+        sendChatChecked: () => {
+          marks++;
+          return Promise.resolve();
+        },
         getMessageBoxes: () =>
           Promise.resolve({
             messageBoxes: [{
@@ -93,6 +100,7 @@ function commandFixture(
       return Promise.resolve();
     },
     updateChatPreview: previews.updateFromMessages,
+    readReceiptPermission: () => Promise.resolve("allowed"),
     refreshReadReceipts: () => {
       receiptsRefreshed++;
       return Promise.resolve();
@@ -128,6 +136,10 @@ function commandFixture(
     networkCalls: () => networkCalls,
     hydrated: () => hydrated,
     receiptsRefreshed: () => receiptsRefreshed,
+    marks: () => marks,
+    setSequenceHook: (hook: () => Promise<number>) => {
+      sequenceHook = hook;
+    },
     setActivity: (next: number) => {
       activity = next;
     },
@@ -197,4 +209,42 @@ Deno.test("新着のある一覧では古いプレビューを再取得の対象
   } finally {
     await Deno.remove(directory, { recursive: true });
   }
+});
+
+Deno.test("既読停止中はRPCと未読件数の更新を行わない", async () => {
+  const fixture = commandFixture("通信");
+  fixture.chat.unread = 3;
+  fixture.runtime.readReceiptPermission = () => Promise.resolve("paused");
+  await fixture.commands.markRead(1, fixture.chat.mid, "9007199254740993");
+  assertEquals(fixture.marks(), 0);
+  assertEquals(fixture.chat.unread, 3);
+  assertEquals(fixture.okResults, [{ marked: false, skipped: "paused" }]);
+});
+
+Deno.test("順序番号の取得中に停止をオンにしても既読を送らない", async () => {
+  const fixture = commandFixture("通信");
+  let paused = false;
+  fixture.runtime.readReceiptPermission = () =>
+    Promise.resolve(paused ? "paused" : "allowed");
+  fixture.setSequenceHook(() => {
+    paused = true;
+    return Promise.resolve(1);
+  });
+  await fixture.commands.markRead(1, fixture.chat.mid, "9007199254740993");
+  assertEquals(fixture.marks(), 0);
+  assertEquals(fixture.okResults, [{ marked: false, skipped: "paused" }]);
+});
+
+Deno.test("停止と自動既読オフの解除後は、新しい要求だけ既読を送る", async () => {
+  const fixture = commandFixture("通信");
+  fixture.chat.unread = 3;
+  fixture.runtime.readReceiptPermission = () =>
+    Promise.resolve("auto_disabled");
+  await fixture.commands.markRead(1, fixture.chat.mid, "50");
+  assertEquals(fixture.marks(), 0);
+  fixture.runtime.readReceiptPermission = () => Promise.resolve("allowed");
+  assertEquals(fixture.marks(), 0);
+  await fixture.commands.markRead(2, fixture.chat.mid, "50");
+  assertEquals(fixture.marks(), 1);
+  assertEquals(fixture.chat.unread, 0);
 });

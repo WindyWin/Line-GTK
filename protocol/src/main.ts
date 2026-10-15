@@ -27,6 +27,7 @@ import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
+import { readReceiptPermission } from "./read_policy.ts";
 import { createChatPreviews } from "./chat_previews.ts";
 
 type Json = Record<string, unknown>;
@@ -365,6 +366,8 @@ const commands = createCommandService({
   hydratePreviews,
   updateChatPreview: chatPreviews.updateFromMessages,
   refreshReadReceipts: readReceipts.refresh,
+  readReceiptPermission: () =>
+    readReceiptPermission(join(dataDir, "settings.json")),
   bumpMediaEpoch,
   loadDiskMessages,
   saveDiskMessages,

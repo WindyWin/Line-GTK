@@ -8,6 +8,7 @@ import { friendName, picturePathOf } from "./contacts.ts";
 import type { LineDevice } from "./auth.ts";
 import { needsDecryptionRefresh } from "./e2ee_guard.ts";
 import { fetchGroupProfiles } from "./groups.ts";
+import type { ReadPermission } from "./read_policy.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -61,6 +62,7 @@ export type CommandRuntime = {
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
   updateChatPreview: (chatMid: string, messages: Json[]) => Promise<void>;
   refreshReadReceipts: (chatMid: string) => Promise<void>;
+  readReceiptPermission: () => Promise<ReadPermission>;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
   saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
@@ -172,10 +174,24 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
     try {
+      let permission = await runtime.readReceiptPermission();
+      if (permission !== "allowed") {
+        ok(id, { marked: false, skipped: permission });
+        return;
+      }
       const requestSequence = client.base.getReqseq;
       const seq = typeof requestSequence === "function"
         ? await requestSequence.call(client.base)
         : Number(requestSequence);
+      // 順序番号の取得を待つ間にスイッチをオンにされた場合も送信しない。
+      permission = await runtime.readReceiptPermission();
+      if (permission !== "allowed" || runtime.getClient() !== client) {
+        ok(id, {
+          marked: false,
+          skipped: permission !== "allowed" ? permission : "session_changed",
+        });
+        return;
+      }
       // thrift STRING (ftype 11) — must be string, not i64/bigint
       await client.base.talk.sendChatChecked({
         chatMid: String(chatMid),
