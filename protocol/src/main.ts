@@ -29,6 +29,7 @@ import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
 import { readReceiptPermission } from "./read_policy.ts";
+import { createEmojiService, lineEmojis } from "./emojis.ts";
 import { createChatPreviews } from "./chat_previews.ts";
 import { createAlbumService } from "./albums.ts";
 import { createMessageSenders } from "./message_senders.ts";
@@ -230,6 +231,7 @@ const messageView = createMessageView({
 const { previewLang, previewLine, extractFlex } = messageView;
 function forUiMessages(messages: Json[]) {
   messageSenders.observe(messages);
+  emojiService.observe(messages);
   return messageView.forUiMessages(messages);
 }
 
@@ -309,6 +311,10 @@ const messageSenders = createMessageSenders({
   knownName: (mid) => contactIndex.get(mid)?.name,
   emit: (mid, name) => emitEvent("sender_profile", { mid, name }),
 });
+const emojiService = createEmojiService({
+  directory: mediaDir,
+  emit: (key, path) => emitEvent("emoji_ready", { key, path }),
+});
 
 const chatPreviews = createChatPreviews({
   getChats: () => chatCache?.chats ?? [],
@@ -336,7 +342,10 @@ const readReceipts = createReadReceipts({
 
 const listener = createListener({
   getClient: () => client,
-  observeMessage: (message) => messageSenders.observe([message]),
+  observeMessage: (message) => {
+    messageSenders.observe([message]);
+    emojiService.observe([message]);
+  },
   refreshMessageSender: messageSenders.refresh,
   isListening: () => listening,
   setListening: (next) => {
@@ -1001,6 +1010,7 @@ async function summarizeTalkMessage(
     replyTo,
     id,
     text,
+    emojis: contentType === "NONE" ? lineEmojis(text, meta) : [],
     from: raw.from ?? "",
     to: raw.to ?? "",
     mine: isMineFrom(raw.from),
@@ -1055,6 +1065,9 @@ async function summarizeRawMessage(
       replyTo: replyToOf(r),
       id: String(r.id ?? ""),
       text: callHistory ? "" : text,
+      emojis: !callHistory && contentType === "NONE"
+        ? lineEmojis(text, meta)
+        : [],
       callHistory,
       from: String(r.from ?? ""),
       to: String(r.to ?? ""),
