@@ -18,6 +18,9 @@ pub struct ShellWidgets {
     pub conversation: gtk::Box,
     pub send_btn: gtk::Button,
     pub status: gtk::Label,
+    pub read_pause_switch: gtk::Switch,
+    pub read_pause_label: gtk::Label,
+    pub read_pause_box: gtk::Box,
     pub profile_label: gtk::Label,
     pub profile_avatar: gtk::Picture,
     pub brand_label: gtk::Label,
@@ -126,6 +129,18 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     header.pack_end(&settings_btn);
     header.pack_end(&friends_btn);
+
+    let read_pause_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+    let read_pause_label = gtk::Label::builder().css_classes(["caption"]).build();
+    let read_pause_box = gtk::Box::builder()
+        .spacing(8)
+        .valign(gtk::Align::Center)
+        .css_classes(["line-read-pause"])
+        .build();
+    read_pause_box.append(&gtk::Image::from_icon_name("view-conceal-symbolic"));
+    read_pause_box.append(&read_pause_label);
+    read_pause_box.append(&read_pause_switch);
+    header.pack_end(&read_pause_box);
 
     let body = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -561,6 +576,9 @@ pub fn build_shell_page() -> ShellWidgets {
         conversation,
         send_btn,
         status,
+        read_pause_switch,
+        read_pause_label,
+        read_pause_box,
         profile_label,
         profile_avatar,
         brand_label,
@@ -601,6 +619,9 @@ pub fn load_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
         r#"
+.line-read-pause { padding: 4px 8px; border-radius: 10px; }
+.line-read-pause.line-read-paused { background: alpha(@accent_bg_color, 0.16); color: @accent_color; }
+
         .line-shell {
             background: @window_bg_color;
         }

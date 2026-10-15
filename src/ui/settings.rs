@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct SettingsDeps {
+    pub read_pause_switch: gtk::Switch,
     pub sidecar: Rc<Sidecar>,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,
@@ -433,6 +434,17 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         });
     }
 
+    let pause_row = libadwaita::SwitchRow::builder()
+        .title(i18n::t("read_receipts_pause"))
+        .subtitle(i18n::t("read_receipts_pause_subtitle"))
+        .build();
+    deps.read_pause_switch
+        .bind_property("active", &pause_row, "active")
+        .bidirectional()
+        .sync_create()
+        .build();
+    chat_grp.add(&pause_row);
+
     let mark_row = libadwaita::SwitchRow::builder()
         .title(i18n::t("auto_mark_read"))
         .subtitle(i18n::t("auto_mark_read_subtitle"))
@@ -444,6 +456,15 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         mark_row.connect_active_notify(move |row| {
             cfg.borrow_mut().auto_mark_read = row.is_active();
             cfg.borrow().save(&data_dir);
+        });
+    }
+    mark_row.set_sensitive(!deps.read_pause_switch.is_active());
+    {
+        let mark_row = mark_row.downgrade();
+        deps.read_pause_switch.connect_active_notify(move |switch| {
+            if let Some(mark_row) = mark_row.upgrade() {
+                mark_row.set_sensitive(!switch.is_active());
+            }
         });
     }
     chat_grp.add(&mark_row);

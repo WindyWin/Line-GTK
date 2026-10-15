@@ -216,8 +216,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     if !msg.mine {
                         // Only suppress alerts when this chat is open AND focused.
                         if window_focused {
-                            mark_chat_read(state, &peer);
-                            clear_unread_badge(state, &peer);
+                            if state.config.borrow().pause_read_receipts {
+                                bump_unread(state, &peer);
+                            } else {
+                                mark_chat_read(state, &peer);
+                                clear_unread_badge(state, &peer);
+                            }
                         } else {
                             bump_unread(state, &peer);
                             notify_incoming(state, &msg, &peer);

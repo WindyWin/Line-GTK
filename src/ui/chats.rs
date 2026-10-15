@@ -376,7 +376,7 @@ pub(super) fn clear_list(list: &gtk::ListBox) {
 }
 
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
-    if !state.config.borrow().auto_mark_read {
+    if !state.config.borrow().can_mark_read() {
         return;
     }
     let Some(last_id) = state.last_incoming_id.borrow().clone() else {
@@ -389,6 +389,9 @@ pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
 }
 
 pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
+    if state.config.borrow().pause_read_receipts {
+        return;
+    }
     if let Some(chat) = state
         .chats
         .borrow_mut()

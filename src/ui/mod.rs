@@ -11,6 +11,7 @@ mod login;
 mod media;
 mod messages;
 mod notifications;
+mod read_pause;
 mod settings;
 mod shell;
 mod state;
@@ -140,6 +141,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         conversation: shell.conversation,
         send_btn: shell.send_btn,
         status: shell.status,
+        read_pause_switch: shell.read_pause_switch,
+        read_pause_label: shell.read_pause_label,
+        read_pause_box: shell.read_pause_box,
         login,
         profile_label: shell.profile_label,
         profile_avatar: shell.profile_avatar,
@@ -238,6 +242,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
     };
 
+    read_pause::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
@@ -1036,6 +1041,7 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
 
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
+    read_pause::apply_language(state);
     // 再ログインせず、プレビュー生成側にも選択した言語を反映する。
     if let Err(error) = state.sidecar.request(
         "set_language",
@@ -1323,6 +1329,7 @@ fn wire_actions(state: &AppState) {
     let s = state.clone();
     state.settings_btn.connect_clicked(move |_| {
         let deps = settings::SettingsDeps {
+            read_pause_switch: s.read_pause_switch.clone(),
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),

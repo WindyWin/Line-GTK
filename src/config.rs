@@ -23,6 +23,8 @@ pub struct AppConfig {
     /// Notification sound gain for file-based fallbacks (0.0 .. 2.0).
     pub notification_sound_volume: f64,
     pub auto_mark_read: bool,
+    /// このアプリからの既読通知を停止する。
+    pub pause_read_receipts: bool,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
     /// PulseAudio / PipeWire source name, or empty / "default".
@@ -75,6 +77,7 @@ impl Default for AppConfig {
             notification_sound: true,
             notification_sound_volume: 1.0,
             auto_mark_read: true,
+            pause_read_receipts: false,
             last_chat_mid: String::new(),
             audio_input: String::new(),
             audio_output: String::new(),
@@ -100,6 +103,24 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn can_mark_read(&self) -> bool {
+        self.auto_mark_read && !self.pause_read_receipts
+    }
+
+    pub fn set_read_receipts_paused(
+        &mut self,
+        data_dir: &Path,
+        paused: bool,
+    ) -> std::io::Result<()> {
+        let previous = self.pause_read_receipts;
+        self.pause_read_receipts = paused;
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.pause_read_receipts = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn set_language(&mut self, language: &str) {
         // 標準フォントだけを言語に合わせる。利用者が指定したフォントは維持する。
         let previous_default = if self.language == "ja" {
@@ -329,6 +350,38 @@ mod tests {
         };
         cfg.normalize();
         assert_eq!(cfg.language, "ja");
+    }
+
+    #[test]
+    fn read_pause_migrates_and_respects_auto_read() {
+        let mut cfg: AppConfig = serde_json::from_str(r#"{"auto_mark_read":true}"#).unwrap();
+        assert!(!cfg.pause_read_receipts);
+        assert!(cfg.can_mark_read());
+        cfg.pause_read_receipts = true;
+        assert!(!cfg.can_mark_read());
+        cfg.pause_read_receipts = false;
+        cfg.auto_mark_read = false;
+        assert!(!cfg.can_mark_read());
+    }
+
+    #[test]
+    fn read_pause_persists_and_rolls_back_on_save_failure() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-read-pause-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig::default();
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(cfg.set_read_receipts_paused(&dir, true).is_err());
+        assert!(!cfg.pause_read_receipts);
+        assert!(!AppConfig::load(&dir).pause_read_receipts);
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_read_receipts_paused(&dir, true).unwrap();
+        assert!(AppConfig::load(&dir).pause_read_receipts);
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(cfg.set_read_receipts_paused(&dir, false).is_err());
+        assert!(cfg.pause_read_receipts);
+        assert!(AppConfig::load(&dir).pause_read_receipts);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
