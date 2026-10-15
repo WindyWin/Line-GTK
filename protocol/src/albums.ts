@@ -58,6 +58,21 @@ export function createAlbumService(runtime: Runtime) {
   let ownerMid = "";
   const photos = new Map<string, Photo>();
   const downloads = new Map<string, Promise<{ path: string; name: string }>>();
+  let activeDownloads = 0;
+  const waiting: Array<() => void> = [];
+
+  async function withDownloadSlot<T>(operation: () => Promise<T>): Promise<T> {
+    if (activeDownloads >= 3) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    } else activeDownloads++;
+    try {
+      return await operation();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else activeDownloads--;
+    }
+  }
 
   function session() {
     const client = runtime.getClient();
@@ -84,6 +99,22 @@ export function createAlbumService(runtime: Runtime) {
     return JSON.stringify([chatMid, albumId, photoId]);
   }
 
+  async function call<T>(
+    active: ReturnType<typeof session>,
+    operation: () => Promise<T>,
+  ) {
+    try {
+      const result = await operation();
+      active.check();
+      return result;
+    } catch {
+      active.check();
+      // 期限切れの認証情報を再試行でも使い続けない。通信自体の自動再試行はしない。
+      active.client.base.moa.clearAlbumChannelToken();
+      throw new Error("album_request_failed");
+    }
+  }
+
   async function listAlbums(chatMid: string, inputCursor: unknown) {
     const active = session();
     if (chatMid) identifier(chatMid);
@@ -92,7 +123,10 @@ export function createAlbumService(runtime: Runtime) {
     // トークで絞り込む場合、該当しないページを少数ずつ読み飛ばす。
     for (let page = 0; page < 4; page++) {
       visited.add(cursor);
-      const response = await active.client.base.moa.getAlbums({ cursor });
+      const response = await call(
+        active,
+        () => active.client.base.moa.getAlbums({ cursor }),
+      );
       active.check();
       if (!Array.isArray(response.result?.albums)) {
         throw new Error("album_request_failed");
@@ -103,7 +137,9 @@ export function createAlbumService(runtime: Runtime) {
           id: identifier(String(album.albumId ?? "")),
           chatMid: identifier(album.chatId),
           title: typeof album.title === "string" ? album.title : "",
-          photoCount: Math.max(0, Number(album.photoCount) || 0),
+          photoCount: Number.isSafeInteger(album.photoCount)
+            ? Math.max(0, album.photoCount!)
+            : 0,
         }));
       const next = nextCursor(
         response.result.nextCursor ?? response.result.cursor,
@@ -125,12 +161,13 @@ export function createAlbumService(runtime: Runtime) {
     identifier(chatMid);
     identifier(albumId);
     const cursor = cursorOf(inputCursor);
-    const response = await active.client.base.moa.getPhotos({
-      chatId: chatMid,
-      albumId,
-      cursor,
-      pageSize: 12,
-    });
+    const response = await call(active, () =>
+      active.client.base.moa.getPhotos({
+        chatId: chatMid,
+        albumId,
+        cursor,
+        pageSize: 12,
+      }));
     active.check();
     if (!Array.isArray(response.result?.photos)) {
       throw new Error("album_request_failed");
@@ -172,7 +209,8 @@ export function createAlbumService(runtime: Runtime) {
     if (photo.kind !== "image") throw new Error("album_image_unsupported");
     const pending = downloads.get(key);
     if (pending) return await pending;
-    const operation = (async () => {
+    const operation = withDownloadSlot(async () => {
+      active.check();
       // 別アカウント・別トークの写真がキャッシュで衝突しないようにする。
       const digest = await crypto.subtle.digest(
         "SHA-256",
@@ -194,11 +232,15 @@ export function createAlbumService(runtime: Runtime) {
           if (!(error instanceof Deno.errors.NotFound)) throw error;
         }
       }
-      const bytes = await active.client.base.moa.downloadPhoto({
-        chatId: chatMid,
-        albumId,
-        oid: photo.oid,
-      });
+      const bytes = await call(
+        active,
+        () =>
+          active.client.base.moa.downloadPhoto({
+            chatId: chatMid,
+            albumId,
+            oid: photo.oid,
+          }),
+      );
       active.check();
       if (bytes.length > 50 * 1024 * 1024) {
         throw new Error("album_image_too_large");
@@ -218,7 +260,7 @@ export function createAlbumService(runtime: Runtime) {
         await Deno.remove(temporary).catch(() => {});
       }
       return { path, name: `album-${hash.slice(0, 16)}.${extension}` };
-    })();
+    });
     downloads.set(key, operation);
     try {
       return await operation;

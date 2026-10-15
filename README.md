@@ -17,6 +17,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [x] Chats, messages, stickers, friends
 - [x] メッセージ横の矢印ボタン・右クリックから引用付きのテキスト返信（リプライ）
 - [x] トークを「全部・友だち・グループ・公式アカウント」で絞り込み、カテゴリ内を検索
+- [x] アルバム一覧・写真の閲覧、拡大表示、原本の保存
 - [x] Photos, video, voice messages, files
 - [x] Paste and drag-and-drop attachments
 - [x] In-app viewers (image, video, PDF, text)
@@ -26,6 +27,10 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [ ] Account switcher
 
 メッセージ横の矢印ボタンを押すと引用元が選ばれ、そのまま入力欄で返信を書けます。右クリックの「リプライ」からも選べます。×ボタンまたはEscで取り消せます。別のトークへ移ると引用元を解除します。
+
+トーク上部の「アルバム」から、そのトークのアルバムを開けます。「すべてのトーク」で全体の一覧へ切り替えられ、トークを選んでいないときは最初から全体を表示します。アルバム内の写真を押すと拡大でき、写真ごとの「保存」や画像ビューアーのダウンロードボタンから原本を保存できます。保存先と保存ダイアログの有無は既存の写真ダウンロード設定に従います。通常保存は同名ファイルを上書きしません。
+
+写真は12件ずつ原本を取得し、同時取得は3枚までに制限します。取得済みの原本はメディアキャッシュとして再利用し、キャッシュ削除の対象になります。JPEG・PNG・GIF・WebPに対応し、原本は1枚50MBまでです。動画は未対応の表示を出し、アルバムの作成・写真の追加・削除は行いません。取得失敗時は「再試行」、情報が古くなった場合は更新ボタンを使えます。
 
 ---
 

@@ -14,6 +14,7 @@ function fixture(mediaDir: string) {
   let calls = 0;
   const cursors: string[] = [];
   const api = {
+    clearAlbumChannelToken: () => {},
     getAlbums: ({ cursor }: { cursor?: string }) => {
       cursors.push(cursor ?? "");
       return Promise.resolve({
@@ -223,11 +224,95 @@ Deno.test("画像でない応答や通信失敗を成功キャッシュとして
     await assertRejects(
       () => f.service.downloadPhoto("c-group", "1", "9223372036854775807"),
       Error,
-      "通信失敗",
+      "album_request_failed",
     );
     f.api.downloadPhoto = () => Promise.resolve(png);
     await f.service.downloadPhoto("c-group", "1", "9223372036854775807");
     assertEquals(Array.from(Deno.readDirSync(dir)).length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("通信失敗後はチャンネルトークンを破棄して明示的な再試行に備える", async () => {
+  const f = fixture("");
+  let cleared = 0;
+  f.api.clearAlbumChannelToken = () => {
+    cleared++;
+  };
+  const getAlbums = f.api.getAlbums;
+  f.api.getAlbums = () => Promise.reject(new Error("認証期限切れ"));
+  await assertRejects(
+    () => f.service.listAlbums("", ""),
+    Error,
+    "album_request_failed",
+  );
+  assertEquals(cleared, 1);
+  f.api.getAlbums = getAlbums;
+  assertEquals((await f.service.listAlbums("", "")).albums.length, 2);
+});
+
+Deno.test("画面を切り替えても原本の同時取得は3枚までで、失敗後も待機処理を進める", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const f = fixture(dir);
+    let active = 0;
+    let peak = 0;
+    f.api.downloadPhoto = async ({ albumId }) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (albumId === "0") throw new Error("通信失敗");
+        return png;
+      } finally {
+        active--;
+      }
+    };
+    for (let n = 0; n < 6; n++) {
+      await f.service.listPhotos("c-group", String(n), "");
+    }
+    const results = await Promise.allSettled(
+      Array.from(
+        { length: 6 },
+        (_, n) =>
+          f.service.downloadPhoto("c-group", String(n), "9223372036854775807"),
+      ),
+    );
+    assertEquals(peak, 3);
+    assertEquals(active, 0);
+    assertEquals(
+      results.filter((result) => result.status === "fulfilled").length,
+      5,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("原本取得中にアカウントが切り替わったら結果とファイルを残さない", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const f = fixture(dir);
+    await f.service.listPhotos("c-group", "1", "");
+    let finish!: () => void;
+    const started = new Promise<void>((ready) => {
+      f.api.downloadPhoto = () =>
+        new Promise<typeof png>((resolve) => {
+          finish = () => resolve(png);
+          ready();
+        });
+    });
+    const pending = f.service.downloadPhoto(
+      "c-group",
+      "1",
+      "9223372036854775807",
+    );
+    await started;
+    f.changeSession();
+    finish();
+    await assertRejects(() => pending, Error, "album_session_changed");
+    assertEquals(Array.from(Deno.readDirSync(dir)).length, 0);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
