@@ -198,3 +198,74 @@ Deno.test("新着のある一覧では古いプレビューを再取得の対象
     await Deno.remove(directory, { recursive: true });
   }
 });
+
+for (const route of ["plain", "encrypted", "chat"] as const) {
+  Deno.test(`返信先IDを${route}の送信経路でも維持する`, async () => {
+    const fixture = commandFixture("メモリ");
+    const calls: Record<string, unknown>[] = [];
+    const client = fixture.runtime.getClient()!;
+    client.base.talk.sendMessage = (options) => {
+      calls.push(options as Record<string, unknown>);
+      if (route === "chat" || (route === "encrypted" && !options.e2ee)) {
+        return Promise.reject(new Error("経路の検証"));
+      }
+      return Promise.resolve({ id: "9007199254740994" } as never);
+    };
+    client.getChat = (() =>
+      Promise.resolve({
+        sendMessage: (options: Record<string, unknown>) => {
+          calls.push(options);
+          return Promise.resolve({ raw: { id: "9007199254740994" } });
+        },
+      })) as unknown as typeof client.getChat;
+    const results: unknown[] = [];
+    const commands = createCommandService({
+      ...fixture.runtime,
+      summarizeTalkMessage: () =>
+        Promise.resolve({ id: "9007199254740994", text: "返信" }),
+      sentMessagePayload: () => ({ id: "9007199254740994", text: "返信" }),
+      ok: (_id, result) => results.push(result),
+    });
+    await commands.sendMessage(1, fixture.chat.mid, "返信", "9007199254740993");
+    assertEquals(
+      calls.length,
+      route === "plain" ? 1 : route === "encrypted" ? 2 : 3,
+    );
+    for (const call of calls) {
+      assertEquals(call.relatedMessageId, "9007199254740993");
+    }
+    assertEquals(
+      (results[0] as { message: { replyTo: unknown } }).message.replyTo,
+      { messageId: "9007199254740993" },
+    );
+  });
+}
+
+Deno.test("返信先が不正なら送信せず、送信失敗でも引用なしに変換しない", async () => {
+  const fixture = commandFixture("メモリ");
+  let sends = 0;
+  const failures: string[] = [];
+  const client = fixture.runtime.getClient()!;
+  client.base.talk.sendMessage = () => {
+    sends++;
+    return Promise.reject(new Error("送信不可"));
+  };
+  client.getChat = (() =>
+    Promise.resolve({
+      sendMessage: (options: { relatedMessageId?: string }) => {
+        sends++;
+        assertEquals(options.relatedMessageId, "42");
+        return Promise.reject(new Error("送信不可"));
+      },
+    })) as unknown as typeof client.getChat;
+  const commands = createCommandService({
+    ...fixture.runtime,
+    fail: (_id, error) => failures.push(error),
+  });
+  await commands.sendMessage(1, fixture.chat.mid, "返信", "pending-1");
+  assertEquals(sends, 0);
+  assertEquals(failures, ["invalid_reply_target"]);
+  await commands.sendMessage(2, fixture.chat.mid, "返信", "42");
+  assertEquals(sends, 3);
+  assertEquals(failures, ["invalid_reply_target", "送信不可"]);
+});

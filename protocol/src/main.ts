@@ -11,6 +11,7 @@ import { emailLoginError } from "./email_login.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { picturePathOf, profileUrl } from "./contacts.ts";
 import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
+import { replyToOf } from "./replies.ts";
 import { groupProfile } from "./groups.ts";
 import {
   DECRYPTION_FAILED,
@@ -756,11 +757,16 @@ async function summarizeTalkMessage(
     createdTime?: number | string | bigint;
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
+    relatedMessageId?: unknown;
+    messageRelationType?: unknown;
+    relatedMessageServiceCode?: unknown;
   };
+  const replyTo = replyToOf(raw);
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
   if (meta[DECRYPTION_FAILED] === "1") {
     return {
+      replyTo,
       id: String(raw.id ?? ""),
       text: "",
       from: raw.from ?? "",
@@ -780,6 +786,7 @@ async function summarizeTalkMessage(
   });
   if (callHistory) {
     return {
+      replyTo,
       id: String(raw.id ?? ""),
       from: raw.from ?? "",
       to: raw.to ?? "",
@@ -848,6 +855,7 @@ async function summarizeTalkMessage(
     }
     const flex = null;
     return {
+      replyTo,
       id,
       text: duration
         ? `Voice message (${Math.round(Number(duration) / 1000)}s)`
@@ -964,6 +972,7 @@ async function summarizeTalkMessage(
   const flex = contentType === "FLEX" ? extractFlex(meta) : null;
 
   return {
+    replyTo,
     id,
     text,
     from: raw.from ?? "",
@@ -1017,6 +1026,7 @@ async function summarizeRawMessage(
       else if (contentType !== "NONE") text = `[${contentType}]`;
     }
     return {
+      replyTo: replyToOf(r),
       id: String(r.id ?? ""),
       text: callHistory ? "" : text,
       callHistory,
@@ -1761,6 +1771,7 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.text ?? ""),
+          params.replyToMessageId,
         );
         break;
       case "send_audio":

@@ -1,3 +1,4 @@
+import { withReplyPreviews } from "./replies.ts";
 import { isMediaType } from "./messages.ts";
 import { callHistoryOf, callHistoryPreview } from "./call_history.ts";
 import { join } from "@std/path";
@@ -175,7 +176,8 @@ export function createMessageView(runtime: MessageViewRuntime) {
 
   /** Serve disk-cached stickers/thumbs immediately; only hydrate misses. */
   async function forUiMessages(messages: Json[]): Promise<Json[]> {
-    return await Promise.all(messages.map(async (m) => {
+    const prepared = withReplyPreviews(messages);
+    return await Promise.all(prepared.map(async (m) => {
       if (m.decryptionFailed === true) return { ...m, needsMedia: false };
       const callHistory = callHistoryOf(m);
       if (callHistory) {
