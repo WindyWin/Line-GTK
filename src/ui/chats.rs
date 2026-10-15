@@ -267,8 +267,6 @@ pub(super) fn build_chat_row(
     let avatar = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)
         .can_shrink(true)
-        .width_request(avatar_px)
-        .height_request(avatar_px)
         .css_classes(["line-avatar"])
         .build();
     if let Some(path) = chat.avatar_path.as_deref()
@@ -276,14 +274,16 @@ pub(super) fn build_chat_row(
     {
         attach_texture_async(avatar.clone(), path.to_string(), avatar_px * 2);
     }
-    avatar_frame.append(&avatar);
-
     let avatar_overlay = gtk::Overlay::builder()
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .css_classes(["line-avatar-overlay"])
         .build();
     avatar_overlay.set_child(Some(&avatar_frame));
+    // 画像の解像度・縦横比を行の寸法に反映せず、表示枠に収める。
+    avatar_overlay.add_overlay(&avatar);
+    avatar_overlay.set_measure_overlay(&avatar, false);
+    avatar_overlay.set_clip_overlay(&avatar, true);
 
     let badge = gtk::Label::builder()
         .label(if chat.unread > 0 {

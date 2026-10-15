@@ -864,12 +864,6 @@ fn set_avatar_tier(overlay: &gtk::Overlay, compact: bool) {
     {
         frame.set_width_request(px);
         frame.set_height_request(px);
-        if let Some(pic_w) = frame.first_child()
-            && let Ok(pic) = pic_w.downcast::<gtk::Picture>()
-        {
-            pic.set_width_request(px);
-            pic.set_height_request(px);
-        }
     }
 }
 
