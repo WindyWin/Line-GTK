@@ -1,6 +1,7 @@
 mod call_history;
 mod call_window;
 mod calls;
+mod chat_filter;
 mod chats;
 mod composer_media;
 mod diagnostics;
@@ -203,6 +204,11 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         friends_ui: Rc::new(RefCell::new(None)),
         side_title: shell.side_title,
         search_entry: shell.search_entry,
+        chat_filter_bar: shell.chat_filter_bar,
+        chat_filter_buttons: shell.chat_filter_buttons,
+        compact_filter_btn: shell.compact_filter_btn,
+        chat_category: Rc::new(RefCell::new(chat_filter::ChatCategory::default())),
+        chat_query: Rc::new(RefCell::new(String::new())),
         compact_search_btn: shell.compact_search_btn,
         compact_search_entry: shell.compact_search_entry,
         sidebar: shell.sidebar,
@@ -250,6 +256,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     };
 
     read_pause::wire(&state);
+    chat_filter::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
@@ -789,6 +796,8 @@ fn apply_sidebar_compact(state: &AppState, width: i32) {
             }
         }
         state.search_entry.set_visible(!compact);
+        state.chat_filter_bar.set_visible(!compact);
+        state.compact_filter_btn.set_visible(compact);
         state.side_title.set_visible(!compact);
         state.side_header.set_visible(!compact);
         state.compact_search_btn.set_visible(compact);
@@ -1081,6 +1090,7 @@ fn apply_ui_language(state: &AppState) {
         .update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
             "type_message",
         ))]);
+    chat_filter::apply_language(state);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1157,6 +1167,7 @@ fn apply_ui_language(state: &AppState) {
             label.set_text(&chat.preview);
         }
     }
+    chat_filter::refresh(state);
     refresh_read_labels(state);
     refresh_tray_menu(state);
     sync_discord_rpc(state);
