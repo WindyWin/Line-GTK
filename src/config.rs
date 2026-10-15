@@ -1,7 +1,7 @@
 use gtk::CssProvider;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,8 @@ pub struct AppConfig {
     pub auto_mark_read: bool,
     /// このアプリからの既読通知を停止する。
     pub pause_read_receipts: bool,
+    /// アカウントごとに既読通知を止めるトークID。
+    pub read_receipts_paused_chats: BTreeMap<String, BTreeSet<String>>,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
     /// アカウントごとの非表示トーク（トークID → 復元画面用の名前）。
@@ -81,6 +83,7 @@ impl Default for AppConfig {
             notification_sound_volume: 1.0,
             auto_mark_read: true,
             pause_read_receipts: false,
+            read_receipts_paused_chats: BTreeMap::new(),
             last_chat_mid: String::new(),
             hidden_chats: BTreeMap::new(),
             audio_input: String::new(),
@@ -152,6 +155,51 @@ impl AppConfig {
 
     pub fn can_mark_read(&self) -> bool {
         self.auto_mark_read && !self.pause_read_receipts
+    }
+
+    pub fn chat_read_receipts_paused(&self, account: &str, mid: &str) -> bool {
+        self.read_receipts_paused_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains(mid))
+    }
+
+    pub fn can_mark_chat_read(&self, account: &str, mid: &str) -> bool {
+        !account.is_empty()
+            && !mid.is_empty()
+            && self.can_mark_read()
+            && !self.chat_read_receipts_paused(account, mid)
+    }
+
+    pub fn set_chat_read_receipts_paused(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        paused: bool,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.read_receipts_paused_chats.clone();
+        if paused {
+            self.read_receipts_paused_chats
+                .entry(account.into())
+                .or_default()
+                .insert(mid.into());
+        } else if let Some(chats) = self.read_receipts_paused_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.read_receipts_paused_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.read_receipts_paused_chats = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn set_read_receipts_paused(
@@ -259,6 +307,10 @@ impl AppConfig {
         self.call_spk_volume = finite_or(self.call_spk_volume, 1.0).clamp(0.0, 2.5);
         self.sidebar_width = self.sidebar_width.clamp(80, 520);
         self.notifications_muted_until = self.notifications_muted_until.max(0);
+        self.read_receipts_paused_chats.retain(|account, chats| {
+            chats.retain(|mid| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
         self.hidden_chats.retain(|account, chats| {
             chats.retain(|mid, _| !mid.trim().is_empty());
             !account.trim().is_empty() && !chats.is_empty()
@@ -491,6 +543,57 @@ mod tests {
         assert!(cfg.is_chat_hidden("u-self", "u-friend"));
         assert!(AppConfig::load(&dir).is_chat_hidden("u-self", "u-friend"));
         assert!(cfg.set_chat_hidden(&dir, "", "u-friend", None).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn per_chat_read_pause_is_persistent_and_account_scoped() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-chat-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.can_mark_chat_read("u-self", "u-friend"));
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        let mut cfg = AppConfig::load(&dir);
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        assert!(cfg.can_mark_chat_read("u-self", "u-other"));
+        assert!(cfg.can_mark_chat_read("u-another-account", "u-friend"));
+        assert!(!cfg.can_mark_chat_read("", "u-friend"));
+        cfg.pause_read_receipts = true;
+        assert!(!cfg.can_mark_chat_read("u-self", "u-other"));
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", false)
+            .unwrap();
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        cfg.pause_read_receipts = false;
+        cfg.auto_mark_read = false;
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        assert!(cfg.read_receipts_paused_chats.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn per_chat_read_pause_rolls_back_both_changes_on_save_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-chat-read-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig::default();
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+                .is_err()
+        );
+        assert!(!cfg.chat_read_receipts_paused("u-self", "u-friend"));
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", false)
+                .is_err()
+        );
+        assert!(cfg.chat_read_receipts_paused("u-self", "u-friend"));
+        assert!(AppConfig::load(&dir).chat_read_receipts_paused("u-self", "u-friend"));
         fs::remove_dir_all(dir).unwrap();
     }
 

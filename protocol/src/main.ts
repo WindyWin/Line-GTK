@@ -386,8 +386,8 @@ const commands = createCommandService({
   hydratePreviews,
   updateChatPreview: chatPreviews.updateFromMessages,
   refreshReadReceipts: readReceipts.refresh,
-  readReceiptPermission: () =>
-    readReceiptPermission(join(dataDir, "settings.json")),
+  readReceiptPermission: (chatMid) =>
+    readReceiptPermission(join(dataDir, "settings.json"), myMid(), chatMid),
   bumpMediaEpoch,
   loadDiskMessages,
   saveDiskMessages,

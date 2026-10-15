@@ -63,7 +63,7 @@ export type CommandRuntime = {
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
   updateChatPreview: (chatMid: string, messages: Json[]) => Promise<void>;
   refreshReadReceipts: (chatMid: string) => Promise<void>;
-  readReceiptPermission: () => Promise<ReadPermission>;
+  readReceiptPermission: (chatMid: string) => Promise<ReadPermission>;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
   saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
@@ -175,7 +175,7 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
     try {
-      let permission = await runtime.readReceiptPermission();
+      let permission = await runtime.readReceiptPermission(chatMid);
       if (permission !== "allowed") {
         ok(id, { marked: false, skipped: permission });
         return;
@@ -185,7 +185,7 @@ export function createCommandService(runtime: CommandRuntime) {
         ? await requestSequence.call(client.base)
         : Number(requestSequence);
       // 順序番号の取得を待つ間にスイッチをオンにされた場合も送信しない。
-      permission = await runtime.readReceiptPermission();
+      permission = await runtime.readReceiptPermission(chatMid);
       if (permission !== "allowed" || runtime.getClient() !== client) {
         ok(id, {
           marked: false,

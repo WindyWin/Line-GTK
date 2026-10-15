@@ -4,6 +4,7 @@ import { type CommandRuntime, createCommandService } from "../src/commands.ts";
 import { policyFor } from "../src/cache_policy.ts";
 import { createChatPreviews } from "../src/chat_previews.ts";
 import { atomicWriteJson } from "../src/storage.ts";
+import { readReceiptPermission } from "../src/read_policy.ts";
 
 type Json = Record<string, unknown>;
 
@@ -247,6 +248,55 @@ Deno.test("停止と自動既読オフの解除後は、新しい要求だけ既
   await fixture.commands.markRead(2, fixture.chat.mid, "50");
   assertEquals(fixture.marks(), 1);
   assertEquals(fixture.chat.unread, 0);
+});
+
+Deno.test("友だち別の保存済み停止をRPC直前にも確認し、他の相手は通常どおり送る", async () => {
+  const directory = await Deno.makeTempDir();
+  const path = `${directory}/settings.json`;
+  const fixture = commandFixture("通信");
+  const settings = {
+    read_receipts_paused_chats: {} as Record<string, string[]>,
+  };
+  const save = () => Deno.writeTextFile(path, JSON.stringify(settings));
+  fixture.chat.unread = 3;
+  fixture.runtime.readReceiptPermission = (mid) =>
+    readReceiptPermission(path, "u-self", mid);
+  try {
+    settings.read_receipts_paused_chats["u-self"] = [fixture.chat.mid];
+    await save();
+    await fixture.commands.markRead(1, fixture.chat.mid, "50");
+    assertEquals(fixture.marks(), 0);
+    assertEquals(fixture.chat.unread, 3);
+    assertEquals(fixture.okResults.at(-1), {
+      marked: false,
+      skipped: "chat_paused",
+    });
+    await fixture.commands.markRead(2, "u-other", "50");
+    assertEquals(fixture.marks(), 1);
+    settings.read_receipts_paused_chats = {};
+    await save();
+    fixture.setSequenceHook(async () => {
+      settings.read_receipts_paused_chats["u-self"] = [fixture.chat.mid];
+      await save();
+      return 1;
+    });
+    await fixture.commands.markRead(3, fixture.chat.mid, "51");
+    assertEquals(fixture.marks(), 1);
+    assertEquals(fixture.chat.unread, 3);
+    assertEquals(fixture.okResults.at(-1), {
+      marked: false,
+      skipped: "chat_paused",
+    });
+    settings.read_receipts_paused_chats = {};
+    await save();
+    assertEquals(fixture.marks(), 1);
+    fixture.setSequenceHook(() => Promise.resolve(1));
+    await fixture.commands.markRead(4, fixture.chat.mid, "52");
+    assertEquals(fixture.marks(), 2);
+    assertEquals(fixture.chat.unread, 0);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
 });
 
 for (const route of ["plain", "encrypted", "chat"] as const) {
