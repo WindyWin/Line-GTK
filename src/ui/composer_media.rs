@@ -323,6 +323,7 @@ pub(super) fn send_sticker_now(
                     flex: None,
                     call_history: None,
                     decryption_failed: false,
+                    reply_to: None,
                 },
             );
             dismiss_new_marker(state);
@@ -667,6 +668,7 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                     flex: None,
                     call_history: None,
                     decryption_failed: false,
+                    reply_to: None,
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));
@@ -883,6 +885,7 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                     flex: None,
                     call_history: None,
                     decryption_failed: false,
+                    reply_to: None,
                 },
             );
             show_upload_progress(state, 0.02, &crate::i18n::t("media_uploading"));

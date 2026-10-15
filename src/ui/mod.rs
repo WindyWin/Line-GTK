@@ -11,6 +11,7 @@ mod login;
 mod media;
 mod messages;
 mod notifications;
+mod replies;
 mod settings;
 mod shell;
 mod state;
@@ -136,6 +137,10 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
         composer: shell.composer,
+        reply_preview: shell.reply_preview,
+        reply_title: shell.reply_title,
+        reply_text: shell.reply_text,
+        reply_cancel: shell.reply_cancel,
         composer_row: shell.composer_row,
         conversation: shell.conversation,
         send_btn: shell.send_btn,
@@ -157,6 +162,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_load_label: shell.msg_load_label,
         msg_idle: shell.msg_idle,
         current_chat: Rc::new(RefCell::new(None)),
+        reply_target: Rc::new(RefCell::new(None)),
+        reply_messages: Rc::new(RefCell::new(HashMap::new())),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
@@ -243,6 +250,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     wire_sidebar(&state);
     wire_composer_narrow(&state);
     wire_actions(&state);
+    replies::wire(&state);
     wire_scroll_pin(&state);
     wire_notification_actions(&state);
     sync_tray(&state);
@@ -959,7 +967,17 @@ fn send_current(state: &AppState) {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
     };
-    match state.sidecar.send_message(&chat_mid, &text) {
+    let reply_to = state
+        .reply_target
+        .borrow()
+        .as_ref()
+        .filter(|target| target.chat_mid == chat_mid)
+        .map(|target| target.quote.clone());
+    match state.sidecar.send_reply(
+        &chat_mid,
+        &text,
+        reply_to.as_ref().map(|quote| quote.message_id.as_str()),
+    ) {
         Ok(id) => {
             begin_optimistic_send(
                 state,
@@ -981,8 +999,10 @@ fn send_current(state: &AppState) {
                     flex: None,
                     call_history: None,
                     decryption_failed: false,
+                    reply_to,
                 },
             );
+            replies::cancel(state);
             state.composer.set_text("");
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
@@ -1005,6 +1025,7 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
     if let Some(row) = state.pending_rows.borrow_mut().remove(placeholder_id) {
         state.message_list.remove(&row);
     }
+    state.reply_messages.borrow_mut().remove(placeholder_id);
     state.seen_msg_ids.borrow_mut().remove(placeholder_id);
     state.media_slots.borrow_mut().remove(placeholder_id);
     state.media_msgs.borrow_mut().remove(placeholder_id);
@@ -1030,6 +1051,11 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         Pending::Send {
             chat_mid: chat_mid.into(),
             placeholder_id,
+            reply_draft: msg.reply_to.clone().map(|quote| replies::ReplyDraft {
+                chat_mid: chat_mid.into(),
+                text: msg.text.clone(),
+                quote,
+            }),
         },
     );
 }
@@ -1043,6 +1069,12 @@ fn apply_ui_language(state: &AppState) {
     ) {
         tracing::warn!(%error, "プレビューの言語を更新できませんでした");
     }
+    replies::refresh(state);
+    state
+        .composer
+        .update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
+            "type_message",
+        ))]);
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1257,6 +1289,7 @@ fn wire_actions(state: &AppState) {
     let esc = gtk::EventControllerKey::new();
     esc.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
+            replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
@@ -1266,9 +1299,10 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     let esc_win = gtk::EventControllerKey::new();
-    esc_win.set_propagation_phase(gtk::PropagationPhase::Capture);
+    esc_win.set_propagation_phase(gtk::PropagationPhase::Bubble);
     esc_win.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape && state_chat_open(&s) {
+            replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
