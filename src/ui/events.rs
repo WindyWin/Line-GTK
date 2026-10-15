@@ -519,6 +519,25 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::Album {
+                ui,
+                generation,
+                request,
+            }) = pending
+            {
+                if let Some(ui) = ui.upgrade() {
+                    albums::response(
+                        state,
+                        &ui,
+                        generation,
+                        request,
+                        ok,
+                        &result,
+                        error.as_deref(),
+                    );
+                }
+                return;
+            }
             if !ok {
                 if matches!(pending, Some(Pending::Login | Pending::LoginEmail))
                     && *state.restarting.borrow()
@@ -669,11 +688,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
-                None => {}
+                Some(Pending::Album { .. }) | None => {}
             }
         }
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
+            albums::close(state);
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -725,6 +745,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    albums::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
@@ -798,6 +819,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    albums::close(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);
     state.login.hint.set_text(hint);

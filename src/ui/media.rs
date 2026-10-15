@@ -281,6 +281,19 @@ pub(super) fn open_media_viewer(
     content_type: &str,
     suggest_name: &str,
 ) {
+    open_media_viewer_for(state, &state.window, path, content_type, suggest_name, None);
+}
+
+type ViewerSaveAction = Rc<dyn Fn(&gtk::Window)>;
+
+pub(super) fn open_media_viewer_for(
+    state: &AppState,
+    parent: &impl IsA<gtk::Window>,
+    path: &str,
+    content_type: &str,
+    suggest_name: &str,
+    on_save: Option<ViewerSaveAction>,
+) {
     let kind = viewer_kind_for(content_type, path, suggest_name);
     let (def_w, def_h) = match kind {
         ViewerKind::Video => (1100, 720),
@@ -290,7 +303,8 @@ pub(super) fn open_media_viewer(
     };
 
     let win = gtk::Window::builder()
-        .transient_for(&state.window)
+        .transient_for(parent)
+        .destroy_with_parent(true)
         .modal(true)
         .title(crate::i18n::t("media_viewer_title"))
         .default_width(def_w)
@@ -390,8 +404,13 @@ pub(super) fn open_media_viewer(
         let path = path.to_string();
         let name = suggest_name.to_string();
         let ct = content_type.to_string();
+        let parent = win.clone();
         dl.connect_clicked(move |_| {
-            save_media_as(&s, &path, &name, &ct);
+            if let Some(save) = &on_save {
+                save(&parent);
+            } else {
+                save_media_as(&s, &path, &name, &ct);
+            }
         });
     }
 

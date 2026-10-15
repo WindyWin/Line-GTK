@@ -42,6 +42,7 @@ pub struct ShellWidgets {
     pub msg_idle: gtk::Label,
     pub settings_btn: gtk::Button,
     pub friends_btn: gtk::Button,
+    pub album_btn: gtk::Button,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
     pub chat_filter_bar: gtk::Box,
@@ -351,6 +352,13 @@ pub fn build_shell_page() -> ShellWidgets {
         .sensitive(false)
         .build();
     chat_bar.append(&title_col);
+    let album_btn = gtk::Button::builder()
+        .icon_name("folder-pictures-symbolic")
+        .label(crate::i18n::t("albums"))
+        .tooltip_text(crate::i18n::t("albums"))
+        .css_classes(["flat"])
+        .build();
+    chat_bar.append(&album_btn);
     chat_bar.append(&mute_btn);
     chat_bar.append(&call_btn);
 
@@ -675,6 +683,7 @@ pub fn build_shell_page() -> ShellWidgets {
         msg_idle,
         settings_btn,
         friends_btn,
+        album_btn,
         side_title,
         search_entry,
         chat_filter_bar,
@@ -706,6 +715,7 @@ pub fn load_css() {
 .line-reply-quote { border-left: 3px solid @accent_bg_color; padding: 4px 8px; background: alpha(@accent_bg_color, 0.08); border-radius: 4px; }
 .line-reply-preview { border-left: 3px solid @accent_bg_color; padding: 8px 10px; background: alpha(@accent_bg_color, 0.10); border-radius: 8px; }
 .line-reply-button { min-width: 28px; min-height: 28px; padding: 0; color: @accent_color; }
+.line-album-photo { border-radius: 12px; padding: 4px; }
 
         .line-shell {
             background: @window_bg_color;

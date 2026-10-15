@@ -1,3 +1,4 @@
+mod albums;
 mod call_history;
 mod call_window;
 mod calls;
@@ -201,6 +202,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         config,
         settings_btn: shell.settings_btn,
         friends_btn: shell.friends_btn,
+        album_btn: shell.album_btn,
+        album_ui: Rc::new(RefCell::new(None)),
         friends_ui: Rc::new(RefCell::new(None)),
         side_title: shell.side_title,
         search_entry: shell.search_entry,
@@ -256,6 +259,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     };
 
     read_pause::wire(&state);
+    albums::wire(&state);
     chat_filter::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
@@ -1085,6 +1089,10 @@ fn apply_ui_language(state: &AppState) {
             "type_message",
         ))]);
     chat_filter::apply_language(state);
+    state.album_btn.set_label(&crate::i18n::t("albums"));
+    state
+        .album_btn
+        .set_tooltip_text(Some(&crate::i18n::t("albums")));
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
@@ -1375,6 +1383,7 @@ fn wire_actions(state: &AppState) {
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
+                    albums::close(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
@@ -1411,6 +1420,7 @@ fn wire_actions(state: &AppState) {
             on_experimental_calls: {
                 let s2 = s.clone();
                 Rc::new(move |_on: bool| {
+                    albums::close(&s2);
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
@@ -1710,6 +1720,7 @@ fn restart_qr_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    albums::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
     *state.login.error.borrow_mut() = None;

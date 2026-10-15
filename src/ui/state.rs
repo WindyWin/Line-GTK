@@ -99,6 +99,8 @@ pub(super) struct AppState {
     pub config: Rc<RefCell<AppConfig>>,
     pub settings_btn: gtk::Button,
     pub friends_btn: gtk::Button,
+    pub album_btn: gtk::Button,
+    pub album_ui: Rc<RefCell<Option<Rc<super::albums::AlbumUi>>>>,
     pub friends_ui: Rc<RefCell<Option<friends::FriendsUi>>>,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
@@ -162,6 +164,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    Album {
+        ui: std::rc::Weak<super::albums::AlbumUi>,
+        generation: u64,
+        request: super::albums::AlbumRequest,
+    },
     Login,
     LoginEmail,
     ListChats,
