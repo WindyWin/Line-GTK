@@ -103,6 +103,7 @@ pub(super) struct AppState {
     pub friends_btn: gtk::Button,
     pub album_btn: gtk::Button,
     pub album_ui: Rc<RefCell<Option<Rc<super::albums::AlbumUi>>>>,
+    pub hidden_chats_ui: Rc<RefCell<Option<super::hidden_chats::HiddenChatsUi>>>,
     pub friends_ui: Rc<RefCell<Option<friends::FriendsUi>>>,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,

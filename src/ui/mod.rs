@@ -9,6 +9,7 @@ mod diagnostics;
 mod downloads;
 mod events;
 mod friends;
+mod hidden_chats;
 mod login;
 mod media;
 mod message_senders;
@@ -207,6 +208,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         friends_btn: shell.friends_btn,
         album_btn: shell.album_btn,
         album_ui: Rc::new(RefCell::new(None)),
+        hidden_chats_ui: Rc::new(RefCell::new(None)),
         friends_ui: Rc::new(RefCell::new(None)),
         side_title: shell.side_title,
         search_entry: shell.search_entry,
@@ -264,6 +266,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     read_pause::wire(&state);
     albums::wire(&state);
     chat_filter::wire(&state);
+    hidden_chats::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
@@ -524,6 +527,7 @@ fn refresh_tray_menu(state: &AppState) {
     chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
     let recent: Vec<crate::tray::TrayChatItem> = chats
         .into_iter()
+        .filter(|chat| !hidden_chats::is_hidden(state, &chat.mid))
         .take(8)
         .map(|c| crate::tray::TrayChatItem {
             mid: c.mid,
@@ -1387,6 +1391,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move || {
                     albums::close(&s2);
+                    hidden_chats::close(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
@@ -1424,6 +1429,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
+                    hidden_chats::close(&s2);
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
@@ -1451,6 +1457,10 @@ fn wire_actions(state: &AppState) {
                         );
                     }
                 })
+            },
+            on_hidden_chats: {
+                let s2 = s.clone();
+                Rc::new(move |parent| hidden_chats::open(&s2, parent))
             },
             on_tray_settings: {
                 let s2 = s.clone();
@@ -1615,6 +1625,11 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         return;
     }
 
+    if hidden_chats::is_hidden(state, &chat.mid) {
+        toast(state, &crate::i18n::t("hidden_chat_open_hint"));
+        return;
+    }
+
     let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
     if already_open {
         // Tap again while already open: mark read without reloading the thread.
@@ -1724,6 +1739,7 @@ fn restart_qr_login(state: &AppState) {
 
 fn restart_login(state: &AppState) {
     albums::close(state);
+    hidden_chats::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
     *state.login.error.borrow_mut() = None;

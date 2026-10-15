@@ -424,5 +424,15 @@
   "album_image_too_large": "This image is too large to display (50 MB limit)",
   "album_other_chat": "Other chat",
   "message_sender_unknown": "Unknown sender",
-  "message_sender_pending": "Member ({id})"
+  "message_sender_pending": "Member ({id})",
+  "hide_chat": "Hide",
+  "hidden_chats": "Hidden chats",
+  "hidden_chats_subtitle": "Restore hidden chats to the chat list",
+  "hidden_chats_description": "Hidden from this PC’s chat list. History is kept and new messages stay hidden. Notification settings are unchanged.",
+  "hidden_chats_empty": "No hidden chats",
+  "unhide_chat": "Show",
+  "hidden_chat_done": "Chat hidden",
+  "hidden_chat_restored": "Chat restored to the list",
+  "hidden_chat_save_failed": "Could not save settings. No changes were applied.",
+  "hidden_chat_open_hint": "Restore this chat in Settings → Features → Hidden chats"
 }

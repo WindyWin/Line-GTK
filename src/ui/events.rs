@@ -695,6 +695,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
             albums::close(state);
+            hidden_chats::close(state);
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -748,6 +749,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    hidden_chats::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
@@ -823,6 +825,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 pub(super) fn show_login(state: &AppState, hint: &str) {
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    hidden_chats::close(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);
     state.login.hint.set_text(hint);

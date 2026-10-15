@@ -424,5 +424,15 @@
   "album_image_too_large": "画像が大きすぎるため表示できません（上限50MB）",
   "album_other_chat": "別のトーク",
   "message_sender_unknown": "送信者不明",
-  "message_sender_pending": "メンバー ({id})"
+  "message_sender_pending": "メンバー ({id})",
+  "hide_chat": "非表示",
+  "hidden_chats": "非表示のトーク",
+  "hidden_chats_subtitle": "非表示にしたトークを一覧に戻します",
+  "hidden_chats_description": "このPCのトーク一覧から非表示にしています。履歴は残り、新着が届いても非表示を維持します。通知の設定は変わりません。",
+  "hidden_chats_empty": "非表示のトークはありません",
+  "unhide_chat": "再表示",
+  "hidden_chat_done": "トークを非表示にしました",
+  "hidden_chat_restored": "トークを一覧に戻しました",
+  "hidden_chat_save_failed": "設定を保存できませんでした。変更は適用していません。",
+  "hidden_chat_open_hint": "設定 → 機能 → 非表示のトークから再表示できます"
 }

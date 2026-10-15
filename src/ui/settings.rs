@@ -17,6 +17,7 @@ pub struct SettingsDeps {
     pub on_lang: Rc<dyn Fn()>,
     pub on_animations: Rc<dyn Fn(bool)>,
     pub on_experimental_calls: Rc<dyn Fn(bool)>,
+    pub on_hidden_chats: Rc<dyn Fn(&gtk::Window)>,
     pub on_tray_settings: Rc<dyn Fn()>,
     pub on_discord_rpc: Rc<dyn Fn()>,
     pub toast: Rc<dyn Fn(&str)>,
@@ -374,6 +375,22 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("features_chat"))
         .description(i18n::t("features_chat_desc"))
         .build();
+    let hidden_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("hidden_chats"))
+        .subtitle(i18n::t("hidden_chats_subtitle"))
+        .activatable(true)
+        .build();
+    hidden_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    {
+        let on_hidden_chats = deps.on_hidden_chats.clone();
+        let weak = win.downgrade();
+        hidden_row.connect_activated(move |_| {
+            if let Some(win) = weak.upgrade() {
+                on_hidden_chats(win.upcast_ref());
+            }
+        });
+    }
+    chat_grp.add(&hidden_row);
     let notif_row = libadwaita::SwitchRow::builder()
         .title(i18n::t("notifications"))
         .subtitle(i18n::t("notifications_subtitle"))

@@ -51,6 +51,7 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
     }
     chat_filter::refresh(state);
     refresh_tray_menu(state);
+    hidden_chats::refresh(state);
 }
 
 pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
@@ -216,7 +217,7 @@ pub(super) fn maybe_restore_last_chat(state: &AppState) {
         return;
     }
     let last = state.config.borrow().last_chat_mid.clone();
-    if last.is_empty() {
+    if last.is_empty() || hidden_chats::is_hidden(state, &last) {
         *state.restored_last_chat.borrow_mut() = true;
         return;
     }
@@ -352,6 +353,7 @@ pub(super) fn build_chat_row(
     box_.append(&avatar_overlay);
     box_.append(&text_col);
     row.set_child(Some(&box_));
+    hidden_chats::wire_context(&row, &chat.mid);
     (row, avatar, preview, badge)
 }
 
