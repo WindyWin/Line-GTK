@@ -439,5 +439,6 @@
   "chat_read_pause_disable": "Resume read receipts for this friend",
   "chat_read_pause_active": "Read receipts paused for this friend",
   "chat_read_pause_enabled": "Read receipts paused for this friend",
-  "chat_read_pause_disabled": "Read receipts will resume on your next normal interaction"
+  "chat_read_pause_disabled": "Read receipts will resume on your next normal interaction",
+  "insert_emoji": "Insert emoji"
 }

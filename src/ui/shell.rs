@@ -446,6 +446,8 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     let composer = gtk::Entry::builder()
         .placeholder_text("Type a message…")
+        .show_emoji_icon(true)
+        .enable_emoji_completion(true)
         .hexpand(true)
         .valign(gtk::Align::Center)
         .css_classes(["line-composer-entry"])
@@ -717,6 +719,7 @@ pub fn load_css() {
 .line-reply-preview { border-left: 3px solid @accent_bg_color; padding: 8px 10px; background: alpha(@accent_bg_color, 0.10); border-radius: 8px; }
 .line-reply-button { min-width: 28px; min-height: 28px; padding: 0; color: @accent_color; }
 .line-album-photo { border-radius: 12px; padding: 4px; }
+.line-emoji-text, .line-emoji-text text { background: transparent; color: inherit; padding: 0; }
 
         .line-shell {
             background: @window_bg_color;

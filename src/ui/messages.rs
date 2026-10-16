@@ -233,7 +233,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             && msg.text != "[Sticker]"
             && !is_sticker;
 
-        if show_text {
+        if show_text && !msg.emojis.is_empty() {
+            emojis::append(state, &bubble, msg);
+            append_link_chips(state, &bubble, &msg.text);
+        } else if show_text {
             let label = gtk::Label::builder()
                 .label(&msg.text)
                 .xalign(0.0)
@@ -1035,6 +1038,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
+        emojis: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
         from: String::new(),
@@ -1269,6 +1273,10 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    state.emoji_views.borrow_mut().clear();
+    if state.emoji_textures.borrow().len() > 1024 {
+        state.emoji_textures.borrow_mut().clear();
+    }
     let changed_chat = state.reply_target.borrow().as_ref().is_some_and(|target| {
         state.current_chat.borrow().as_deref() != Some(target.chat_mid.as_str())
     });

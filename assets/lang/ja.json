@@ -439,5 +439,6 @@
   "chat_read_pause_disable": "この友だちの既読停止を解除",
   "chat_read_pause_active": "この友だちは既読をつけない：オン",
   "chat_read_pause_enabled": "この友だちには既読をつけません",
-  "chat_read_pause_disabled": "この友だちの既読停止を解除しました。次の通常操作から再開します"
+  "chat_read_pause_disabled": "この友だちの既読停止を解除しました。次の通常操作から再開します",
+  "insert_emoji": "絵文字を選ぶ"
 }

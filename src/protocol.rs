@@ -117,7 +117,16 @@ pub struct ReplyInfo {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LineEmoji {
+    pub start: usize,
+    pub end: usize,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MessageInfo {
+    #[serde(default)]
+    pub emojis: Vec<LineEmoji>,
     #[serde(rename = "replyTo", default)]
     pub reply_to: Option<ReplyInfo>,
     #[serde(default)]
@@ -192,6 +201,10 @@ pub enum ProtocolEvent {
     SenderProfile {
         mid: String,
         name: String,
+    },
+    EmojiReady {
+        key: String,
+        path: String,
     },
     FriendsUpdated {
         friends: Vec<ChatInfo>,

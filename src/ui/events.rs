@@ -281,6 +281,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
         }
         ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
+        ProtocolEvent::EmojiReady { key, path } => emojis::ready(state, key, path),
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());

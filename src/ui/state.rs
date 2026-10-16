@@ -155,6 +155,8 @@ pub(super) struct AppState {
     pub msg_list_fp: Rc<RefCell<Option<MessageListFingerprint>>>,
     pub notif_pending: Rc<RefCell<HashMap<String, PendingNotif>>>,
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
+    pub emoji_views: Rc<RefCell<Vec<super::emojis::EmojiText>>>,
+    pub emoji_textures: Rc<RefCell<HashMap<String, gtk::gdk::Texture>>>,
 }
 
 #[derive(Debug, Clone)]

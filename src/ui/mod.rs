@@ -7,6 +7,7 @@ mod chats;
 mod composer_media;
 mod diagnostics;
 mod downloads;
+mod emojis;
 mod events;
 mod friends;
 mod hidden_chats;
@@ -261,6 +262,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_list_fp: Rc::new(RefCell::new(None)),
         notif_pending: Rc::new(RefCell::new(HashMap::new())),
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
+        emoji_views: Rc::new(RefCell::new(Vec::new())),
+        emoji_textures: Rc::new(RefCell::new(HashMap::new())),
     };
 
     read_pause::wire(&state);
@@ -1003,6 +1006,7 @@ fn send_current(state: &AppState) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    emojis: Vec::new(),
                     id: String::new(),
                     text,
                     from: String::new(),
@@ -1104,6 +1108,10 @@ fn apply_ui_language(state: &AppState) {
     state
         .composer
         .set_placeholder_text(Some(&crate::i18n::t("type_message")));
+    state.composer.set_icon_tooltip_text(
+        gtk::EntryIconPosition::Secondary,
+        Some(&crate::i18n::t("insert_emoji")),
+    );
     if *state.composer_narrow.borrow() {
         state.send_btn.set_label("");
         state.send_btn.set_icon_name("mail-send-symbolic");

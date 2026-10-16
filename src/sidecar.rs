@@ -581,6 +581,20 @@ fn read_loop<R: std::io::Read>(
                                 .unwrap_or_default()
                                 .to_string(),
                         },
+                        "emoji_ready" => ProtocolEvent::EmojiReady {
+                            key: resp
+                                .extra
+                                .get("key")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .into(),
+                            path: resp
+                                .extra
+                                .get("path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .into(),
+                        },
                         "session_failed" => ProtocolEvent::SessionFailed {
                             error: resp
                                 .extra
@@ -1020,6 +1034,19 @@ mod authentication_tests {
             }
             _ => panic!("既読範囲のイベントではありません"),
         }
+    }
+
+    #[test]
+    fn emoji_ready_keeps_the_asset_key_and_cache_path() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event = b"{\"event\":\"emoji_ready\",\"key\":\"5ac1bfd5040ab15980c9b435_001\",\"path\":\"/cache/emoji.png\"}\n";
+        read_loop(&event[..], tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::EmojiReady { key, path }
+            if key == "5ac1bfd5040ab15980c9b435_001" && path == "/cache/emoji.png")
+        );
     }
 
     #[test]
