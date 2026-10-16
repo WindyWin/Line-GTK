@@ -363,6 +363,62 @@ Deno.test("友だち別の保存済み停止をRPC直前にも確認し、他の
   }
 });
 
+Deno.test("一回だけの既読は指定した位置だけを送り、その後の自動既読は停止したままにする", async () => {
+  const fixture = commandFixture("通信");
+  const recorded: string[][] = [];
+  fixture.chat.unread = 3;
+  fixture.runtime.readReceiptPermission = () => Promise.resolve("paused");
+  fixture.runtime.recordOwnRead = (mid, through) =>
+    recorded.push([mid, through]);
+  await fixture.commands.markReadOnce(1, fixture.chat.mid, "9007199254740993");
+  assertEquals(fixture.marks(), 1);
+  assertEquals(recorded, [[fixture.chat.mid, "9007199254740993"]]);
+  // 未読件数は未読同期で更新する。新着を考慮せず0に書き換えない。
+  assertEquals(fixture.chat.unread, 3);
+  await fixture.commands.markRead(2, fixture.chat.mid, "9007199254740994");
+  assertEquals(fixture.marks(), 1);
+  assertEquals(fixture.okResults.at(-1), { marked: false, skipped: "paused" });
+});
+
+Deno.test("未表示トークの一回既読はサーバーの最新位置を取得し、不正な位置は送らない", async () => {
+  const fixture = commandFixture("通信");
+  const recorded: string[] = [];
+  fixture.runtime.readReceiptPermission = () => Promise.resolve("chat_paused");
+  fixture.runtime.recordOwnRead = (_mid, through) => recorded.push(through);
+  await fixture.commands.markReadOnce(1, fixture.chat.mid);
+  assertEquals(recorded, ["2"]);
+  assertEquals(fixture.marks(), 1);
+  for (const through of ["event:50", "-1", "0", "bad"]) {
+    await fixture.commands.markReadOnce(2, fixture.chat.mid, through);
+  }
+  assertEquals(fixture.marks(), 1);
+});
+
+Deno.test("一回既読でも、順序番号の待機中のセッション変更と通信失敗では未読を消さない", async () => {
+  const fixture = commandFixture("通信");
+  let recorded = 0;
+  fixture.chat.unread = 3;
+  fixture.runtime.recordOwnRead = () => {
+    recorded++;
+  };
+  const original = fixture.runtime.getClient();
+  fixture.setSequenceHook(() => {
+    fixture.runtime.getClient = () => null;
+    return Promise.resolve(1);
+  });
+  await fixture.commands.markReadOnce(1, fixture.chat.mid, "50");
+  assertEquals(fixture.marks(), 0);
+  assertEquals(recorded, 0);
+  assertEquals(fixture.chat.unread, 3);
+  fixture.runtime.getClient = () => original;
+  fixture.setSequenceHook(() => Promise.reject(new Error("模擬通信失敗")));
+  await fixture.commands.markReadOnce(2, fixture.chat.mid, "50");
+  assertEquals(fixture.marks(), 0);
+  assertEquals(recorded, 0);
+  assertEquals(fixture.chat.unread, 3);
+  assertEquals((fixture.okResults.at(-1) as { marked: boolean }).marked, false);
+});
+
 for (const route of ["plain", "encrypted", "chat"] as const) {
   Deno.test(`返信先IDを${route}の送信経路でも維持する`, async () => {
     const fixture = commandFixture("メモリ");

@@ -91,6 +91,7 @@ pub(super) fn set_query(state: &AppState, query: &str) {
 }
 
 pub(super) fn refresh(state: &AppState) {
+    read_pause::refresh_once_button(state);
     pinned_chats::reorder(state);
     let category = *state.chat_category.borrow();
     let query = state.chat_query.borrow();

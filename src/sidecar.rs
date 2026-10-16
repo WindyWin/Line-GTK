@@ -373,6 +373,13 @@ impl Sidecar {
         self.request("mute_chat", Some(json!({ "mid": mid, "muted": muted })))
     }
 
+    pub fn mark_read_once(&self, chat_mid: &str, through: &str) -> Result<u64> {
+        self.request(
+            "mark_read_once",
+            Some(json!({ "chatMid": chat_mid, "lastMessageId": through })),
+        )
+    }
+
     pub fn call_start(
         &self,
         mid: &str,

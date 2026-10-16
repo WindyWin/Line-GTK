@@ -37,6 +37,15 @@ impl UnreadSync {
                 .is_some_and(|read| at_least(read, id))
         })
     }
+    pub fn note_read(&mut self, mid: &str, through: &str) {
+        let Some(through) = numeric_id(through) else {
+            return;
+        };
+        let read = self.read_through.entry(mid.to_string()).or_default();
+        if at_least(through, read) {
+            *read = through.to_string();
+        }
+    }
     pub fn accept(&mut self, mid: &str, through: &str, unread: i64) -> bool {
         let Some(through) = numeric_id(through) else {
             return false;
@@ -51,8 +60,7 @@ impl UnreadSync {
         }
         self.observe(mid, through);
         if unread == 0 {
-            self.read_through
-                .insert(mid.to_string(), through.to_string());
+            self.note_read(mid, through);
         }
         true
     }
@@ -94,11 +102,26 @@ pub(super) fn apply(state: &AppState, account: &str, mid: &str, through: &str, u
         }
     }
     refresh_tray_menu(state);
+    read_pause::refresh_once_button(state);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn one_time_read_tracks_only_the_confirmed_boundary_even_with_newer_unread() {
+        let mut state = UnreadSync::default();
+        state.observe("u-peer", "102");
+        state.note_read("u-peer", "000101");
+        assert!(state.already_read("u-peer", "101"));
+        assert!(!state.already_read("u-peer", "102"));
+        state.note_read("u-peer", "100");
+        state.note_read("u-peer", "event:999");
+        assert!(state.already_read("u-peer", "101"));
+        assert!(!state.accept("u-peer", "101", 0));
+        assert!(state.accept("u-peer", "102", 1));
+        assert!(!state.already_read("u-peer", "102"));
+    }
     #[test]
     fn older_phone_reads_do_not_clear_newer_incoming_messages() {
         let mut state = UnreadSync::default();

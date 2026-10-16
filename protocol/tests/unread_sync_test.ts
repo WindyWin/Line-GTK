@@ -56,6 +56,23 @@ function fixture() {
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+Deno.test("一回既読の件数同期が失敗しても、同じ位置の手動再実行で再照会する", async () => {
+  const f = fixture();
+  const op = { type: 40, param1: "u-peer", param2: "9007199254740992" };
+  f.service.handleOperation(op, true);
+  assertEquals(f.resolvers.length, 1);
+  f.rejecters[0](new Error("模擬照会失敗"));
+  await settle();
+  assertEquals(f.chats[0].unread, 4);
+  f.service.handleOperation(op);
+  assertEquals(f.resolvers.length, 1);
+  f.service.handleOperation(op, true);
+  assertEquals(f.resolvers.length, 2);
+  f.resolvers[1](box("9007199254740993", 1));
+  await settle();
+  assertEquals(f.chats[0].unread, 1);
+});
 function box(id: string, unread: number) {
   return {
     messageBoxes: [{

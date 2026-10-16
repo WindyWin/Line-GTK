@@ -25,6 +25,7 @@ pub struct ShellWidgets {
     pub read_pause_switch: gtk::Switch,
     pub read_pause_label: gtk::Label,
     pub read_pause_box: gtk::Box,
+    pub read_once_btn: gtk::Button,
     pub profile_label: gtk::Label,
     pub profile_avatar: gtk::Picture,
     pub brand_label: gtk::Label,
@@ -352,6 +353,13 @@ pub fn build_shell_page() -> ShellWidgets {
         .sensitive(false)
         .build();
     chat_bar.append(&title_col);
+    let read_once_btn = gtk::Button::builder()
+        .label(crate::i18n::t("mark_read_once"))
+        .tooltip_text(crate::i18n::t("mark_read_once_tooltip"))
+        .css_classes(["flat"])
+        .visible(false)
+        .build();
+    chat_bar.append(&read_once_btn);
     let album_btn = gtk::Button::builder()
         .icon_name("folder-pictures-symbolic")
         .label(crate::i18n::t("albums"))
@@ -644,6 +652,7 @@ pub fn build_shell_page() -> ShellWidgets {
     page.append(&body);
 
     ShellWidgets {
+        read_once_btn,
         page,
         chat_list,
         message_list,

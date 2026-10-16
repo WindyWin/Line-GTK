@@ -454,5 +454,9 @@
   "chat_event_joined": "{actor} joined the group",
   "chat_event_left": "{actor} left the group",
   "chat_event_removed": "{actor} removed {targets} from the group",
-  "chat_event_unknown": "Group information updated"
+  "chat_event_unknown": "Group information updated",
+  "mark_read_once": "Mark read up to now",
+  "mark_read_once_tooltip": "Mark current messages as read once, keeping read receipts paused for future messages.",
+  "mark_read_once_done": "Marked read up to this point. Pause settings are unchanged.",
+  "mark_read_once_failed": "Could not mark messages as read. Unread status has been kept."
 }

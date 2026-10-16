@@ -113,7 +113,7 @@ export function createUnreadSync(runtime: Runtime) {
       if (pending.get(chatMid) === task) pending.delete(chatMid);
     });
   }
-  function handleOperation(op: ReadOperation): boolean {
+  function handleOperation(op: ReadOperation, retry = false): boolean {
     const type = String(op.type);
     const selfChecked = ["SEND_CHAT_CHECKED", "40"].includes(type);
     const selfNotified = ["NOTIFIED_READ_MESSAGE", "55"].includes(type) &&
@@ -124,7 +124,15 @@ export function createUnreadSync(runtime: Runtime) {
     const id = numericId(selfChecked ? op.param2 : op.param3);
     if (!client || !mid || !/^[ucr]/.test(chatMid) || id == null) return true;
     const previous = reads.get(chatMid);
-    if (previous != null && previous >= id) return true;
+    if (previous != null && previous >= id) {
+      // 手動操作をやり直した場合は、前回失敗した件数照会も再試行する。
+      if (retry) {
+        const latest = latestId(chatMid);
+        if (latest != null && previous >= latest) publish(chatMid, previous, 0);
+        else refresh(chatMid);
+      }
+      return true;
+    }
     reads.set(chatMid, id);
     advance(chatMid);
     const latest = latestId(chatMid);

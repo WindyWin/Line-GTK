@@ -138,6 +138,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
     let state = AppState {
+        read_once_btn: shell.read_once_btn,
         app: app.clone(),
         sidecar: sidecar.clone(),
         window: window.clone(),
@@ -1664,6 +1665,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    read_pause::refresh_once_button(state);
     hide_upload_progress(state);
     {
         let mut cfg = state.config.borrow_mut();

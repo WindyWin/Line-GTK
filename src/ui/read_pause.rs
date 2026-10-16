@@ -67,6 +67,104 @@ pub(super) fn eligible(chat: &ChatInfo) -> bool {
     chat.mid.starts_with('u') && chat.kind != "bot"
 }
 
+fn once_pending(state: &AppState, mid: &str) -> bool {
+    state.pending.borrow().values().any(|request| {
+        matches!(request,
+        Pending::MarkReadOnce { chat_mid, .. } if chat_mid == mid)
+    })
+}
+
+pub(super) fn refresh_once_button(state: &AppState) {
+    let mid = state.current_chat.borrow();
+    let chat = state
+        .chats
+        .borrow()
+        .iter()
+        .find(|c| Some(c.mid.as_str()) == mid.as_deref())
+        .cloned();
+    let visible = chat
+        .as_ref()
+        .is_some_and(|c| eligible(c) && is_paused(state, &c.mid));
+    state.read_once_btn.set_visible(visible);
+    state.read_once_btn.set_sensitive(
+        *state.session_ready.borrow()
+            && chat
+                .as_ref()
+                .is_some_and(|c| c.unread > 0 && !once_pending(state, &c.mid)),
+    );
+    state
+        .read_once_btn
+        .set_label(&crate::i18n::t("mark_read_once"));
+    state
+        .read_once_btn
+        .set_tooltip_text(Some(&crate::i18n::t("mark_read_once_tooltip")));
+}
+
+fn mark_once(state: &AppState, mid: &str) {
+    if !*state.session_ready.borrow()
+        || once_pending(state, mid)
+        || hidden_chats::is_hidden(state, mid)
+        || !state
+            .chats
+            .borrow()
+            .iter()
+            .any(|c| c.mid == mid && eligible(c))
+    {
+        return;
+    }
+    let Some(account) = state.self_mid.borrow().clone() else {
+        return;
+    };
+    let through = if state.current_chat.borrow().as_deref() == Some(mid) {
+        state.last_incoming_id.borrow().clone().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    match state.sidecar.mark_read_once(mid, &through) {
+        Ok(id) => {
+            state.pending.borrow_mut().insert(
+                id,
+                Pending::MarkReadOnce {
+                    account,
+                    chat_mid: mid.into(),
+                },
+            );
+            refresh_once_button(state);
+        }
+        Err(_) => toast(state, &crate::i18n::t("mark_read_once_failed")),
+    }
+}
+
+pub(super) fn once_response(
+    state: &AppState,
+    account: &str,
+    mid: &str,
+    ok: bool,
+    result: &serde_json::Value,
+) {
+    if !*state.session_ready.borrow() || state.self_mid.borrow().as_deref() != Some(account) {
+        return;
+    }
+    refresh_once_button(state);
+    // 成功後の未読件数はchat_unread通知で反映し、送信中に届いた新着を消さない。
+    let marked = ok && result.get("marked").and_then(|v| v.as_bool()) == Some(true);
+    if marked
+        && result.get("chatMid").and_then(|v| v.as_str()) == Some(mid)
+        && let Some(through) = result.get("lastMessageId").and_then(|v| v.as_str())
+    {
+        // 新着が残っている場合も、遅れて再配信された既読済み本文は未読に戻さない。
+        state.unread_sync.borrow_mut().note_read(mid, through);
+    }
+    toast(
+        state,
+        &crate::i18n::t(if marked {
+            "mark_read_once_done"
+        } else {
+            "mark_read_once_failed"
+        }),
+    );
+}
+
 pub(super) fn append_chat_menu(menu: &gio::Menu, mid: &str, paused: bool) {
     let item = gio::MenuItem::new(
         Some(&crate::i18n::t(if paused {
@@ -77,6 +175,9 @@ pub(super) fn append_chat_menu(menu: &gio::Menu, mid: &str, paused: bool) {
         None,
     );
     item.set_action_and_target_value(Some("win.toggle-chat-read-pause"), Some(&mid.to_variant()));
+    menu.append_item(&item);
+    let item = gio::MenuItem::new(Some(&crate::i18n::t("mark_read_once")), None);
+    item.set_action_and_target_value(Some("win.mark-chat-read-once"), Some(&mid.to_variant()));
     menu.append_item(&item);
 }
 
@@ -107,6 +208,21 @@ pub(super) fn refresh_chat_row(state: &AppState, chat: &ChatInfo, row: &gtk::Lis
 }
 
 pub(super) fn wire(state: &AppState) {
+    let action = gio::SimpleAction::new("mark-chat-read-once", Some(glib::VariantTy::STRING));
+    let s = state.clone();
+    action.connect_activate(move |_, value| {
+        if let Some(mid) = value.and_then(|v| v.str()) {
+            mark_once(&s, mid);
+        }
+    });
+    state.window.add_action(&action);
+    let s = state.clone();
+    state.read_once_btn.connect_clicked(move |_| {
+        let mid = s.current_chat.borrow().clone();
+        if let Some(mid) = mid {
+            mark_once(&s, &mid);
+        }
+    });
     for widget in [
         state.message_scroll.clone().upcast::<gtk::Widget>(),
         state.composer.clone().upcast::<gtk::Widget>(),
@@ -216,6 +332,7 @@ pub(super) fn wire(state: &AppState) {
 }
 
 pub(super) fn apply_language(state: &AppState) {
+    refresh_once_button(state);
     let paused = state.read_pause_switch.is_active();
     state
         .read_pause_label

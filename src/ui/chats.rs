@@ -441,6 +441,7 @@ pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
             .set_text(&crate::i18n::t("conversation"));
     }
     refresh_tray_menu(state);
+    read_pause::refresh_once_button(state);
 }
 
 pub(super) fn bump_unread(state: &AppState, chat_mid: &str) {
@@ -460,6 +461,7 @@ pub(super) fn bump_unread(state: &AppState, chat_mid: &str) {
         badge.set_visible(true);
     }
     refresh_tray_menu(state);
+    read_pause::refresh_once_button(state);
 }
 
 pub(super) fn update_mute_btn(state: &AppState, muted: bool) {

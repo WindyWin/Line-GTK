@@ -65,6 +65,7 @@ export type CommandRuntime = {
   refreshReadReceipts: (chatMid: string) => Promise<void>;
   reconcileUnread?: (chats: ChatRow[]) => void;
   readReceiptPermission: (chatMid: string) => Promise<ReadPermission>;
+  recordOwnRead?: (chatMid: string, through: string) => void;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
   saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
@@ -163,6 +164,7 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     lastMessageId: string,
+    once = false,
   ) {
     const client = runtime.getClient();
     const chatCache = runtime.getChatCache();
@@ -176,7 +178,9 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
     try {
-      let permission = await runtime.readReceiptPermission(chatMid);
+      let permission = once
+        ? "allowed"
+        : await runtime.readReceiptPermission(chatMid);
       if (permission !== "allowed") {
         ok(id, { marked: false, skipped: permission });
         return;
@@ -185,8 +189,10 @@ export function createCommandService(runtime: CommandRuntime) {
       const seq = typeof requestSequence === "function"
         ? await requestSequence.call(client.base)
         : Number(requestSequence);
-      // 順序番号の取得を待つ間にスイッチをオンにされた場合も送信しない。
-      permission = await runtime.readReceiptPermission(chatMid);
+      // 自動既読は、順序番号を待つ間に停止へ切り替えられた場合も送信しない。
+      permission = once
+        ? "allowed"
+        : await runtime.readReceiptPermission(chatMid);
       if (permission !== "allowed" || runtime.getClient() !== client) {
         ok(id, {
           marked: false,
@@ -200,7 +206,14 @@ export function createCommandService(runtime: CommandRuntime) {
         lastMessageId: String(lastMessageId),
         seq,
       });
-      if (chatCache) {
+      if (runtime.getClient() !== client) {
+        ok(id, { marked: false, skipped: "session_changed" });
+        return;
+      }
+      if (once) {
+        // 新着が追い越した場合は、既存の未読同期でサーバーの残件数を確認する。
+        runtime.recordOwnRead?.(chatMid, lastMessageId);
+      } else if (chatCache) {
         const row = chatCache.chats.find((x) => x.mid === chatMid);
         if (row) row.unread = 0;
       }
@@ -212,6 +225,45 @@ export function createCommandService(runtime: CommandRuntime) {
         marked: false,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  }
+
+  // 通常の自動既読とは別の、ユーザーが明示的に押す一回限りの操作。
+  async function doMarkReadOnce(
+    id: number | string | null,
+    chatMid: string,
+    through = "",
+  ) {
+    const client = runtime.getClient();
+    if (!client || !/^[ucr][a-zA-Z0-9_-]+$/.test(chatMid)) {
+      ok(id, { marked: false, skipped: "not_logged_in_or_invalid_chat" });
+      return;
+    }
+    try {
+      // 開いているトークはクリック時点の位置を使い、後続の新着まで読まない。
+      if (!through) {
+        const boxes = await client.base.talk.getMessageBoxes({
+          messageBoxListRequest: {},
+        });
+        const cursor = boxes.messageBoxes?.find((box) => box.id === chatMid)
+          ?.lastDeliveredMessageId?.messageId;
+        if (typeof cursor === "number" && !Number.isSafeInteger(cursor)) {
+          ok(id, { marked: false, skipped: "missing_ids" });
+          return;
+        }
+        through = String(cursor ?? "");
+      }
+      if (runtime.getClient() !== client) {
+        ok(id, { marked: false, skipped: "session_changed" });
+        return;
+      }
+      if (!/^\d+$/.test(through) || BigInt(through) <= 0n) {
+        ok(id, { marked: false, skipped: "missing_ids" });
+        return;
+      }
+      await doMarkRead(id, chatMid, through, true);
+    } catch {
+      ok(id, { marked: false, error: "mark_read_once_failed" });
     }
   }
 
@@ -807,6 +859,7 @@ export function createCommandService(runtime: CommandRuntime) {
 
   return {
     markRead: doMarkRead,
+    markReadOnce: doMarkReadOnce,
     loginQr: (id: number | string | null) => withLogin(id, () => doLoginQr(id)),
     loginEmail: (id: number | string | null, email: string, password: string) =>
       withLogin(id, () => doLoginEmail(id, email, password)),

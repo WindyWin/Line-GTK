@@ -454,5 +454,9 @@
   "chat_event_joined": "{actor}がグループに参加しました",
   "chat_event_left": "{actor}がグループを退出しました",
   "chat_event_removed": "{actor}が{targets}をグループから削除しました",
-  "chat_event_unknown": "グループの情報が更新されました"
+  "chat_event_unknown": "グループの情報が更新されました",
+  "mark_read_once": "ここまで既読にする",
+  "mark_read_once_tooltip": "既読停止はオンのまま、今あるメッセージだけを一度既読にします。その後の新着には既読をつけません。",
+  "mark_read_once_done": "ここまで既読にしました。既読停止の設定は変えていません",
+  "mark_read_once_failed": "既読にできませんでした。未読のまま残しています"
 }

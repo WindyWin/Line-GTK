@@ -549,6 +549,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::MarkReadOnce { account, chat_mid }) = pending {
+                read_pause::once_response(state, &account, &chat_mid, ok, &result);
+                return;
+            }
             if let Some(Pending::Album {
                 ui,
                 generation,
@@ -732,7 +736,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
-                Some(Pending::Album { .. } | Pending::ResumeSync { .. }) | None => {}
+                Some(
+                    Pending::Album { .. }
+                    | Pending::ResumeSync { .. }
+                    | Pending::MarkReadOnce { .. },
+                )
+                | None => {}
             }
         }
         ProtocolEvent::Error(e) => toast(state, &e),

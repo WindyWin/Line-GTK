@@ -386,6 +386,12 @@ const listener = createListener({
 });
 
 const commands = createCommandService({
+  recordOwnRead: (chatMid, through) => {
+    unreadSync.handleOperation(
+      { type: 40, param1: chatMid, param2: through },
+      true,
+    );
+  },
   getClient: () => client,
   setClient: (next) => {
     client = next;
@@ -1901,6 +1907,13 @@ async function handle(req: Json) {
         break;
       case "mark_read":
         await commands.markRead(
+          id,
+          String(params.chatMid ?? ""),
+          String(params.lastMessageId ?? ""),
+        );
+        break;
+      case "mark_read_once":
+        await commands.markReadOnce(
           id,
           String(params.chatMid ?? ""),
           String(params.lastMessageId ?? ""),
