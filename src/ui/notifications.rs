@@ -1,22 +1,13 @@
 use super::{AppState, PendingNotif, notifications_allowed, preview_body_ui};
-use crate::desktop_notify::ChatNotification;
+use crate::desktop_notify::{ChatNotification, NotificationTicket};
 use crate::protocol::MessageInfo;
 use gtk::gio;
 use gtk::prelude::*;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &str) {
-    if !notifications_allowed(state) {
-        return;
-    }
-    let muted = state
-        .chats
-        .borrow()
-        .iter()
-        .find(|c| c.mid == peer_mid)
-        .map(|c| c.muted)
-        .unwrap_or(false);
-    if muted {
+    if !notifications_allowed(state) || chat_muted(state, peer_mid) {
         return;
     }
     let (name, avatar_path) = state
@@ -26,89 +17,140 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         .find(|c| c.mid == peer_mid)
         .map(|c| (c.name.clone(), c.avatar_path.clone()))
         .unwrap_or_else(|| (peer_mid.to_string(), None));
-    let body = preview_body_ui(msg);
+    let sticker = msg.content_type.eq_ignore_ascii_case("STICKER");
     let image_path = msg
         .image_path
         .as_deref()
-        .filter(|p| !p.is_empty() && Path::new(p).exists())
-        .map(str::to_string);
-
+        .filter(|p| !p.is_empty() && Path::new(p).is_file())
+        .map(str::to_string)
+        .or_else(|| state.media_ready_paths.borrow().get(&msg.id).cloned());
+    let meta = PendingNotif {
+        chat_mid: peer_mid.to_string(),
+        title: name,
+        body: preview_body_ui(msg),
+        avatar_path,
+        sticker,
+        ticket: None,
+        notified: false,
+        created: Instant::now(),
+        account: state.self_mid.borrow().clone(),
+    };
     if !msg.id.is_empty() {
         let mut pending = state.notif_pending.borrow_mut();
-        if pending.len() > 64 {
-            pending.clear();
+        pending.retain(|_, meta| meta.created.elapsed() < Duration::from_secs(30));
+        if pending.len() >= 64
+            && let Some(oldest) = pending
+                .iter()
+                .min_by_key(|(_, meta)| meta.created)
+                .map(|(id, _)| id.clone())
+        {
+            pending.remove(&oldest);
         }
-        pending.insert(
-            msg.id.clone(),
-            PendingNotif {
-                chat_mid: peer_mid.to_string(),
-                title: name.clone(),
-                body: body.clone(),
-                avatar_path: avatar_path.clone(),
-            },
-        );
+        pending.insert(msg.id.clone(), meta.clone());
     }
-
-    send_desktop_notification(
-        state,
-        ChatNotification {
-            title: &name,
-            body: &body,
-            avatar_path: avatar_path.as_deref(),
-            image_path: image_path.as_deref(),
-            chat_mid: peer_mid,
-            message_id: &msg.id,
-            suppress_sound: false,
-        },
-    );
-
+    if sticker && image_path.is_none() && !msg.id.is_empty() {
+        // すぐ届く画像を待ち、文字だけの通知が先に並ぶのを防ぐ。
+        let s = state.clone();
+        let id = msg.id.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1200), move || {
+            if let Some(meta) = pending_for_delivery(&s, &id)
+                && !meta.notified
+            {
+                deliver(&s, &id, meta, None);
+            }
+        });
+    } else {
+        deliver(state, &msg.id, meta, image_path.as_deref());
+    }
     if state.config.borrow().notification_sound {
         play_notification_sound(state);
     }
 }
 
-pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, image_path: &str) {
-    if !notifications_allowed(state) {
-        return;
-    }
-    let Some(meta) = state.notif_pending.borrow().get(message_id).cloned() else {
-        return;
-    };
-    let muted = state
+fn chat_muted(state: &AppState, mid: &str) -> bool {
+    state
         .chats
         .borrow()
         .iter()
-        .find(|c| c.mid == meta.chat_mid)
-        .map(|c| c.muted)
-        .unwrap_or(false);
-    if muted {
-        return;
-    }
-    let viewing = state.current_chat.borrow().as_deref() == Some(meta.chat_mid.as_str());
-    if viewing && state.window.is_active() {
-        state.notif_pending.borrow_mut().remove(message_id);
-        return;
-    }
+        .find(|c| c.mid == mid)
+        .is_some_and(|c| c.muted)
+}
 
-    send_desktop_notification(
+fn pending_for_delivery(state: &AppState, id: &str) -> Option<PendingNotif> {
+    let meta = state.notif_pending.borrow().get(id).cloned()?;
+    let viewing = state.current_chat.borrow().as_deref() == Some(meta.chat_mid.as_str())
+        && state.window.is_active();
+    if !notifications_allowed(state)
+        || chat_muted(state, &meta.chat_mid)
+        || viewing
+        || !*state.session_ready.borrow()
+        || meta.account != *state.self_mid.borrow()
+        || meta.created.elapsed() >= Duration::from_secs(30)
+        || meta
+            .ticket
+            .as_ref()
+            .is_some_and(NotificationTicket::is_closed)
+    {
+        state.notif_pending.borrow_mut().remove(id);
+        return None;
+    }
+    Some(meta)
+}
+
+pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, image_path: &str) {
+    if !Path::new(image_path).is_file() {
+        return;
+    }
+    let Some(meta) = pending_for_delivery(state, message_id) else {
+        return;
+    };
+    deliver(state, message_id, meta, Some(image_path));
+}
+
+fn deliver(state: &AppState, message_id: &str, meta: PendingNotif, image_path: Option<&str>) {
+    let preview = if meta.sticker {
+        image_path.and_then(|path| {
+            crate::desktop_notify::sticker_preview(
+                Path::new(path),
+                &state.data_dir.join("cache/stickers"),
+            )
+        })
+    } else {
+        None
+    };
+    let image_path = if meta.sticker {
+        preview.as_ref().and_then(|p| p.to_str())
+    } else {
+        image_path
+    };
+    let ticket = send_desktop_notification(
         state,
         ChatNotification {
             title: &meta.title,
             body: &meta.body,
             avatar_path: meta.avatar_path.as_deref(),
-            image_path: Some(image_path),
+            image_path,
             chat_mid: &meta.chat_mid,
             message_id,
-            suppress_sound: true,
+            suppress_sound: meta.notified,
+            sticker: meta.sticker,
+            replace: meta.ticket.as_ref(),
         },
     );
+    if let Some(pending) = state.notif_pending.borrow_mut().get_mut(message_id) {
+        pending.notified = true;
+        pending.ticket = ticket;
+    }
 }
 
-fn send_desktop_notification(state: &AppState, request: ChatNotification<'_>) {
+fn send_desktop_notification(
+    state: &AppState,
+    request: ChatNotification<'_>,
+) -> Option<NotificationTicket> {
     match crate::desktop_notify::show_chat_notification(&request, state.tray_tx.clone()) {
-        Ok(()) => {}
+        Ok(ticket) => Some(ticket),
         Err(error) => {
-            tracing::warn!(%error, "notify-rust failed; falling back to gio::Notification");
+            tracing::warn!(%error, "デスクトップ通知をGioで再試行します");
             let notification = gio::Notification::new(request.title);
             notification.set_body(Some(request.body));
             notification.set_priority(gio::NotificationPriority::Normal);
@@ -116,9 +158,13 @@ fn send_desktop_notification(state: &AppState, request: ChatNotification<'_>) {
                 "app.open-chat",
                 Some(&request.chat_mid.to_variant()),
             );
-            if let Some(path) = request.avatar_path.filter(|p| Path::new(p).exists()) {
-                notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(path)));
-            } else if let Some(path) = request.image_path.filter(|p| Path::new(p).exists()) {
+            // 本文画像に対応しない経路でも、スタンプ自体をアイコンにする。
+            let icon = if request.sticker {
+                request.image_path.or(request.avatar_path)
+            } else {
+                request.avatar_path.or(request.image_path)
+            };
+            if let Some(path) = icon.filter(|p| Path::new(p).is_file()) {
                 notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(path)));
             } else {
                 notification.set_icon(&gio::ThemedIcon::new("line-gtk"));
@@ -129,6 +175,7 @@ fn send_desktop_notification(state: &AppState, request: ChatNotification<'_>) {
                 format!("line-gtk-{}", request.message_id)
             };
             state.app.send_notification(Some(&id), &notification);
+            None
         }
     }
 }

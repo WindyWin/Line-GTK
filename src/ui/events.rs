@@ -765,6 +765,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    state.notif_pending.borrow_mut().clear();
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
@@ -842,6 +843,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    state.notif_pending.borrow_mut().clear();
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);

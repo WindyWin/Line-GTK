@@ -168,6 +168,11 @@ pub(super) struct PendingNotif {
     pub title: String,
     pub body: String,
     pub avatar_path: Option<String>,
+    pub sticker: bool,
+    pub ticket: Option<crate::desktop_notify::NotificationTicket>,
+    pub notified: bool,
+    pub created: std::time::Instant,
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone)]
