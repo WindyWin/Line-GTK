@@ -32,6 +32,8 @@ pub struct AppConfig {
     pub last_chat_mid: String,
     /// アカウントごとの非表示トーク（トークID → 復元画面用の名前）。
     pub hidden_chats: BTreeMap<String, BTreeMap<String, String>>,
+    /// このPCで一覧の上部に固定するトーク。アカウントごとに保存する。
+    pub pinned_chats: BTreeMap<String, BTreeSet<String>>,
     /// PulseAudio / PipeWire source name, or empty / "default".
     pub audio_input: String,
     /// PulseAudio / PipeWire sink name, or empty / "default".
@@ -86,6 +88,7 @@ impl Default for AppConfig {
             read_receipts_paused_chats: BTreeMap::new(),
             last_chat_mid: String::new(),
             hidden_chats: BTreeMap::new(),
+            pinned_chats: BTreeMap::new(),
             audio_input: String::new(),
             audio_output: String::new(),
             call_mic_volume: 1.0,
@@ -110,6 +113,44 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn is_chat_pinned(&self, account: &str, mid: &str) -> bool {
+        self.pinned_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains(mid))
+    }
+
+    pub fn set_chat_pinned(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        pinned: bool,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.pinned_chats.clone();
+        if pinned {
+            self.pinned_chats
+                .entry(account.into())
+                .or_default()
+                .insert(mid.into());
+        } else if let Some(chats) = self.pinned_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.pinned_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.pinned_chats = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn is_chat_hidden(&self, account: &str, mid: &str) -> bool {
         self.hidden_chats
             .get(account)
@@ -315,6 +356,10 @@ impl AppConfig {
             chats.retain(|mid, _| !mid.trim().is_empty());
             !account.trim().is_empty() && !chats.is_empty()
         });
+        self.pinned_chats.retain(|account, chats| {
+            chats.retain(|mid| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
     }
 
     /// Discord Application ID from settings, env, or the built-in default.
@@ -485,6 +530,41 @@ mod tests {
         assert!(cfg.pause_read_receipts);
         assert!(AppConfig::load(&dir).pause_read_receipts);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pinned_chats_persist_per_account_and_failed_saves_roll_back() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.is_chat_pinned("u-self", "u-friend"));
+        cfg.last_chat_mid = "u-open".into();
+        cfg.set_chat_pinned(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        let mut loaded = AppConfig::load(&dir);
+        assert!(loaded.is_chat_pinned("u-self", "u-friend"));
+        assert!(!loaded.is_chat_pinned("u-other", "u-friend"));
+        assert_eq!(loaded.last_chat_mid, "u-open");
+        assert!(loaded.can_mark_read());
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            loaded
+                .set_chat_pinned(&dir, "u-self", "u-friend", false)
+                .is_err()
+        );
+        assert!(loaded.is_chat_pinned("u-self", "u-friend"));
+        assert!(
+            loaded
+                .set_chat_pinned(&dir, "u-self", "u-new", true)
+                .is_err()
+        );
+        assert!(!loaded.is_chat_pinned("u-self", "u-new"));
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        loaded
+            .set_chat_pinned(&dir, "u-self", "u-friend", false)
+            .unwrap();
+        assert!(!AppConfig::load(&dir).pinned_chats.contains_key("u-self"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

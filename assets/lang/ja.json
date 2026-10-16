@@ -444,5 +444,10 @@
   "resume_sync_loading": "復帰後のメッセージを確認中…",
   "resume_sync_waiting": "通信の復旧を待って再取得します…",
   "resume_sync_failed": "復帰後の更新を完了できませんでした",
-  "resume_sync_done": "復帰後のメッセージを更新しました"
+  "resume_sync_done": "復帰後のメッセージを更新しました",
+  "pin_chat": "ピン留め",
+  "unpin_chat": "ピン留めを解除",
+  "chat_pinned": "ピン留め中",
+  "chat_pin_done": "トークをピン留めしました",
+  "chat_unpin_done": "ピン留めを解除しました"
 }

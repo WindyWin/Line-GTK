@@ -310,6 +310,16 @@ pub(super) fn build_chat_row(
         .build();
     avatar_overlay.add_overlay(&read_paused);
     avatar_overlay.set_measure_overlay(&read_paused, false);
+    let pin = gtk::Image::builder()
+        .icon_name("view-pin-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .visible(false)
+        .css_classes(["line-chat-pinned"])
+        .build();
+    avatar_overlay.add_overlay(&pin);
+    avatar_overlay.set_measure_overlay(&pin, false);
 
     let text_col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)

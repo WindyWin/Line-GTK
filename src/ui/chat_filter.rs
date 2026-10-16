@@ -91,6 +91,7 @@ pub(super) fn set_query(state: &AppState, query: &str) {
 }
 
 pub(super) fn refresh(state: &AppState) {
+    pinned_chats::reorder(state);
     let category = *state.chat_category.borrow();
     let query = state.chat_query.borrow();
     let chats = state.chats.borrow();
@@ -98,6 +99,7 @@ pub(super) fn refresh(state: &AppState) {
     for (index, chat) in chats.iter().enumerate() {
         if let Some(row) = state.chat_list.row_at_index(index as i32) {
             read_pause::refresh_chat_row(state, chat, &row);
+            pinned_chats::refresh_row(state, chat, &row);
             let matches =
                 !hidden_chats::is_hidden(state, &chat.mid) && category.matches(chat, &query);
             row.set_visible(matches);

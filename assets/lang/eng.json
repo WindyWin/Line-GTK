@@ -444,5 +444,10 @@
   "resume_sync_loading": "Checking messages after reconnecting…",
   "resume_sync_waiting": "Waiting to retry message sync…",
   "resume_sync_failed": "Could not finish message sync",
-  "resume_sync_done": "Messages updated after reconnecting"
+  "resume_sync_done": "Messages updated after reconnecting",
+  "pin_chat": "Pin chat",
+  "unpin_chat": "Unpin chat",
+  "chat_pinned": "Pinned",
+  "chat_pin_done": "Chat pinned",
+  "chat_unpin_done": "Chat unpinned"
 }

@@ -93,6 +93,11 @@ pub(super) fn wire_context(state: &AppState, row: &gtk::ListBoxRow, chat: &ChatI
         let item = gio::MenuItem::new(Some(&crate::i18n::t("hide_chat")), None);
         item.set_action_and_target_value(Some("win.hide-chat"), Some(&mid.to_variant()));
         menu.append_item(&item);
+        let pinned = account
+            .borrow()
+            .as_deref()
+            .is_some_and(|account| config.borrow().is_chat_pinned(account, &mid));
+        pinned_chats::append_menu(&menu, &mid, pinned);
         if eligible {
             let paused = account
                 .borrow()

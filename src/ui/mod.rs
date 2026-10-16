@@ -16,6 +16,7 @@ mod media;
 mod message_senders;
 mod messages;
 mod notifications;
+mod pinned_chats;
 mod read_pause;
 mod replies;
 mod resume_sync;
@@ -276,6 +277,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     albums::wire(&state);
     chat_filter::wire(&state);
     hidden_chats::wire(&state);
+    pinned_chats::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
