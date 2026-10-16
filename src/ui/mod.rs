@@ -22,6 +22,7 @@ mod resume_sync;
 mod settings;
 mod shell;
 mod state;
+mod unread_sync;
 mod virtual_list;
 
 use crate::config::{AppConfig, apply_animations, apply_font, apply_theme};
@@ -188,6 +189,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         last_incoming_id: Rc::new(RefCell::new(None)),
         peer_reads: Rc::new(RefCell::new(crate::read_receipts::ReadReceipts::default())),
+        unread_sync: Rc::new(RefCell::new(unread_sync::UnreadSync::default())),
         restored_last_chat: Rc::new(RefCell::new(false)),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
         media_pumping: Rc::new(RefCell::new(false)),

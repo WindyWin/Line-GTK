@@ -244,6 +244,12 @@ pub enum ProtocolEvent {
         label: String,
         done: bool,
     },
+    ChatUnread {
+        chat_mid: String,
+        account_mid: String,
+        through_message_id: String,
+        unread: i64,
+    },
     ReadReceipt {
         chat_mid: String,
         user_mid: String,

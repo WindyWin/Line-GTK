@@ -156,6 +156,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             } else {
                 msg.from.clone()
             };
+            let already_read = state.unread_sync.borrow().already_read(&peer, &msg.id);
+            state.unread_sync.borrow_mut().observe(&peer, &msg.id);
             let mut preview = format!(
                 "{}: {}",
                 if msg.mine {
@@ -207,13 +209,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 // Capture before append — layout growth can briefly look "scrolled up".
                 let was_stuck = *state.stick_bottom.borrow();
                 // "New" marker only when the user is scrolled up (LINE-like).
-                if !msg.mine && !was_stuck {
+                if !msg.mine && !already_read && !was_stuck {
                     ensure_new_message_separator(state);
                 }
                 append_message(state, &msg, true);
                 if was_stuck {
                     pin_messages_to_latest(state);
-                    if !msg.mine {
+                    if !msg.mine && !already_read {
                         // Only suppress alerts when this chat is open AND focused.
                         if window_focused {
                             if read_pause::is_paused(state, &peer) {
@@ -227,14 +229,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             notify_incoming(state, &msg, &peer);
                         }
                     }
-                } else if !msg.mine {
+                } else if !msg.mine && !already_read {
                     let n = state.pending_new_below.borrow().saturating_add(1);
                     *state.pending_new_below.borrow_mut() = n;
                     update_jump_banner(state);
                     bump_unread(state, &peer);
                     notify_incoming(state, &msg, &peer);
                 }
-            } else if !msg.mine {
+            } else if !msg.mine && !already_read {
                 bump_unread(state, &peer);
                 notify_incoming(state, &msg, &peer);
             }
@@ -245,6 +247,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 chat.preview = localize_preview(&chat.preview);
             }
             upsert_chat_row(state, chat);
+        }
+        ProtocolEvent::ChatUnread {
+            chat_mid,
+            account_mid,
+            through_message_id,
+            unread,
+        } => {
+            unread_sync::apply(state, &account_mid, &chat_mid, &through_message_id, unread);
         }
         ProtocolEvent::ReadReceipt {
             chat_mid,
@@ -765,6 +775,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
@@ -843,6 +854,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();

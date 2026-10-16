@@ -818,6 +818,31 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                         },
+                        "chat_unread" => ProtocolEvent::ChatUnread {
+                            chat_mid: resp
+                                .extra
+                                .get("chatMid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            account_mid: resp
+                                .extra
+                                .get("accountMid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            through_message_id: resp
+                                .extra
+                                .get("throughMessageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            unread: resp
+                                .extra
+                                .get("unread")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(-1),
+                        },
                         "read_receipt" => ProtocolEvent::ReadReceipt {
                             chat_mid: resp
                                 .extra
