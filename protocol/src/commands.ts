@@ -304,7 +304,14 @@ export function createCommandService(runtime: CommandRuntime) {
     return null;
   }
 
-  async function doListChats(id: number | string | null, force = false) {
+  async function doListChats(
+    id: number | string | null,
+    force = false,
+    quiet = false,
+  ) {
+    const emitEvent = (event: string, payload?: Json) => {
+      if (!quiet || event !== "progress") runtime.emitEvent(event, payload);
+    };
     const client = runtime.getClient();
     let chatCache = runtime.getChatCache();
     if (!client) {
@@ -375,6 +382,10 @@ export function createCommandService(runtime: CommandRuntime) {
         }
       } catch (e) {
         console.error("[list_chats] boxes", e);
+        if (force) {
+          fail(id, "chat_sync_failed");
+          return;
+        }
       }
 
       // 2) Contacts + bots/OA (getContacts mids — fetchUsers misses bots)
@@ -504,7 +515,11 @@ export function createCommandService(runtime: CommandRuntime) {
     chatMid: string,
     limit = 50,
     force = false,
+    quiet = false,
   ) {
+    const emitEvent = (event: string, payload?: Json) => {
+      if (!quiet || event !== "progress") runtime.emitEvent(event, payload);
+    };
     const client = runtime.getClient();
     if (!client) {
       fail(id, "not_logged_in");
@@ -590,7 +605,7 @@ export function createCommandService(runtime: CommandRuntime) {
 
         if (usedBoxes || !out.length) {
           let cursor = boxCursor.get(chatMid);
-          if (!cursor) {
+          if (force || !cursor) {
             const boxes = await client!.base.talk.getMessageBoxes({
               messageBoxListRequest: {},
             });

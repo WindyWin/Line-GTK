@@ -1794,7 +1794,7 @@ async function handle(req: Json) {
         await commands.loginToken(id, params.token as string | undefined);
         break;
       case "list_chats":
-        await commands.listChats(id, !!params.force);
+        await commands.listChats(id, !!params.force, !!params.quiet);
         break;
       case "list_albums":
       case "list_album_photos":
@@ -1827,6 +1827,7 @@ async function handle(req: Json) {
           String(params.chatMid ?? ""),
           Number(params.limit ?? 50),
           !!params.force,
+          !!params.quiet,
         );
         break;
       case "send_message":

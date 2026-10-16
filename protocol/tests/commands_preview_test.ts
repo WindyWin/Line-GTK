@@ -168,6 +168,70 @@ for (const source of ["通信", "メモリ", "ディスク"] as const) {
   });
 }
 
+Deno.test("復帰時の強制取得ではメモリと古い最新位置を使わず未取得の本文を取得する", async () => {
+  const fixture = commandFixture("メモリ");
+  const calls: unknown[] = [];
+  fixture.runtime.storeBoxCursor = (mid, value) => {
+    fixture.runtime.boxCursor.set(mid, value as never);
+  };
+  const client = fixture.runtime.getClient()!;
+  client.base.talk.getMessageBoxes = () =>
+    Promise.resolve({
+      messageBoxes: [{
+        id: fixture.chat.mid,
+        lastDeliveredMessageId: { messageId: 99, deliveredTime: 100 },
+      }],
+    } as never);
+  client.base.talk.getPreviousMessagesV2WithRequest = (params) => {
+    calls.push(params);
+    return Promise.resolve(
+      [{ id: "99", createdTime: 100, text: "スリープ中の新着" }] as never,
+    );
+  };
+  fixture.runtime.summarizeTalkMessage = (message) =>
+    Promise.resolve(message as unknown as Json);
+  fixture.runtime.summarizeRawMessage = (raw) => Promise.resolve(raw as Json);
+  await createCommandService(fixture.runtime).fetchMessages(
+    1,
+    fixture.chat.mid,
+    80,
+    true,
+    true,
+  );
+  assertEquals(
+    (calls[0] as { request: { endMessageId: unknown } }).request.endMessageId,
+    {
+      messageId: 99,
+      deliveredTime: 100,
+    },
+  );
+  assertEquals(
+    (fixture.okResults[0] as { messages: Json[] }).messages[0].id,
+    "99",
+  );
+  assertEquals(
+    fixture.events.filter((event) =>
+      event.event === "progress" || event.event === "messages"
+    ),
+    [],
+  );
+  assertEquals(fixture.marks(), 0);
+});
+
+Deno.test("復帰時に通信できない場合は既存の一覧を空の成功結果で上書きしない", async () => {
+  const fixture = commandFixture("メモリ");
+  const failures: string[] = [];
+  fixture.runtime.fail = (_id, error) => failures.push(error);
+  fixture.runtime.getClient()!.base.talk.getMessageBoxes = () =>
+    Promise.reject(new Error("復帰直後はオフライン"));
+  const before = fixture.runtime.getChatCache();
+  await createCommandService(fixture.runtime).listChats(1, true, true);
+  assertEquals(failures, ["chat_sync_failed"]);
+  assertEquals(fixture.okResults, []);
+  assertEquals(fixture.runtime.getChatCache(), before);
+  assertEquals(fixture.events, []);
+});
+
 Deno.test("一覧がメモリキャッシュでも未取得のプレビューを補完する", async () => {
   const fixture = commandFixture("メモリ");
   await fixture.commands.listChats(1);
