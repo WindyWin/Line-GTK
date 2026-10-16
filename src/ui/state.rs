@@ -72,6 +72,7 @@ pub(super) struct AppState {
     pub chat_previews: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub chat_unread_badges: Rc<RefCell<HashMap<String, gtk::Label>>>,
     pub sender_names: Rc<RefCell<HashMap<String, String>>>,
+    pub chat_event_labels: Rc<RefCell<Vec<(crate::protocol::ChatEventInfo, gtk::Label)>>>,
     pub sender_labels: Rc<RefCell<HashMap<String, Vec<gtk::Label>>>>,
     pub media_slots: Rc<RefCell<HashMap<String, gtk::Box>>>,
     pub media_msgs: Rc<RefCell<HashMap<String, MessageInfo>>>,

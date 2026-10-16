@@ -12,6 +12,15 @@ pub(super) fn same_message_list(
 }
 
 pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+    // 取得中に届いたイベントを、先に開始した履歴の応答で消さない。
+    let existing_events: Vec<_> = state
+        .reply_messages
+        .borrow()
+        .values()
+        .filter(|m| m.chat_event.is_some() && !messages.iter().any(|item| item.id == m.id))
+        .cloned()
+        .collect();
+    messages.extend(existing_events);
     clear_messages(state);
     state
         .reply_messages
@@ -43,7 +52,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     let last_incoming = messages
         .iter()
         .rev()
-        .find(|m| !m.mine)
+        .find(|m| !m.mine && m.chat_event.is_none())
         .map(|m| m.id.clone());
     if let Some(id) = last_incoming.clone() {
         *state.last_incoming_id.borrow_mut() = Some(id);
@@ -141,6 +150,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         }
     }
 
+    if let Some(event) = &msg.chat_event {
+        chat_events::append(state, event);
+        return;
+    }
     // ListViewが行のフォーカスを管理するため、ListBox専用の行を入れ子にしない。
     let row = gtk::Box::builder()
         .css_classes(["line-message-row"])
@@ -1041,6 +1054,7 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
+        chat_event: None,
         emojis: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
@@ -1276,6 +1290,7 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    state.chat_event_labels.borrow_mut().clear();
     let generation = state.message_render_generation.borrow().wrapping_add(1);
     *state.message_render_generation.borrow_mut() = generation;
     state.emoji_views.borrow_mut().clear();

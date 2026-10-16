@@ -620,6 +620,24 @@ fn read_loop<R: std::io::Read>(
                                 .to_string(),
                         },
                         "listening" => ProtocolEvent::Listening,
+                        "chat_event" => {
+                            if let Some(message) = resp.extra.get("message") {
+                                match serde_json::from_value(message.clone()) {
+                                    Ok(message) => ProtocolEvent::ChatEvent {
+                                        account_mid: resp
+                                            .extra
+                                            .get("accountMid")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                        message,
+                                    },
+                                    Err(error) => ProtocolEvent::Error(error.to_string()),
+                                }
+                            } else {
+                                ProtocolEvent::Error("グループイベントの内容がありません".into())
+                            }
+                        }
                         "message" => {
                             if let Some(msg) = resp.extra.get("message") {
                                 match serde_json::from_value(msg.clone()) {

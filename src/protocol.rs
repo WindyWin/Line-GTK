@@ -125,6 +125,8 @@ pub struct LineEmoji {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MessageInfo {
+    #[serde(rename = "chatEvent", default)]
+    pub chat_event: Option<ChatEventInfo>,
     #[serde(default)]
     pub emojis: Vec<LineEmoji>,
     #[serde(rename = "replyTo", default)]
@@ -161,8 +163,21 @@ pub struct MessageInfo {
     pub flex: Option<FlexInfo>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChatEventInfo {
+    pub kind: String,
+    #[serde(rename = "actorMid")]
+    pub actor_mid: String,
+    #[serde(rename = "targetMids", default)]
+    pub target_mids: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProtocolEvent {
+    ChatEvent {
+        account_mid: String,
+        message: Box<MessageInfo>,
+    },
     Ready {
         has_auth: bool,
     },

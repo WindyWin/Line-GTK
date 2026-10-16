@@ -29,6 +29,7 @@ import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
 import { createUnreadSync } from "./unread_sync.ts";
+import { createChatEvents } from "./chat_events.ts";
 import { readReceiptPermission } from "./read_policy.ts";
 import { createEmojiService, lineEmojis } from "./emojis.ts";
 import { createChatPreviews } from "./chat_previews.ts";
@@ -230,7 +231,8 @@ const messageView = createMessageView({
   stickerDir,
 });
 const { previewLang, previewLine, extractFlex } = messageView;
-function forUiMessages(messages: Json[]) {
+async function forUiMessages(messages: Json[], chatMid?: string) {
+  if (chatMid) messages = await chatEvents.merge(chatMid, messages);
   messageSenders.observe(messages);
   emojiService.observe(messages);
   return messageView.forUiMessages(messages);
@@ -350,6 +352,14 @@ const unreadSync = createUnreadSync({
   emit: emitEvent,
 });
 
+const chatEvents = createChatEvents({
+  directory: msgDiskDir,
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  observeProfiles: messageSenders.observe,
+  emit: emitEvent,
+});
+
 const listener = createListener({
   getClient: () => client,
   observeMessage: (message) => {
@@ -370,7 +380,8 @@ const listener = createListener({
   upsertChatFromContact,
   handleReadReceipt: (operation) =>
     unreadSync.handleOperation(operation) ||
-    readReceipts.handleOperation(operation),
+    readReceipts.handleOperation(operation) ||
+    chatEvents.handleOperation(operation),
   emitEvent,
 });
 
@@ -1982,7 +1993,10 @@ async function handle(req: Json) {
         if (kind === "media" || kind === "all") await wipe(mediaDir);
         if (kind === "stickers" || kind === "all") await wipe(stickerDir);
         if (kind === "avatars" || kind === "all") await wipe(avatarDir);
-        if (kind === "messages" || kind === "all") await wipe(msgDiskDir);
+        if (kind === "messages" || kind === "all") {
+          await wipe(msgDiskDir);
+          chatEvents.reset();
+        }
         if (kind === "chats" || kind === "all") {
           try {
             await Deno.remove(chatCachePath);

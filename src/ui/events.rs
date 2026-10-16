@@ -18,6 +18,22 @@ pub(super) fn pump_events(state: AppState) {
 
 pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
     match ev {
+        ProtocolEvent::ChatEvent {
+            account_mid,
+            message,
+        } => {
+            if *state.session_ready.borrow()
+                && state.self_mid.borrow().as_deref() == Some(account_mid.as_str())
+                && state.current_chat.borrow().as_deref() == Some(message.to.as_str())
+            {
+                let stick = *state.stick_bottom.borrow();
+                set_msg_state(state, "list", None);
+                append_message(state, &message, true);
+                if stick {
+                    pin_messages_to_latest(state);
+                }
+            }
+        }
         ProtocolEvent::Ready { has_auth } => {
             let restarting = *state.restarting.borrow();
             if restarting {

@@ -449,5 +449,10 @@
   "unpin_chat": "ピン留めを解除",
   "chat_pinned": "ピン留め中",
   "chat_pin_done": "トークをピン留めしました",
-  "chat_unpin_done": "ピン留めを解除しました"
+  "chat_unpin_done": "ピン留めを解除しました",
+  "chat_event_invited": "{actor}が{targets}をグループに招待しました",
+  "chat_event_joined": "{actor}がグループに参加しました",
+  "chat_event_left": "{actor}がグループを退出しました",
+  "chat_event_removed": "{actor}が{targets}をグループから削除しました",
+  "chat_event_unknown": "グループの情報が更新されました"
 }

@@ -2,6 +2,7 @@ mod albums;
 mod call_history;
 mod call_window;
 mod calls;
+mod chat_events;
 mod chat_filter;
 mod chats;
 mod composer_media;
@@ -181,6 +182,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
         chat_unread_badges: Rc::new(RefCell::new(HashMap::new())),
         sender_names: Rc::new(RefCell::new(HashMap::new())),
+        chat_event_labels: Rc::new(RefCell::new(Vec::new())),
         sender_labels: Rc::new(RefCell::new(HashMap::new())),
         media_slots: Rc::new(RefCell::new(HashMap::new())),
         media_msgs: Rc::new(RefCell::new(HashMap::new())),
@@ -1015,6 +1017,7 @@ fn send_current(state: &AppState) {
                 id,
                 &chat_mid,
                 MessageInfo {
+                    chat_event: None,
                     emojis: Vec::new(),
                     id: String::new(),
                     text,
@@ -1103,6 +1106,7 @@ fn apply_ui_language(state: &AppState) {
         tracing::warn!(%error, "プレビューの言語を更新できませんでした");
     }
     replies::refresh(state);
+    chat_events::refresh(state);
     state
         .composer
         .update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(

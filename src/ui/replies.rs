@@ -16,6 +16,7 @@ pub(super) struct ReplyDraft {
 
 fn eligible(message: &MessageInfo) -> bool {
     message.id.parse::<u128>().is_ok_and(|id| id > 0)
+        && message.chat_event.is_none()
         && !message.decryption_failed
         && !message.content_type.eq_ignore_ascii_case("CALL")
 }
@@ -293,6 +294,13 @@ mod tests {
         assert!(!eligible(&message));
         message.decryption_failed = false;
         message.content_type = "CALL".into();
+        assert!(!eligible(&message));
+        message.content_type = "CHAT_EVENT".into();
+        message.chat_event = Some(crate::protocol::ChatEventInfo {
+            kind: "joined".into(),
+            actor_mid: "u-peer".into(),
+            target_mids: Vec::new(),
+        });
         assert!(!eligible(&message));
     }
 

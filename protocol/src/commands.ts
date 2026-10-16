@@ -68,7 +68,7 @@ export type CommandRuntime = {
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
   saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
-  forUiMessages: (messages: Json[]) => Promise<Json[]>;
+  forUiMessages: (messages: Json[], chatMid?: string) => Promise<Json[]>;
   hydrateMedia: (messages: Json[], chatMid: string) => Promise<void>;
   summarizeTalkMessage: (
     message: TalkMessage,
@@ -545,7 +545,7 @@ export function createCommandService(runtime: CommandRuntime) {
         !cached.messages.some(needsDecryptionRefresh)
       ) {
         await updateChatPreview(chatMid, cached.messages);
-        const ui = await forUiMessages(cached.messages);
+        const ui = await forUiMessages(cached.messages, chatMid);
         ok(id, { messages: ui, cached: true });
         hydrateMedia(cached.messages, chatMid);
         return;
@@ -559,7 +559,7 @@ export function createCommandService(runtime: CommandRuntime) {
           await updateChatPreview(chatMid, disk);
           emitEvent("messages", {
             chatMid,
-            messages: await forUiMessages(disk),
+            messages: await forUiMessages(disk, chatMid),
             cached: true,
           });
           emitEvent("progress", {
@@ -576,7 +576,7 @@ export function createCommandService(runtime: CommandRuntime) {
         await updateChatPreview(chatMid, cached.messages);
         emitEvent("messages", {
           chatMid,
-          messages: await forUiMessages(cached.messages),
+          messages: await forUiMessages(cached.messages, chatMid),
           cached: true,
         });
         emitEvent("progress", {
@@ -622,7 +622,7 @@ export function createCommandService(runtime: CommandRuntime) {
           if (!cursor) {
             msgCache.set(chatMid, { at: Date.now(), messages: [] });
             await updateChatPreview(chatMid, []);
-            ok(id, { messages: [] });
+            ok(id, { messages: await forUiMessages([], chatMid) });
             emitEvent("progress", {
               scope: "messages",
               chatMid,
@@ -691,7 +691,7 @@ export function createCommandService(runtime: CommandRuntime) {
         msgCache.set(chatMid, { at: Date.now(), messages: out });
         await saveDiskMessages(chatMid, out);
         await updateChatPreview(chatMid, out);
-        ok(id, { messages: await forUiMessages(out), cached: false });
+        ok(id, { messages: await forUiMessages(out, chatMid), cached: false });
         emitEvent("progress", {
           scope: "messages",
           chatMid,

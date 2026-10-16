@@ -449,5 +449,10 @@
   "unpin_chat": "Unpin chat",
   "chat_pinned": "Pinned",
   "chat_pin_done": "Chat pinned",
-  "chat_unpin_done": "Chat unpinned"
+  "chat_unpin_done": "Chat unpinned",
+  "chat_event_invited": "{actor} invited {targets} to the group",
+  "chat_event_joined": "{actor} joined the group",
+  "chat_event_left": "{actor} left the group",
+  "chat_event_removed": "{actor} removed {targets} from the group",
+  "chat_event_unknown": "Group information updated"
 }
