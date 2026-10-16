@@ -22,6 +22,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [x] グループの吹き出しに送信者名を表示し、引用元の名前も更新
 - [x] アルバム一覧・写真の閲覧、拡大表示、原本の保存
 - [x] Photos, video, voice messages, files
+- [x] 通常の絵文字の選択・入力・送信と、LINE独自の絵文字の受信表示
 - [x] Paste and drag-and-drop attachments
 - [x] In-app viewers (image, video, PDF, text)
 - [x] Downloads, tray, Thai / English / Japanese, themes
@@ -30,6 +31,10 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [ ] Account switcher
 
 メッセージ横の矢印ボタンを押すと引用元が選ばれ、そのまま入力欄で返信を書けます。右クリックの「リプライ」からも選べます。×ボタンまたはEscで取り消せます。別のトークへ移ると引用元を解除します。
+
+入力欄の右端の絵文字アイコンから通常の絵文字を選べます。選んだ絵文字はカーソル位置に挿入し、肌色・家族・国旗などのUnicodeの組み合わせも通常のテキストとして送信します。表示にはシステムの絵文字フォントを使います（Arch Linuxでは `noto-fonts-emoji`）。
+
+受信したLINE独自の絵文字は、本文内の指定位置に静止画として表示します。画像は同時4件まで背景で取得してメディアキャッシュへ保存し、取得できない場合は元の代替テキストを残します。本文と絵文字の混在・連続表示に対応します。購入済みLINE絵文字の一覧・送信と、LINE絵文字のアニメーション再生は今回の対応範囲に含みません。引用欄と一覧プレビューには代替テキストを表示します。
 
 グループ・複数人トークでは、相手の吹き出しの上に送信者名を表示します。友だち登録していないメンバーも名前を取得し、取得中はメンバーを区別できる仮表示を出します。本文の表示を待たせず、名前や引用元の表示を後から更新します。取得に失敗した場合は、次回の履歴表示や新着時に一定時間を置いて再確認します。
 
