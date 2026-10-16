@@ -28,6 +28,7 @@ import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
+import { createUnreadSync } from "./unread_sync.ts";
 import { readReceiptPermission } from "./read_policy.ts";
 import { createEmojiService, lineEmojis } from "./emojis.ts";
 import { createChatPreviews } from "./chat_previews.ts";
@@ -340,9 +341,19 @@ const readReceipts = createReadReceipts({
   emit: emitEvent,
 });
 
+const unreadSync = createUnreadSync({
+  getClient: () => client,
+  selfMid: myMid,
+  latestMessageId: (mid) => boxCursor.get(mid)?.messageId,
+  getChats: () => chatCache?.chats ?? [],
+  save: saveChatCache,
+  emit: emitEvent,
+});
+
 const listener = createListener({
   getClient: () => client,
   observeMessage: (message) => {
+    unreadSync.observeMessage(message);
     messageSenders.observe([message]);
     emojiService.observe([message]);
   },
@@ -357,7 +368,9 @@ const listener = createListener({
   upsertChatFromMessage,
   hydrateLiveMedia,
   upsertChatFromContact,
-  handleReadReceipt: readReceipts.handleOperation,
+  handleReadReceipt: (operation) =>
+    unreadSync.handleOperation(operation) ||
+    readReceipts.handleOperation(operation),
   emitEvent,
 });
 
@@ -395,6 +408,7 @@ const commands = createCommandService({
   hydratePreviews,
   updateChatPreview: chatPreviews.updateFromMessages,
   refreshReadReceipts: readReceipts.refresh,
+  reconcileUnread: unreadSync.reconcile,
   readReceiptPermission: (chatMid) =>
     readReceiptPermission(join(dataDir, "settings.json"), myMid(), chatMid),
   bumpMediaEpoch,

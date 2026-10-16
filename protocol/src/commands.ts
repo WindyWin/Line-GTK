@@ -63,6 +63,7 @@ export type CommandRuntime = {
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
   updateChatPreview: (chatMid: string, messages: Json[]) => Promise<void>;
   refreshReadReceipts: (chatMid: string) => Promise<void>;
+  reconcileUnread?: (chats: ChatRow[]) => void;
   readReceiptPermission: (chatMid: string) => Promise<ReadPermission>;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
@@ -324,6 +325,7 @@ export function createCommandService(runtime: CommandRuntime) {
       if (
         !force && chatCache && Date.now() - chatCache.at < cachePolicy().memChat
       ) {
+        runtime.reconcileUnread?.(chatCache.chats);
         ok(id, {
           chats: chatCache.chats,
           count: chatCache.chats.length,
@@ -337,6 +339,7 @@ export function createCommandService(runtime: CommandRuntime) {
       if (!force) {
         const disk = await loadDiskChatCache();
         if (disk?.length) {
+          runtime.reconcileUnread?.(disk);
           chatCache = { at: 0, chats: disk };
           runtime.setChatCache(chatCache);
           emitEvent("chats", { chats: disk, count: disk.length, cached: true });
@@ -490,6 +493,7 @@ export function createCommandService(runtime: CommandRuntime) {
         return a.name.localeCompare(b.name);
       });
 
+      runtime.reconcileUnread?.(chats);
       chatCache = { at: Date.now(), chats };
       runtime.setChatCache(chatCache);
       try {
