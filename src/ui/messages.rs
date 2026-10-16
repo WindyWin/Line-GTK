@@ -50,11 +50,14 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     }
 
     let chat_mid = state.current_chat.borrow().clone();
+    let generation = *state.message_render_generation.borrow();
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
     glib::idle_add_local(move || {
         // トーク変更後に、前の履歴や引用候補を挿入しない。
-        if *state_c.current_chat.borrow() != chat_mid {
+        if *state_c.current_chat.borrow() != chat_mid
+            || *state_c.message_render_generation.borrow() != generation
+        {
             return glib::ControlFlow::Break;
         }
         let mut left = batch.borrow_mut();
@@ -1273,6 +1276,8 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    let generation = state.message_render_generation.borrow().wrapping_add(1);
+    *state.message_render_generation.borrow_mut() = generation;
     state.emoji_views.borrow_mut().clear();
     if state.emoji_textures.borrow().len() > 1024 {
         state.emoji_textures.borrow_mut().clear();

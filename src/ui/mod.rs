@@ -18,6 +18,7 @@ mod messages;
 mod notifications;
 mod read_pause;
 mod replies;
+mod resume_sync;
 mod settings;
 mod shell;
 mod state;
@@ -260,6 +261,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         self_avatar_path: Rc::new(RefCell::new(None)),
         self_picture_url: Rc::new(RefCell::new(None)),
         msg_list_fp: Rc::new(RefCell::new(None)),
+        message_render_generation: Rc::new(RefCell::new(0)),
+        history_request_generation: Rc::new(RefCell::new(0)),
+        resume_sync: Rc::new(RefCell::new(resume_sync::ResumeSync::default())),
         notif_pending: Rc::new(RefCell::new(HashMap::new())),
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
         emoji_views: Rc::new(RefCell::new(Vec::new())),
@@ -278,6 +282,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     replies::wire(&state);
     wire_scroll_pin(&state);
     wire_notification_actions(&state);
+    resume_sync::wire(&state);
     sync_tray(&state);
     apply_close_behavior(&state);
     sync_discord_rpc(&state);
@@ -1400,6 +1405,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     albums::close(&s2);
                     hidden_chats::close(&s2);
+                    resume_sync::cancel(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
@@ -1438,6 +1444,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
                     hidden_chats::close(&s2);
+                    resume_sync::cancel(&s2);
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
@@ -1677,12 +1684,15 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     set_msg_state(state, "loading", None);
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
+    let generation = state.history_request_generation.borrow().wrapping_add(1);
+    *state.history_request_generation.borrow_mut() = generation;
     match state.sidecar.fetch_messages(&chat.mid, 40) {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,
                 Pending::FetchMessages {
                     chat_mid: chat.mid.clone(),
+                    generation: *state.history_request_generation.borrow(),
                 },
             );
         }
@@ -1746,6 +1756,7 @@ fn restart_qr_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    resume_sync::cancel(state);
     albums::close(state);
     hidden_chats::close(state);
     *state.restarting.borrow_mut() = true;

@@ -440,5 +440,9 @@
   "chat_read_pause_active": "Read receipts paused for this friend",
   "chat_read_pause_enabled": "Read receipts paused for this friend",
   "chat_read_pause_disabled": "Read receipts will resume on your next normal interaction",
-  "insert_emoji": "Insert emoji"
+  "insert_emoji": "Insert emoji",
+  "resume_sync_loading": "Checking messages after reconnecting…",
+  "resume_sync_waiting": "Waiting to retry message sync…",
+  "resume_sync_failed": "Could not finish message sync",
+  "resume_sync_done": "Messages updated after reconnecting"
 }

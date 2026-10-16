@@ -276,7 +276,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             apply_chats(state, chats, cached);
         }
         ProtocolEvent::Messages { chat_mid, messages } => {
-            if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+            if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                && !resume_sync::stale_history_event(state, &chat_mid)
+            {
                 apply_messages(state, messages);
             }
         }
@@ -540,6 +542,20 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 return;
             }
+            if let Some(Pending::ResumeSync {
+                generation,
+                account,
+                chat_mid,
+            }) = pending
+            {
+                resume_sync::response(state, generation, account, chat_mid, ok, result);
+                return;
+            }
+            if let Some(Pending::FetchMessages { generation, .. }) = pending.as_ref()
+                && *generation != *state.history_request_generation.borrow()
+            {
+                return;
+            }
             if !ok {
                 if matches!(pending, Some(Pending::Login | Pending::LoginEmail))
                     && *state.restarting.borrow()
@@ -635,7 +651,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         friends::apply_friends(ui, friends);
                     }
                 }
-                Some(Pending::FetchMessages { chat_mid }) => {
+                Some(Pending::FetchMessages { chat_mid, .. }) => {
                     if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
                         let messages: Vec<MessageInfo> = result
                             .get("messages")
@@ -690,11 +706,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
-                Some(Pending::Album { .. }) | None => {}
+                Some(Pending::Album { .. } | Pending::ResumeSync { .. }) | None => {}
             }
         }
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
+            resume_sync::cancel(state);
             albums::close(state);
             hidden_chats::close(state);
             if !*state.restarting.borrow() {
@@ -748,6 +765,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
     hidden_chats::close(state);
@@ -824,6 +842,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
     hidden_chats::close(state);

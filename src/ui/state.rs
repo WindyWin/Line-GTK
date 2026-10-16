@@ -153,6 +153,9 @@ pub(super) struct AppState {
     pub self_avatar_path: Rc<RefCell<Option<String>>>,
     pub self_picture_url: Rc<RefCell<Option<String>>>,
     pub msg_list_fp: Rc<RefCell<Option<MessageListFingerprint>>>,
+    pub message_render_generation: Rc<RefCell<u64>>,
+    pub history_request_generation: Rc<RefCell<u64>>,
+    pub resume_sync: Rc<RefCell<super::resume_sync::ResumeSync>>,
     pub notif_pending: Rc<RefCell<HashMap<String, PendingNotif>>>,
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
     pub emoji_views: Rc<RefCell<Vec<super::emojis::EmojiText>>>,
@@ -169,6 +172,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    ResumeSync {
+        generation: u64,
+        account: String,
+        chat_mid: Option<String>,
+    },
     Album {
         ui: std::rc::Weak<super::albums::AlbumUi>,
         generation: u64,
@@ -180,6 +188,7 @@ pub(super) enum Pending {
     ListFriends,
     FetchMessages {
         chat_mid: String,
+        generation: u64,
     },
     Send {
         chat_mid: String,
