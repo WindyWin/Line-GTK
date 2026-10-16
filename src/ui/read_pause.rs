@@ -21,6 +21,48 @@ pub(super) fn can_mark_read(state: &AppState, mid: &str) -> bool {
         .is_some_and(|account| state.config.borrow().can_mark_chat_read(account, mid))
 }
 
+// 復帰や再描画ではなく、本文・入力欄での操作をきっかけに既読を再開する。
+pub(super) fn read_on_interaction(state: &AppState) {
+    let chat_mid = state.current_chat.borrow().clone();
+    let account = state.self_mid.borrow().clone();
+    let generation = *state.message_render_generation.borrow();
+    let s = state.clone();
+    glib::idle_add_local_once(move || {
+        // スクロール操作の適用後に判定し、トーク切り替え後の遅延処理は捨てる。
+        if *s.current_chat.borrow() != chat_mid
+            || *s.self_mid.borrow() != account
+            || *s.message_render_generation.borrow() != generation
+            || !*s.session_ready.borrow()
+            || !s.window.is_active()
+            || s.msg_stack.visible_child_name().as_deref() != Some("list")
+            || !*s.stick_bottom.borrow()
+        {
+            return;
+        }
+        let Some(mid) = chat_mid else { return };
+        let adjustment = s.message_scroll.vadjustment();
+        let bottom = (adjustment.upper() - adjustment.page_size()).max(0.0);
+        if adjustment.value() + 120.0 < bottom
+            || !can_mark_read(&s, &mid)
+            || !s
+                .chats
+                .borrow()
+                .iter()
+                .any(|c| c.mid == mid && c.unread > 0)
+            || !s
+                .last_incoming_id
+                .borrow()
+                .as_ref()
+                .is_some_and(|id| s.seen_msg_ids.borrow().contains(id))
+        {
+            return;
+        }
+        mark_chat_read(&s, &mid);
+        clear_unread_badge(&s, &mid);
+        dismiss_new_marker(&s);
+    });
+}
+
 pub(super) fn eligible(chat: &ChatInfo) -> bool {
     chat.mid.starts_with('u') && chat.kind != "bot"
 }
@@ -65,6 +107,34 @@ pub(super) fn refresh_chat_row(state: &AppState, chat: &ChatInfo, row: &gtk::Lis
 }
 
 pub(super) fn wire(state: &AppState) {
+    for widget in [
+        state.message_scroll.clone().upcast::<gtk::Widget>(),
+        state.composer.clone().upcast::<gtk::Widget>(),
+    ] {
+        let click = gtk::GestureClick::new();
+        click.set_button(1);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let s = state.clone();
+        // 入力欄がジェスチャーを取得する前に、操作の開始を受け取る。
+        click.connect_pressed(move |_, _, _, _| read_on_interaction(&s));
+        widget.add_controller(click);
+    }
+    let key = gtk::EventControllerKey::new();
+    key.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let s = state.clone();
+    key.connect_key_released(move |_, _, _, _| read_on_interaction(&s));
+    state.conversation.add_controller(key);
+
+    // ScrolledWindow内の標準処理より前に観測し、スクロール自体は妨げない。
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let s = state.clone();
+    wheel.connect_scroll(move |_, _, _| {
+        read_on_interaction(&s);
+        glib::Propagation::Proceed
+    });
+    state.conversation.add_controller(wheel);
+
     let action = gio::SimpleAction::new("toggle-chat-read-pause", Some(glib::VariantTy::STRING));
     let s = state.clone();
     action.connect_activate(move |_, value| {
