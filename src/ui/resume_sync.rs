@@ -55,6 +55,11 @@ pub(super) fn stale_history_event(state: &AppState, mid: &str) -> bool {
     found
 }
 
+pub(super) fn in_progress(state: &AppState) -> bool {
+    let sync = state.resume_sync.borrow();
+    sync.busy || sync.scheduled || sync.sleeping
+}
+
 pub(super) fn wire(state: &AppState) {
     let s = state.clone();
     let action = gio::SimpleAction::new("sync-after-resume", None);
@@ -97,14 +102,9 @@ pub(super) fn wire(state: &AppState) {
 
     let monitor = gio::NetworkMonitor::default();
     let was_offline = Rc::new(std::cell::Cell::new(!monitor.is_network_available()));
-    let initialized = std::cell::Cell::new(false);
     let s = state.clone();
     monitor.connect_network_changed(move |_, available| {
-        // 監視開始直後の初期状態は、起動時の通常取得と重複させない。
-        if !initialized.replace(true) {
-            was_offline.set(!available);
-            return;
-        }
+        // 初回通知でも実際のオフライン→オンラインなら復旧する。
         if !available {
             was_offline.set(true);
         } else if was_offline.replace(false) {
@@ -164,7 +164,6 @@ fn request(state: &AppState) {
         sync.attempts = 0;
         sync.generation = sync.generation.wrapping_add(1);
     }
-    contact_blocks::request_refresh(state);
     schedule(state, 2);
 }
 
@@ -194,7 +193,8 @@ fn schedule(state: &AppState, delay: u64) {
         s.status.set_text(&crate::i18n::t("resume_sync_loading"));
         match s.sidecar.request(
             "list_chats",
-            Some(serde_json::json!({"force":true,"quiet":true})),
+            // 履歴の再取得だけでなく、休止で止まった新着の受信接続も作り直す。
+            Some(serde_json::json!({"force":true,"quiet":true,"reconnect":true})),
         ) {
             Ok(id) => {
                 s.pending.borrow_mut().insert(
@@ -295,6 +295,7 @@ pub(super) fn response(
             return;
         };
         apply_chats(state, chats, false);
+        contact_blocks::request_refresh(state);
         let mid = state.current_chat.borrow().clone();
         let Some(mid) = mid else {
             finished(state);

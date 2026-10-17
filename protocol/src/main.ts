@@ -26,6 +26,10 @@ import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
 import { createContactBlocks } from "./contact_blocks.ts";
 import { createListener } from "./listener.ts";
+import {
+  createConnectionRecovery,
+  retireClient,
+} from "./connection_recovery.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
@@ -168,6 +172,7 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
     if (authDead) return;
     authDead = true;
     listening = false;
+    if (client) retireClient(client);
     client = null;
     cancelBackgroundWork();
     console.error("[auth] session ended:", msg);
@@ -369,6 +374,8 @@ const contactBlocks = createContactBlocks({
 });
 
 const listener = createListener({
+  handleIncomingCall: calls.handleIncomingCall,
+  handleCallCancel: calls.handleCallCancel,
   shouldIgnoreMessage: contactBlocks.ignoreMessage,
   getClient: () => client,
   observeMessage: (message) => {
@@ -393,6 +400,23 @@ const listener = createListener({
     readReceipts.handleOperation(operation) ||
     chatEvents.handleOperation(operation),
   emitEvent,
+});
+
+const connectionRecovery = createConnectionRecovery({
+  getClient: () => authDead ? null : client,
+  restore: async (current) => {
+    const token = current.authToken;
+    const device = await loadAuthDevice();
+    return await restoreSession(token, device, storagePath, LINE_VERSION);
+  },
+  activate: (next) => {
+    client = next;
+    listening = false;
+    // 休止前の応答しない取得に、復帰後の取得を合流させない。
+    inFlight.clear();
+    patchE2eeGuards();
+    listener.start();
+  },
 });
 
 const commands = createCommandService({
@@ -601,7 +625,9 @@ async function refetchMessageData(
 function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const existing = inFlight.get(key);
   if (existing) return existing as Promise<T>;
-  const p = fn().finally(() => inFlight.delete(key));
+  const p = fn().finally(() => {
+    if (inFlight.get(key) === p) inFlight.delete(key);
+  });
   inFlight.set(key, p);
   return p;
 }
@@ -1864,6 +1890,7 @@ async function handle(req: Json) {
         await commands.loginToken(id, params.token as string | undefined);
         break;
       case "list_chats":
+        if (params.reconnect) await connectionRecovery.reconnect();
         await commands.listChats(id, !!params.force, !!params.quiet);
         break;
       case "list_albums":
@@ -2168,6 +2195,7 @@ async function handle(req: Json) {
         try {
           await clearAuth();
         } catch { /* ignore */ }
+        if (client) retireClient(client);
         client = null;
         listening = false;
         chatCache = null;
