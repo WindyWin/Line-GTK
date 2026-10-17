@@ -88,6 +88,7 @@ pub(super) fn wire_context(state: &AppState, row: &gtk::ListBoxRow, chat: &ChatI
     let eligible = read_pause::eligible(chat);
     let config = state.config.clone();
     let account = state.self_mid.clone();
+    let block_state = state.clone();
     let popup = Rc::new(move |row: &gtk::ListBoxRow, x: f64, y: f64| {
         let menu = gio::Menu::new();
         let item = gio::MenuItem::new(Some(&crate::i18n::t("hide_chat")), None);
@@ -105,6 +106,7 @@ pub(super) fn wire_context(state: &AppState, row: &gtk::ListBoxRow, chat: &ChatI
                 .is_some_and(|account| config.borrow().chat_read_receipts_paused(account, &mid));
             read_pause::append_chat_menu(&menu, &mid, paused);
         }
+        contact_blocks::append_menu(&block_state, &menu, &mid);
         let popover = gtk::PopoverMenu::from_model(Some(&menu));
         popover.set_parent(row);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));

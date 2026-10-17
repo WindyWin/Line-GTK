@@ -48,6 +48,7 @@ pub(super) struct AppState {
     pub read_pause_label: gtk::Label,
     pub read_pause_box: gtk::Box,
     pub read_once_btn: gtk::Button,
+    pub contact_blocks: Rc<RefCell<super::contact_blocks::BlockState>>,
     pub login: Rc<login::LoginWidgets>,
     pub session_device: Rc<RefCell<String>>,
     pub profile_label: gtk::Label,
@@ -180,6 +181,10 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    ContactBlocks {
+        account: String,
+        change: Option<(String, bool)>,
+    },
     MarkReadOnce {
         account: String,
         chat_mid: String,

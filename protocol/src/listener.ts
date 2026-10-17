@@ -6,6 +6,7 @@ import type { ReadOperation } from "./read_receipts.ts";
 type Json = Record<string, unknown>;
 
 export type ListenerRuntime = {
+  shouldIgnoreMessage?: (message: Json) => boolean;
   getClient: () => Client | null;
   observeMessage?: (message: Json) => void;
   refreshMessageSender?: (mid: string) => void;
@@ -51,6 +52,7 @@ export function createListener(runtime: ListenerRuntime) {
       try {
         const tm = msg as TalkMessage;
         const message = await summarizeTalkMessage(tm, { withMedia: false });
+        if (runtime.shouldIgnoreMessage?.(message)) return;
         runtime.observeMessage?.(message);
         const peer = conversationMid(message);
         runtime.invalidateMessages(peer);

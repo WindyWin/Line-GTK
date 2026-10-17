@@ -458,5 +458,21 @@
   "mark_read_once": "ここまで既読にする",
   "mark_read_once_tooltip": "既読停止はオンのまま、今あるメッセージだけを一度既読にします。その後の新着には既読をつけません。",
   "mark_read_once_done": "ここまで既読にしました。既読停止の設定は変えていません",
-  "mark_read_once_failed": "既読にできませんでした。未読のまま残しています"
+  "mark_read_once_failed": "既読にできませんでした。未読のまま残しています",
+  "block_contact": "ブロック",
+  "unblock_contact": "ブロックを解除",
+  "contact_blocked": "ブロック中",
+  "contact_block_confirm": "{name}をブロックしますか？",
+  "contact_block_body": "LINE側でブロックし、この相手からの個別メッセージや通話を受信しないようにします。トーク履歴は残り、後から解除できます。グループ内のメッセージは対象外です。",
+  "contact_block_done": "ブロックしました",
+  "contact_unblock_done": "ブロックを解除しました",
+  "contact_block_failed": "ブロック状態を更新できませんでした。通信を確認して再試行してください。",
+  "contact_blocked_send": "ブロック中の相手には送信できません。先にブロックを解除してください。",
+  "blocked_contacts": "ブロック中のユーザー",
+  "blocked_contacts_subtitle": "LINE側のブロック一覧を確認し、解除します",
+  "blocked_contacts_description": "LINEアカウントのブロック一覧です。トークがない相手もここから解除できます。",
+  "blocked_contacts_empty": "ブロック中のユーザーはいません",
+  "contact_blocks_refresh": "ブロック状態を更新",
+  "contact_blocks_loading": "ブロック状態を確認しています…",
+  "contact_block_cancel": "キャンセル"
 }

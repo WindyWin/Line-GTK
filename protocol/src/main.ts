@@ -24,6 +24,7 @@ import { createOutgoingMedia } from "./outgoing_media.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
+import { createContactBlocks } from "./contact_blocks.ts";
 import { createListener } from "./listener.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
@@ -360,7 +361,15 @@ const chatEvents = createChatEvents({
   emit: emitEvent,
 });
 
+const contactBlocks = createContactBlocks({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  name: (mid) => contactIndex.get(mid)?.name,
+  emit: emitEvent,
+});
+
 const listener = createListener({
+  shouldIgnoreMessage: contactBlocks.ignoreMessage,
   getClient: () => client,
   observeMessage: (message) => {
     unreadSync.observeMessage(message);
@@ -379,6 +388,7 @@ const listener = createListener({
   hydrateLiveMedia,
   upsertChatFromContact,
   handleReadReceipt: (operation) =>
+    contactBlocks.handleOperation(operation) ||
     unreadSync.handleOperation(operation) ||
     readReceipts.handleOperation(operation) ||
     chatEvents.handleOperation(operation),
@@ -1408,7 +1418,7 @@ async function buildFriendsList(): Promise<ChatRow[]> {
   const friends: ChatRow[] = [];
   for (const [mid, info] of contactIndex) {
     // Users / bots / OA use u… mids; skip groups (c…) and rooms (r…).
-    if (!mid.startsWith("u")) continue;
+    if (!mid.startsWith("u") || contactBlocks.isBlocked(mid)) continue;
     friends.push({
       mid,
       name: info.name || mid,
@@ -1780,7 +1790,36 @@ async function handle(req: Json) {
   const params = (req.params ?? {}) as Json;
 
   try {
+    if (
+      [
+        "send_message",
+        "send_audio",
+        "send_media",
+        "send_sticker",
+        "send_postback",
+        "call_start",
+      ].includes(method) &&
+      contactBlocks.isBlocked(String(
+        method === "call_start"
+          ? params.mid ?? params.chatMid ?? ""
+          : params.chatMid ?? "",
+      ))
+    ) {
+      throw new Error("contact_blocked_send");
+    }
     switch (method) {
+      case "get_blocked_contacts":
+        ok(id, await contactBlocks.refresh());
+        break;
+      case "set_contact_blocked":
+        if (typeof params.blocked !== "boolean") {
+          throw new Error("contact_blocks_invalid_user");
+        }
+        ok(
+          id,
+          await contactBlocks.set(String(params.mid ?? ""), params.blocked),
+        );
+        break;
       case "ping":
         ok(id, { pong: true, version: "0.2.0" });
         break;

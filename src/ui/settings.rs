@@ -18,6 +18,7 @@ pub struct SettingsDeps {
     pub on_animations: Rc<dyn Fn(bool)>,
     pub on_experimental_calls: Rc<dyn Fn(bool)>,
     pub on_hidden_chats: Rc<dyn Fn(&gtk::Window)>,
+    pub on_blocked_contacts: Rc<dyn Fn(&gtk::Window)>,
     pub on_tray_settings: Rc<dyn Fn()>,
     pub on_discord_rpc: Rc<dyn Fn()>,
     pub toast: Rc<dyn Fn(&str)>,
@@ -391,6 +392,20 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         });
     }
     chat_grp.add(&hidden_row);
+    let blocked_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("blocked_contacts"))
+        .subtitle(i18n::t("blocked_contacts_subtitle"))
+        .activatable(true)
+        .build();
+    blocked_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let on_blocked = deps.on_blocked_contacts.clone();
+    let weak = win.downgrade();
+    blocked_row.connect_activated(move |_| {
+        if let Some(win) = weak.upgrade() {
+            on_blocked(win.upcast_ref());
+        }
+    });
+    chat_grp.add(&blocked_row);
     let notif_row = libadwaita::SwitchRow::builder()
         .title(i18n::t("notifications"))
         .subtitle(i18n::t("notifications_subtitle"))

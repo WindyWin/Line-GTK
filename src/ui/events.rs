@@ -264,6 +264,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             upsert_chat_row(state, chat);
         }
+        ProtocolEvent::ContactBlocks {
+            account_mid,
+            contacts,
+        } => contact_blocks::apply(state, &account_mid, contacts),
         ProtocolEvent::ChatUnread {
             chat_mid,
             account_mid,
@@ -549,6 +553,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::ContactBlocks { account, change }) = pending {
+                contact_blocks::response(state, &account, change, ok);
+                return;
+            }
             if let Some(Pending::MarkReadOnce { account, chat_mid }) = pending {
                 read_pause::once_response(state, &account, &chat_mid, ok, &result);
                 return;
@@ -652,6 +660,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 let err = error.as_deref().unwrap_or("request failed");
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
+                } else if err.contains("contact_blocked_send") {
+                    toast(state, &crate::i18n::t("contact_blocked_send"));
                 } else {
                     toast(state, err);
                 }
@@ -739,7 +749,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(
                     Pending::Album { .. }
                     | Pending::ResumeSync { .. }
-                    | Pending::MarkReadOnce { .. },
+                    | Pending::MarkReadOnce { .. }
+                    | Pending::ContactBlocks { .. },
                 )
                 | None => {}
             }
@@ -800,6 +811,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    contact_blocks::reset(state);
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
     resume_sync::cancel(state);
@@ -846,6 +858,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             state.status.set_text(&crate::i18n::t("loading_chats"));
             set_side_state(state, "loading", None);
             set_msg_state(state, "idle", None);
+            contact_blocks::request_refresh(state);
             if let Ok(id) = state.sidecar.list_chats() {
                 state.pending.borrow_mut().insert(id, Pending::ListChats);
             }

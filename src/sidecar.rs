@@ -373,6 +373,17 @@ impl Sidecar {
         self.request("mute_chat", Some(json!({ "mid": mid, "muted": muted })))
     }
 
+    pub fn blocked_contacts(&self) -> Result<u64> {
+        self.request("get_blocked_contacts", None)
+    }
+
+    pub fn set_contact_blocked(&self, mid: &str, blocked: bool) -> Result<u64> {
+        self.request(
+            "set_contact_blocked",
+            Some(json!({ "mid": mid, "blocked": blocked })),
+        )
+    }
+
     pub fn mark_read_once(&self, chat_mid: &str, through: &str) -> Result<u64> {
         self.request(
             "mark_read_once",
@@ -843,6 +854,25 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false),
                         },
+                        "contact_blocks" => {
+                            let Some(contacts) = resp
+                                .extra
+                                .get("contacts")
+                                .cloned()
+                                .and_then(|v| serde_json::from_value(v).ok())
+                            else {
+                                continue;
+                            };
+                            ProtocolEvent::ContactBlocks {
+                                account_mid: resp
+                                    .extra
+                                    .get("accountMid")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                contacts,
+                            }
+                        }
                         "chat_unread" => ProtocolEvent::ChatUnread {
                             chat_mid: resp
                                 .extra

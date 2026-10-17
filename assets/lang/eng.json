@@ -458,5 +458,21 @@
   "mark_read_once": "Mark read up to now",
   "mark_read_once_tooltip": "Mark current messages as read once, keeping read receipts paused for future messages.",
   "mark_read_once_done": "Marked read up to this point. Pause settings are unchanged.",
-  "mark_read_once_failed": "Could not mark messages as read. Unread status has been kept."
+  "mark_read_once_failed": "Could not mark messages as read. Unread status has been kept.",
+  "block_contact": "Block",
+  "unblock_contact": "Unblock",
+  "contact_blocked": "Blocked",
+  "contact_block_confirm": "Block {name}?",
+  "contact_block_body": "Block this user on LINE to stop direct messages and calls. Chat history is kept and you can unblock later. Group messages are unaffected.",
+  "contact_block_done": "User blocked",
+  "contact_unblock_done": "User unblocked",
+  "contact_block_failed": "Could not update block status. Check your connection and try again.",
+  "contact_blocked_send": "Unblock this user before sending a message.",
+  "blocked_contacts": "Blocked users",
+  "blocked_contacts_subtitle": "View and manage your LINE block list",
+  "blocked_contacts_description": "Your LINE account block list. You can unblock users even without an existing chat.",
+  "blocked_contacts_empty": "No blocked users",
+  "contact_blocks_refresh": "Refresh block status",
+  "contact_blocks_loading": "Checking block status…",
+  "contact_block_cancel": "Cancel"
 }

@@ -6,6 +6,7 @@ mod chat_events;
 mod chat_filter;
 mod chats;
 mod composer_media;
+mod contact_blocks;
 mod diagnostics;
 mod downloads;
 mod emojis;
@@ -138,6 +139,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
     let state = AppState {
+        contact_blocks: Rc::new(RefCell::new(contact_blocks::BlockState::default())),
         read_once_btn: shell.read_once_btn,
         app: app.clone(),
         sidecar: sidecar.clone(),
@@ -280,6 +282,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     albums::wire(&state);
     chat_filter::wire(&state);
     hidden_chats::wire(&state);
+    contact_blocks::wire(&state);
     pinned_chats::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
@@ -1414,6 +1417,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     albums::close(&s2);
                     hidden_chats::close(&s2);
+                    contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     s2.pending.borrow_mut().clear();
@@ -1453,6 +1457,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
                     hidden_chats::close(&s2);
+                    contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
@@ -1485,6 +1490,10 @@ fn wire_actions(state: &AppState) {
             on_hidden_chats: {
                 let s2 = s.clone();
                 Rc::new(move |parent| hidden_chats::open(&s2, parent))
+            },
+            on_blocked_contacts: {
+                let s2 = s.clone();
+                Rc::new(move |parent| contact_blocks::open(&s2, parent))
             },
             on_tray_settings: {
                 let s2 = s.clone();
@@ -1687,6 +1696,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         .set_text(&crate::i18n::tf("chat_prefix", &[("name", &chat.name)]));
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
+    contact_blocks::refresh_controls(state);
     let can_mute = chat.mid.starts_with('u');
     state.mute_btn.set_sensitive(can_mute);
     update_mute_btn(state, chat.muted);
@@ -1766,6 +1776,7 @@ fn restart_qr_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    contact_blocks::reset(state);
     resume_sync::cancel(state);
     albums::close(state);
     hidden_chats::close(state);

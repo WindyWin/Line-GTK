@@ -164,6 +164,7 @@ fn request(state: &AppState) {
         sync.attempts = 0;
         sync.generation = sync.generation.wrapping_add(1);
     }
+    contact_blocks::request_refresh(state);
     schedule(state, 2);
 }
 

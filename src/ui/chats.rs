@@ -320,6 +320,17 @@ pub(super) fn build_chat_row(
         .build();
     avatar_overlay.add_overlay(&pin);
     avatar_overlay.set_measure_overlay(&pin, false);
+    let blocked = gtk::Image::builder()
+        .icon_name("action-unavailable-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::End)
+        .visible(false)
+        .tooltip_text(crate::i18n::t("contact_blocked"))
+        .css_classes(["line-chat-blocked"])
+        .build();
+    avatar_overlay.add_overlay(&blocked);
+    avatar_overlay.set_measure_overlay(&blocked, false);
 
     let text_col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)

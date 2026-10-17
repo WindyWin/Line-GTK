@@ -723,7 +723,7 @@ pub fn load_css() {
         r#"
 .line-read-pause { padding: 4px 8px; border-radius: 10px; }
 .line-read-pause.line-read-paused { background: alpha(@accent_bg_color, 0.16); color: @accent_color; }
-.line-chat-read-paused, .line-chat-pinned { background: @window_bg_color; color: @accent_color; border-radius: 999px; padding: 2px; }
+.line-chat-read-paused, .line-chat-pinned, .line-chat-blocked { background: @window_bg_color; color: @accent_color; border-radius: 999px; padding: 2px; }
 .line-reply-quote { border-left: 3px solid @accent_bg_color; padding: 4px 8px; background: alpha(@accent_bg_color, 0.08); border-radius: 4px; }
 .line-reply-preview { border-left: 3px solid @accent_bg_color; padding: 8px 10px; background: alpha(@accent_bg_color, 0.10); border-radius: 8px; }
 .line-reply-button { min-width: 28px; min-height: 28px; padding: 0; color: @accent_color; }

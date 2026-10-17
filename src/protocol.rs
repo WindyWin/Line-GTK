@@ -55,6 +55,12 @@ pub struct ChatInfo {
     pub muted: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockedContact {
+    pub mid: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FlexAction {
     #[serde(default)]
@@ -264,6 +270,10 @@ pub enum ProtocolEvent {
         account_mid: String,
         through_message_id: String,
         unread: i64,
+    },
+    ContactBlocks {
+        account_mid: String,
+        contacts: Vec<BlockedContact>,
     },
     ReadReceipt {
         chat_mid: String,
