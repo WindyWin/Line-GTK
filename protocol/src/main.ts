@@ -29,6 +29,7 @@ import { createListener } from "./listener.ts";
 import {
   createConnectionRecovery,
   retireClient,
+  waitForReceiver,
 } from "./connection_recovery.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
@@ -1890,7 +1891,11 @@ async function handle(req: Json) {
         await commands.loginToken(id, params.token as string | undefined);
         break;
       case "list_chats":
-        if (params.reconnect) await connectionRecovery.reconnect();
+        if (params.reconnect) {
+          await connectionRecovery.reconnect();
+          if (!client) throw new Error("not_logged_in");
+          await waitForReceiver(client);
+        }
         await commands.listChats(id, !!params.force, !!params.quiet);
         break;
       case "list_albums":

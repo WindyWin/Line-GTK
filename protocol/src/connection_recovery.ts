@@ -7,6 +7,21 @@ type RecoveryRuntime = {
   timeoutMs?: number;
 };
 
+// listen()は接続前に戻るため、PUSHの通信路が開いたことも確認する。
+export async function waitForReceiver(client: Client, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (client.base.authToken) {
+    if (
+      client.base.push.conns.some((conn) => conn.resStream && conn.reqStream)
+    ) return;
+    if (Date.now() >= deadline) throw new Error("receiver_connect_timeout");
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(100, timeoutMs))
+    );
+  }
+  throw new Error("receiver_session_changed");
+}
+
 // 古い受信ループを終了させ、新しい接続のストリームに干渉させない。
 export function retireClient(client: Client) {
   client.base.authToken = undefined;

@@ -1,6 +1,9 @@
 import { assertEquals, assertRejects, assertStrictEquals } from "@std/assert";
 import type { Client, TalkMessage } from "@evex/linejs";
-import { createConnectionRecovery } from "../src/connection_recovery.ts";
+import {
+  createConnectionRecovery,
+  waitForReceiver,
+} from "../src/connection_recovery.ts";
 import { createListener, type ListenerRuntime } from "../src/listener.ts";
 
 function mockClient(mid = "u-self") {
@@ -91,6 +94,35 @@ Deno.test("通信失敗では既存接続を維持し、次の要求で再試行
   assertEquals(old.closes(), 0);
   await recovery.reconnect();
   assertStrictEquals(current, next.client);
+});
+
+Deno.test("受信の開始呼び出しだけで成功にせず、実際の通信路が開くまで待つ", async () => {
+  const { client } = mockClient();
+  const pending = waitForReceiver(client, 100);
+  const connection = client.base.push.conns[0];
+  connection.resStream = new ReadableStream();
+  await assertRejects(
+    () => waitForReceiver(client, 2),
+    Error,
+    "receiver_connect_timeout",
+  );
+  connection.reqStream = {} as typeof connection.reqStream;
+  await pending;
+});
+
+Deno.test("接続開始に失敗した受信処理を時間切れにし、セッション終了も検出する", async () => {
+  const { client } = mockClient();
+  await assertRejects(
+    () => waitForReceiver(client, 2),
+    Error,
+    "receiver_connect_timeout",
+  );
+  client.base.authToken = undefined;
+  await assertRejects(
+    () => waitForReceiver(client),
+    Error,
+    "receiver_session_changed",
+  );
 });
 
 for (
