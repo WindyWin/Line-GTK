@@ -66,8 +66,7 @@ pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
         && row.is_visible()
     {
         state.chat_list.select_row(Some(&row));
-        // Ensure the selected row is scrolled into view.
-        row.grab_focus();
+        // 新着や送信後の選択同期では、入力欄など操作中のウィジェットからフォーカスを奪わない。
     }
 }
 
