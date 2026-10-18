@@ -317,14 +317,13 @@ pub(super) fn open_media_viewer_for(
         .spacing(0)
         .css_classes(["line-media-viewer-root"])
         .build();
+    if matches!(kind, ViewerKind::Image | ViewerKind::Video) {
+        root.add_css_class("line-media-viewer-visual");
+    }
 
     let bar = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(8)
-        .margin_bottom(8)
         .css_classes(["line-media-viewer-bar"])
         .build();
     let title = gtk::Label::builder()
@@ -332,6 +331,9 @@ pub(super) fn open_media_viewer_for(
         .hexpand(true)
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
+        .width_chars(8)
+        .max_width_chars(28)
+        .tooltip_text(suggest_name)
         .css_classes(["heading"])
         .build();
 
@@ -341,10 +343,13 @@ pub(super) fn open_media_viewer_for(
         .css_classes(["flat", "circular"])
         .build();
     let dl = gtk::Button::builder()
-        .icon_name("folder-download-symbolic")
         .tooltip_text(crate::i18n::t("media_download"))
-        .css_classes(["flat", "circular"])
+        .css_classes(["suggested-action"])
         .build();
+    let save_content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    save_content.append(&gtk::Image::from_icon_name("folder-download-symbolic"));
+    save_content.append(&gtk::Label::new(Some(&crate::i18n::t("media_download"))));
+    dl.set_child(Some(&save_content));
     let close = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .tooltip_text(crate::i18n::t("media_close"))
@@ -605,7 +610,7 @@ pub(super) fn append_image_viewer(
     // View transform: image pixel (ix,iy) -> widget (ox + ix*zoom, oy + iy*zoom).
     let zoom = Rc::new(RefCell::new(1.0_f64));
     let offset = Rc::new(RefCell::new((0.0_f64, 0.0_f64)));
-    let fitted = Rc::new(RefCell::new(false));
+    let fit_mode = Rc::new(std::cell::Cell::new(true));
     let fast_paint = Rc::new(RefCell::new(false));
     let pixbuf = Rc::new(base_pixbuf);
     // Reused viewport-sized buffer so pan/zoom never reallocates every frame.
@@ -623,7 +628,7 @@ pub(super) fn append_image_viewer(
         .css_classes(["flat", "circular"])
         .build();
     let zoom_reset = gtk::Button::builder()
-        .icon_name("zoom-fit-best-symbolic")
+        .label("100%")
         .tooltip_text(crate::i18n::t("media_zoom_reset"))
         .css_classes(["flat", "circular"])
         .build();
@@ -632,14 +637,19 @@ pub(super) fn append_image_viewer(
         .tooltip_text(crate::i18n::t("media_zoom_in"))
         .css_classes(["flat", "circular"])
         .build();
-    bar.append(&zoom_out);
-    bar.append(&zoom_reset);
-    bar.append(&zoom_in);
+    let zoom_controls = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .css_classes(["line-media-viewer-zoom"])
+        .build();
+    zoom_controls.append(&zoom_out);
+    zoom_controls.append(&zoom_reset);
+    zoom_controls.append(&zoom_in);
+    bar.append(&zoom_controls);
 
     let draw_btn = gtk::ToggleButton::builder()
-        .icon_name("document-edit-symbolic")
+        .label(crate::i18n::t("media_draw"))
         .tooltip_text(crate::i18n::t("media_draw"))
-        .css_classes(["flat", "circular"])
+        .css_classes(["flat"])
         .build();
     let undo_btn = gtk::Button::builder()
         .icon_name("edit-undo-symbolic")
@@ -654,38 +664,66 @@ pub(super) fn append_image_viewer(
         .sensitive(false)
         .build();
     let send_btn = gtk::Button::builder()
-        .icon_name("mail-send-symbolic")
+        .label(crate::i18n::t("media_draw_send"))
         .tooltip_text(crate::i18n::t("media_draw_send"))
-        .css_classes(["flat", "circular", "suggested-action"])
+        .css_classes(["suggested-action"])
         .build();
     bar.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     bar.append(&draw_btn);
+    let edit_tools = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .halign(gtk::Align::Center)
+        .build();
+    let edit_strip = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .halign(gtk::Align::Fill)
+        .css_classes(["line-media-draw-tools"])
+        .build();
+    edit_tools.set_hexpand(true);
+    edit_strip.append(&edit_tools);
+    let edit_revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .transition_duration(if state.config.borrow().animations {
+            160
+        } else {
+            0
+        })
+        .child(&edit_strip)
+        .build();
+    body.append(&edit_revealer);
+    let mut first_swatch: Option<gtk::ToggleButton> = None;
     for (r, g, b, class, tip) in [
-        (0.90, 0.22, 0.21, "line-draw-c-red", "Red"),
-        (0.26, 0.63, 0.28, "line-draw-c-green", "Green"),
-        (0.12, 0.53, 0.90, "line-draw-c-blue", "Blue"),
-        (0.99, 0.85, 0.21, "line-draw-c-yellow", "Yellow"),
-        (1.0, 1.0, 1.0, "line-draw-c-white", "White"),
-        (0.13, 0.13, 0.13, "line-draw-c-black", "Black"),
+        (0.90, 0.22, 0.21, "line-draw-c-red", "media_color_red"),
+        (0.26, 0.63, 0.28, "line-draw-c-green", "media_color_green"),
+        (0.12, 0.53, 0.90, "line-draw-c-blue", "media_color_blue"),
+        (0.99, 0.85, 0.21, "line-draw-c-yellow", "media_color_yellow"),
+        (1.0, 1.0, 1.0, "line-draw-c-white", "media_color_white"),
+        (0.13, 0.13, 0.13, "line-draw-c-black", "media_color_black"),
     ] {
-        let btn = gtk::Button::builder()
-            .label("●")
-            .tooltip_text(tip)
-            .css_classes(["flat", "circular", "line-draw-swatch", class])
+        let btn = gtk::ToggleButton::builder()
+            .tooltip_text(crate::i18n::t(tip))
+            .css_classes(["circular", "line-draw-swatch", class])
             .build();
+        btn.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(tip))]);
+        if let Some(first) = &first_swatch {
+            btn.set_group(Some(first));
+        } else {
+            btn.set_active(true);
+            first_swatch = Some(btn.clone());
+        }
         let brush_color = brush_color.clone();
-        let draw_btn = draw_btn.clone();
-        btn.connect_clicked(move |_| {
-            *brush_color.borrow_mut() = (r, g, b, 1.0);
-            if !draw_btn.is_active() {
-                draw_btn.set_active(true);
+        btn.connect_toggled(move |btn| {
+            if btn.is_active() {
+                *brush_color.borrow_mut() = (r, g, b, 1.0);
             }
         });
-        bar.append(&btn);
+        edit_tools.append(&btn);
     }
-    bar.append(&undo_btn);
-    bar.append(&clear_btn);
-    bar.append(&send_btn);
+    edit_tools.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+    edit_tools.append(&undo_btn);
+    edit_tools.append(&clear_btn);
+    edit_tools.append(&send_btn);
 
     let area = gtk::DrawingArea::builder()
         .hexpand(true)
@@ -734,7 +772,12 @@ pub(super) fn append_image_viewer(
                 if let Some(dest) = slot.as_ref() {
                     // Transparent edges so the themed DrawingArea background shows through.
                     dest.fill(0);
-                    pixbuf.scale(dest, 0, 0, width, height, ox, oy, z, z, interp);
+                    // 画像の外側を拡大すると端の画素が余白まで引き延ばされるため、交差範囲だけ描く。
+                    if let Some((x, y, w, h)) =
+                        image_viewport_rect((nat_w, nat_h), (width, height), (ox, oy), z)
+                    {
+                        pixbuf.scale(dest, x, y, w, h, ox, oy, z, z, interp);
+                    }
                     gdk::prelude::GdkCairoContextExt::set_source_pixbuf(cr, dest, 0.0, 0.0);
                     let _ = cr.paint();
                 }
@@ -773,11 +816,13 @@ pub(super) fn append_image_viewer(
         let zoom = zoom.clone();
         let offset = offset.clone();
         let area = area.clone();
+        let zoom_reset = zoom_reset.clone();
         Rc::new(move || {
             let aw = area.width().max(1) as f64;
             let ah = area.height().max(1) as f64;
             let z = (aw / nat_w as f64).min(ah / nat_h as f64).clamp(0.05, 1.0);
             *zoom.borrow_mut() = z;
+            zoom_reset.set_label(&format!("{:.0}%", z * 100.0));
             *offset.borrow_mut() = ((aw - nat_w as f64 * z) * 0.5, (ah - nat_h as f64 * z) * 0.5);
             area.queue_draw();
         })
@@ -788,6 +833,8 @@ pub(super) fn append_image_viewer(
         let offset = offset.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
+        let zoom_reset = zoom_reset.clone();
         Rc::new(move |factor: f64, pivot_x: f64, pivot_y: f64, fast: bool| {
             let old = (*zoom.borrow()).max(0.01);
             let new_z = (old * factor).clamp(0.05, 16.0);
@@ -799,6 +846,8 @@ pub(super) fn append_image_viewer(
             let ox2 = pivot_x - (pivot_x - ox) * (new_z / old);
             let oy2 = pivot_y - (pivot_y - oy) * (new_z / old);
             *zoom.borrow_mut() = new_z;
+            fit_mode.set(false);
+            zoom_reset.set_label(&format!("{:.0}%", new_z * 100.0));
             *offset.borrow_mut() = (ox2, oy2);
             *fast_paint.borrow_mut() = fast;
             area.queue_draw();
@@ -807,11 +856,10 @@ pub(super) fn append_image_viewer(
 
     {
         let area = area.clone();
-        let fitted = fitted.clone();
+        let fit_mode = fit_mode.clone();
         let fit_to_area = fit_to_area.clone();
         area.connect_resize(move |_, _, _| {
-            if !*fitted.borrow() {
-                *fitted.borrow_mut() = true;
+            if fit_mode.get() {
                 fit_to_area();
             }
         });
@@ -844,7 +892,9 @@ pub(super) fn append_image_viewer(
     {
         let fit_to_area = fit_to_area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         zoom_reset.connect_clicked(move |_| {
+            fit_mode.set(true);
             *fast_paint.borrow_mut() = false;
             fit_to_area();
         });
@@ -864,9 +914,11 @@ pub(super) fn append_image_viewer(
     {
         let draw_mode = draw_mode.clone();
         let area = area.clone();
+        let edit_revealer = edit_revealer.clone();
         draw_btn.connect_toggled(move |btn| {
             let on = btn.is_active();
             *draw_mode.borrow_mut() = on;
+            edit_revealer.set_reveal_child(on);
             area.set_cursor_from_name(Some(if on { "crosshair" } else { "grab" }));
         });
     }
@@ -931,6 +983,7 @@ pub(super) fn append_image_viewer(
         let offset = offset.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         scroll_ctl.connect_scroll(move |ctl, dx, dy| {
             let state = ctl.current_event_state();
             if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
@@ -953,6 +1006,7 @@ pub(super) fn append_image_viewer(
                 return glib::Propagation::Stop;
             }
             // Pan with wheel.
+            fit_mode.set(false);
             let mut off = offset.borrow_mut();
             off.0 -= dx * 48.0;
             off.1 -= dy * 48.0;
@@ -976,6 +1030,7 @@ pub(super) fn append_image_viewer(
         let zoom = zoom.clone();
         let area = area.clone();
         let fast_paint = fast_paint.clone();
+        let fit_mode = fit_mode.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
             if *draw_mode.borrow() {
                 let z = (*zoom.borrow()).max(0.01);
@@ -989,6 +1044,7 @@ pub(super) fn append_image_viewer(
                 });
                 area.set_cursor_from_name(Some("crosshair"));
             } else {
+                fit_mode.set(false);
                 *pan_origin.borrow_mut() = *offset.borrow();
                 *fast_paint.borrow_mut() = true;
                 area.set_cursor_from_name(Some("grabbing"));
@@ -1050,6 +1106,23 @@ pub(super) fn append_image_viewer(
     area.add_controller(drag);
 
     body.append(&area);
+}
+
+fn image_viewport_rect(
+    image: (i32, i32),
+    viewport: (i32, i32),
+    offset: (f64, f64),
+    zoom: f64,
+) -> Option<(i32, i32, i32, i32)> {
+    let x = offset.0.floor().clamp(0.0, viewport.0 as f64) as i32;
+    let y = offset.1.floor().clamp(0.0, viewport.1 as f64) as i32;
+    let right = (offset.0 + image.0 as f64 * zoom)
+        .ceil()
+        .clamp(0.0, viewport.0 as f64) as i32;
+    let bottom = (offset.1 + image.1 as f64 * zoom)
+        .ceil()
+        .clamp(0.0, viewport.1 as f64) as i32;
+    (right > x && bottom > y).then_some((x, y, right - x, bottom - y))
 }
 
 pub(super) type PackedStroke = ((f64, f64, f64, f64), f64, Vec<(f64, f64)>);
@@ -1943,4 +2016,25 @@ pub(super) fn pump_media_queue(state: &AppState) {
             pump_media_queue(&state3);
         });
     });
+}
+
+#[cfg(test)]
+mod viewer_tests {
+    use super::image_viewport_rect;
+
+    #[test]
+    fn scaled_image_does_not_extend_edge_pixels_into_viewer_margins() {
+        assert_eq!(
+            image_viewport_rect((640, 480), (1000, 700), (180.0, 110.0), 1.0),
+            Some((180, 110, 640, 480))
+        );
+        assert_eq!(
+            image_viewport_rect((640, 480), (800, 600), (-100.0, -50.0), 2.0),
+            Some((0, 0, 800, 600))
+        );
+        assert_eq!(
+            image_viewport_rect((640, 480), (800, 600), (900.0, 0.0), 1.0),
+            None
+        );
+    }
 }

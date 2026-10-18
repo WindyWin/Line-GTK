@@ -963,7 +963,49 @@ pub fn load_css() {
         }
         .line-media-viewer-bar {
             background: alpha(@headerbar_bg_color, 0.96);
+            color: @headerbar_fg_color;
+            padding: 8px 12px;
             border-bottom: 1px solid alpha(@borders, 0.45);
+        }
+        .line-media-viewer-bar button {
+            min-width: 30px;
+            min-height: 30px;
+            border-radius: 8px;
+        }
+        .line-media-viewer-bar button.flat {
+            color: inherit;
+        }
+        .line-media-viewer-visual,
+        .line-media-viewer-visual .line-media-viewer-body,
+        .line-media-viewer-visual .line-media-viewer-image,
+        .line-media-viewer-visual .line-media-viewer-video {
+            background: #14171d;
+            color: #f5f7fb;
+        }
+        .line-media-viewer-visual .line-media-viewer-bar {
+            background: #242832;
+            color: #f5f7fb;
+            border-bottom: 1px solid #353b46;
+        }
+        .line-media-viewer-visual button.flat:hover {
+            background: rgba(255, 255, 255, 0.10);
+        }
+        .line-media-viewer-visual button.flat:checked {
+            background: #3b4960;
+        }
+        .line-media-viewer-zoom {
+            background: rgba(0, 0, 0, 0.20);
+            border-radius: 10px;
+            padding: 2px;
+        }
+        .line-media-draw-tools {
+            background: #1d222b;
+            color: #f5f7fb;
+            padding: 10px 16px;
+            border-bottom: 1px solid #353b46;
+        }
+        .line-media-draw-tools button.flat {
+            color: #f5f7fb;
         }
         .line-media-viewer-body {
             background: @window_bg_color;
@@ -978,15 +1020,20 @@ pub fn load_css() {
         .line-draw-swatch {
             min-width: 28px;
             min-height: 28px;
-            font-size: 1.1em;
             padding: 0;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            box-shadow: none;
         }
-        .line-draw-c-red { color: #e53935; }
-        .line-draw-c-green { color: #43a047; }
-        .line-draw-c-blue { color: #1e88e5; }
-        .line-draw-c-yellow { color: #fdd835; }
-        .line-draw-c-white { color: #f5f5f5; }
-        .line-draw-c-black { color: #212121; }
+        .line-draw-swatch:checked {
+            outline: 2px solid #99bdff;
+            outline-offset: 2px;
+        }
+        .line-draw-c-red { background: #e53935; }
+        .line-draw-c-green { background: #43a047; }
+        .line-draw-c-blue { background: #1e88e5; }
+        .line-draw-c-yellow { background: #fdd835; }
+        .line-draw-c-white { background: #f5f5f5; }
+        .line-draw-c-black { background: #212121; }
         .line-media-viewer-video {
             background: @window_bg_color;
         }
