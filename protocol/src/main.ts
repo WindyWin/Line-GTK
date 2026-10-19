@@ -21,6 +21,7 @@ import {
 } from "./e2ee_guard.ts";
 import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
+import { patchMediaDecryption } from "./media_crypto.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
@@ -629,6 +630,7 @@ async function fromRawTalkSafe(raw: unknown): Promise<TalkMessage> {
 
 function patchE2eeGuards() {
   if (!client) return;
+  patchMediaDecryption(client.base.e2ee);
   const e2ee = client.base.e2ee as unknown as {
     decryptE2EEMessage: (
       m: Record<string, unknown>,
