@@ -4,6 +4,32 @@ import { Buffer } from "node:buffer";
 
 type Json = Record<string, unknown>;
 
+// プレビュー画像やHTMLを動画として保存せず、コンテナの先頭で判別する。
+export function videoContainer(bytes: Uint8Array): "mp4" | "webm" | null {
+  if (bytes.length < 32) return null;
+  if (String.fromCharCode(...bytes.subarray(4, 8)) === "ftyp") return "mp4";
+  if (
+    bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf &&
+    bytes[3] === 0xa3
+  ) return "webm";
+  return null;
+}
+
+async function cachedVideo(path: string): Promise<boolean> {
+  try {
+    const file = await Deno.open(path);
+    try {
+      const header = new Uint8Array(32);
+      const size = await file.read(header);
+      return size === 32 && videoContainer(header) !== null;
+    } finally {
+      file.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
 export type OutgoingMediaRuntime = {
   getClient: () => Client | null;
   mediaDir: string;
@@ -208,7 +234,9 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     if (isImageBytes(buf)) {
       return await writeImageFile(thumbDest(messageId), buf);
     }
-    const vdest = mediaDest(messageId, "mp4");
+    const ext = videoContainer(buf);
+    if (!ext) return null;
+    const vdest = mediaDest(messageId, ext);
     try {
       await Deno.writeFile(vdest, buf);
     } catch (e) {
@@ -678,6 +706,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     id: number | string | null,
     chatMid: string,
     messageId: string,
+    contentTypeHint = "",
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -689,7 +718,9 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       return;
     }
     try {
-      let hintCt = "FILE";
+      let hintCt = ["IMAGE", "VIDEO", "AUDIO", "FILE"].includes(contentTypeHint)
+        ? contentTypeHint
+        : "FILE";
       let fileName: string | null = null;
       try {
         const cached = getCachedMessages(chatMid)?.find((m) =>
@@ -711,6 +742,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         fullDest(messageId, "webp"),
         fullDest(messageId, "gif"),
         mediaDest(messageId, "mp4"),
+        mediaDest(messageId, "webm"),
         mediaDest(messageId, "m4a"),
         mediaDest(messageId, "mp3"),
         mediaDest(messageId, "jpg"),
@@ -720,7 +752,9 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         mediaDest(messageId, "bin"),
       ];
       if (fileName) {
-        localCandidates.unshift(join(mediaDir, `${messageId}.${fileName}`));
+        localCandidates.unshift(
+          join(mediaDir, `${messageId}.${fileName.replace(/[\/\\]/g, "_")}`),
+        );
       }
       for (const p of localCandidates) {
         const hit = await existingFile(p);
@@ -729,12 +763,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         if (hit.includes(".thumb.")) continue;
         try {
           const st = await Deno.stat(hit);
-          if (
-            hintCt === "VIDEO" && /\.(jpe?g|png|webp)$/i.test(hit) &&
-            st.size < 200_000
-          ) {
-            continue;
-          }
+          if (hintCt === "VIDEO" && !await cachedVideo(hit)) continue;
           if (hintCt === "IMAGE") {
             // Skip polluted preview files that were cached into mediaDest.
             if (await isPreviewOrThumbImage(hit)) continue;
@@ -759,6 +788,10 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         fail(id, "download_failed");
         return;
       }
+      if (hintCt === "VIDEO" && !videoContainer(got.buf)) {
+        fail(id, "video_original_unavailable");
+        return;
+      }
       let dest: string;
       if (hintCt === "IMAGE" && isImageBytes(got.buf)) {
         const written = await writeFullImage(messageId, got.buf, got.mime);
@@ -768,7 +801,8 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
         }
         dest = written;
       } else {
-        const ext = sniffMediaExt(got.buf, hintCt, fileName);
+        const ext = (hintCt === "VIDEO" ? videoContainer(got.buf) : null) ??
+          sniffMediaExt(got.buf, hintCt, fileName);
         dest = join(
           mediaDir,
           fileName && fileName.includes(".")

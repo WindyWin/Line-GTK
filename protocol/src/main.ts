@@ -2046,6 +2046,7 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.messageId ?? ""),
+          String(params.contentType ?? ""),
         );
         break;
       case "send_sticker":
