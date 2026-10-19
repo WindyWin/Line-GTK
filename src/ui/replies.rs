@@ -19,6 +19,7 @@ fn eligible(message: &MessageInfo) -> bool {
         && message.chat_event.is_none()
         && !message.decryption_failed
         && !message.content_type.eq_ignore_ascii_case("CALL")
+        && !message.content_type.eq_ignore_ascii_case("UNSENT")
 }
 
 fn snapshot(message: &MessageInfo) -> ReplyInfo {
@@ -38,7 +39,7 @@ fn quote_text(quote: &ReplyInfo) -> String {
         "STICKER" => Some("reply_media_sticker"),
         "AUDIO" => Some("reply_media_audio"),
         "FILE" => Some("reply_media_file"),
-        "UNAVAILABLE" => Some("reply_unavailable"),
+        "UNAVAILABLE" | "UNSENT" => Some("reply_unavailable"),
         _ => None,
     };
     if let Some(key) = key {
@@ -141,6 +142,14 @@ pub(super) fn restore_failed(state: &AppState, draft: &ReplyDraft) {
         return;
     }
     state.composer.set_text(&draft.text);
+    let account = state.self_mid.borrow().clone().unwrap_or_default();
+    if state
+        .unsent_ids
+        .borrow()
+        .contains(&(account, draft.quote.message_id.clone()))
+    {
+        return;
+    }
     *state.reply_target.borrow_mut() = Some(ReplyTarget {
         chat_mid: draft.chat_mid.clone(),
         quote: draft.quote.clone(),
@@ -192,6 +201,14 @@ pub(super) fn menu(message: &MessageInfo) -> gio::Menu {
         item.set_action_and_target_value(Some("win.reply-message"), Some(&message.id.to_variant()));
         menu.append_item(&item);
     }
+    if unsend::eligible(message) {
+        let item = gio::MenuItem::new(Some(&crate::i18n::t("unsend_message")), None);
+        item.set_action_and_target_value(
+            Some("win.unsend-message"),
+            Some(&message.id.to_variant()),
+        );
+        menu.append_item(&item);
+    }
     menu
 }
 
@@ -229,7 +246,7 @@ fn popup(bubble: &gtk::Box, menu: &gio::Menu, x: f64, y: f64) {
 }
 
 pub(super) fn wire_context(bubble: &gtk::Box, message: &MessageInfo) {
-    if !eligible(message) {
+    if !eligible(message) && !unsend::eligible(message) {
         return;
     }
     // 仮想リストから行が外れたら、開いているメニューも片付ける。
@@ -275,6 +292,45 @@ pub(super) fn wire_context(bubble: &gtk::Box, message: &MessageInfo) {
         glib::Propagation::Proceed
     });
     bubble.add_controller(keys);
+}
+
+pub(super) fn redact(state: &AppState, id: &str) {
+    if state
+        .reply_target
+        .borrow()
+        .as_ref()
+        .is_some_and(|target| target.quote.message_id == id)
+    {
+        cancel(state);
+    }
+    let mut affected = Vec::new();
+    for (message_id, message) in state.reply_messages.borrow_mut().iter_mut() {
+        if let Some(quote) = &mut message.reply_to
+            && quote.message_id == id
+        {
+            quote.text.clear();
+            quote.content_type = "UNAVAILABLE".into();
+            affected.push(message_id.clone());
+        }
+    }
+    fn replace(widget: &gtk::Widget) {
+        if widget.has_css_class("line-reply-quote") {
+            if let Some(label) = widget.last_child().and_downcast::<gtk::Label>() {
+                label.set_text(&crate::i18n::t("reply_unavailable"));
+            }
+            return;
+        }
+        let mut child = widget.first_child();
+        while let Some(item) = child {
+            child = item.next_sibling();
+            replace(&item);
+        }
+    }
+    for id in affected {
+        if let Some(row) = state.message_rows.borrow().get(&id) {
+            replace(row.upcast_ref());
+        }
+    }
 }
 
 #[cfg(test)]

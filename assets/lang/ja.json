@@ -1,4 +1,10 @@
 {
+  "unsend_message": "送信を取り消す",
+  "unsend_confirm": "このメッセージの送信を取り消しますか？",
+  "unsend_body": "自分と相手のトークから取り消します。相手には取消の案内が表示されます。期限などの条件によって取り消せない場合があります。",
+  "unsend_cancel": "やめる",
+  "unsend_failed": "送信を取り消せませんでした。期限などの条件や接続状態を確認してください。",
+  "message_unsent": "メッセージの送信が取り消されました",
   "chat_filter_all": "全部",
   "chat_filter_friends": "友だち",
   "chat_filter_groups": "グループ",

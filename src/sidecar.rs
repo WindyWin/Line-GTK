@@ -638,6 +638,20 @@ fn read_loop<R: std::io::Read>(
                                 .to_string(),
                         },
                         "listening" => ProtocolEvent::Listening,
+                        "message_unsent" => {
+                            let field = |key| {
+                                resp.extra
+                                    .get(key)
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string()
+                            };
+                            ProtocolEvent::MessageUnsent {
+                                account_mid: field("accountMid"),
+                                chat_mid: field("chatMid"),
+                                message_id: field("messageId"),
+                            }
+                        }
                         "chat_event" => {
                             if let Some(message) = resp.extra.get("message") {
                                 match serde_json::from_value(message.clone()) {

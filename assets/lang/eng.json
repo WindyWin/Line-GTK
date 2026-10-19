@@ -1,4 +1,10 @@
 {
+  "unsend_message": "Unsend message",
+  "unsend_confirm": "Unsend this message?",
+  "unsend_body": "This removes the message from both sides of the chat. A notice will appear. Time limits and other LINE conditions apply.",
+  "unsend_cancel": "Cancel",
+  "unsend_failed": "Could not unsend the message. Check LINE conditions and your connection.",
+  "message_unsent": "Message unsent",
   "chat_filter_all": "All",
   "chat_filter_friends": "Friends",
   "chat_filter_groups": "Groups",

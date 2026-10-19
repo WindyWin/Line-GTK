@@ -12,6 +12,18 @@ pub(super) fn same_message_list(
 }
 
 pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+    if let Some(account) = state.self_mid.borrow().clone() {
+        state.unsent_ids.borrow_mut().extend(
+            messages
+                .iter()
+                .filter(|m| m.content_type == "UNSENT")
+                .map(|m| (account.clone(), m.id.clone())),
+        );
+    }
+    messages = messages
+        .iter()
+        .map(|message| unsend::masked(state, message))
+        .collect();
     // 取得中に届いたイベントを、先に開始した履歴の応答で消さない。
     let existing_events: Vec<_> = state
         .reply_messages
@@ -52,7 +64,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     let last_incoming = messages
         .iter()
         .rev()
-        .find(|m| !m.mine && m.chat_event.is_none())
+        .find(|m| !m.mine && m.chat_event.is_none() && m.content_type != "UNSENT")
         .map(|m| m.id.clone());
     if let Some(id) = last_incoming.clone() {
         *state.last_incoming_id.borrow_mut() = Some(id);
@@ -91,17 +103,20 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
+    let masked = unsend::masked(state, msg);
+    let msg = &masked;
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
     }
 
     // Prefer a path that already finished hydrating (race with list rebuild).
     let ready_path = {
-        let missing = msg
-            .image_path
-            .as_deref()
-            .map(|p| !std::path::Path::new(p).exists())
-            .unwrap_or(true);
+        let missing = msg.content_type != "UNSENT"
+            && msg
+                .image_path
+                .as_deref()
+                .map(|p| !std::path::Path::new(p).exists())
+                .unwrap_or(true);
         if missing {
             state
                 .media_ready_paths
@@ -158,6 +173,15 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     let row = gtk::Box::builder()
         .css_classes(["line-message-row"])
         .build();
+    state
+        .message_rows
+        .borrow_mut()
+        .insert(msg.id.clone(), row.clone());
+    if msg.content_type == "UNSENT" {
+        unsend::placeholder(&row);
+        list.append(&row);
+        return;
+    }
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -1304,6 +1328,7 @@ pub(super) fn clear_messages(state: &AppState) {
         replies::cancel(state);
     }
     state.reply_messages.borrow_mut().clear();
+    state.message_rows.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();
     state.media_slots.borrow_mut().clear();
@@ -1361,6 +1386,7 @@ pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
     }
     let ct = msg.content_type.to_ascii_uppercase();
     match ct.as_str() {
+        "UNSENT" => crate::i18n::t("message_unsent"),
         "IMAGE" => crate::i18n::t("preview_photo"),
         "VIDEO" => crate::i18n::t("preview_video"),
         "STICKER" => crate::i18n::t("preview_sticker"),

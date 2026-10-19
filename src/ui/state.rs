@@ -69,6 +69,8 @@ pub(super) struct AppState {
     pub current_chat: Rc<RefCell<Option<String>>>,
     pub reply_target: Rc<RefCell<Option<super::replies::ReplyTarget>>>,
     pub reply_messages: Rc<RefCell<HashMap<String, MessageInfo>>>,
+    pub message_rows: Rc<RefCell<HashMap<String, gtk::Box>>>,
+    pub unsent_ids: Rc<RefCell<HashSet<(String, String)>>>,
     pub chats: Rc<RefCell<Vec<ChatInfo>>>,
     pub chat_avatars: Rc<RefCell<HashMap<String, gtk::Picture>>>,
     pub chat_previews: Rc<RefCell<HashMap<String, gtk::Label>>>,
@@ -181,6 +183,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    Unsend {
+        account: String,
+        chat_mid: String,
+        message_id: String,
+    },
     ContactBlocks {
         account: String,
         change: Option<(String, bool)>,

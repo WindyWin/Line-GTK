@@ -26,6 +26,7 @@ mod settings;
 mod shell;
 mod state;
 mod unread_sync;
+mod unsend;
 mod virtual_list;
 
 use crate::config::{AppConfig, apply_animations, apply_font, apply_theme};
@@ -180,6 +181,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         current_chat: Rc::new(RefCell::new(None)),
         reply_target: Rc::new(RefCell::new(None)),
         reply_messages: Rc::new(RefCell::new(HashMap::new())),
+        message_rows: Rc::new(RefCell::new(HashMap::new())),
+        unsent_ids: Rc::new(RefCell::new(HashSet::new())),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
@@ -290,6 +293,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     wire_composer_narrow(&state);
     wire_actions(&state);
     replies::wire(&state);
+    unsend::wire(&state);
     wire_scroll_pin(&state);
     wire_notification_actions(&state);
     resume_sync::wire(&state);
@@ -1065,6 +1069,7 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
         state.message_list.remove(&row);
     }
     state.reply_messages.borrow_mut().remove(placeholder_id);
+    state.message_rows.borrow_mut().remove(placeholder_id);
     state.seen_msg_ids.borrow_mut().remove(placeholder_id);
     state.media_slots.borrow_mut().remove(placeholder_id);
     state.media_msgs.borrow_mut().remove(placeholder_id);

@@ -206,6 +206,11 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
+    MessageUnsent {
+        account_mid: String,
+        chat_mid: String,
+        message_id: String,
+    },
     Message(Box<MessageInfo>),
     Chats {
         chats: Vec<ChatInfo>,

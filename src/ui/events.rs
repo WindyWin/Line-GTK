@@ -18,6 +18,11 @@ pub(super) fn pump_events(state: AppState) {
 
 pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
     match ev {
+        ProtocolEvent::MessageUnsent {
+            account_mid,
+            chat_mid,
+            message_id,
+        } => unsend::apply(state, &account_mid, &chat_mid, &message_id),
         ProtocolEvent::ChatEvent {
             account_mid,
             message,
@@ -167,6 +172,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
         ProtocolEvent::Message(msg) => {
+            let msg = unsend::masked(state, &msg);
+            // 取消後に遅れて届いた本文で、一覧や通知を復活させない。
+            if msg.content_type == "UNSENT" {
+                return;
+            }
             let peer = if msg.mine || msg.to.starts_with('c') {
                 msg.to.clone()
             } else {
@@ -555,6 +565,21 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::Unsend {
+                account,
+                chat_mid,
+                message_id,
+            }) = pending
+            {
+                unsend::response(
+                    state,
+                    &account,
+                    &chat_mid,
+                    &message_id,
+                    ok && result.get("unsent").and_then(|v| v.as_bool()) == Some(true),
+                );
+                return;
+            }
             if let Some(Pending::ContactBlocks { account, change }) = pending {
                 contact_blocks::response(state, &account, change, ok);
                 return;
@@ -750,6 +775,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 Some(
                     Pending::Album { .. }
+                    | Pending::Unsend { .. }
                     | Pending::ResumeSync { .. }
                     | Pending::MarkReadOnce { .. }
                     | Pending::ContactBlocks { .. },
