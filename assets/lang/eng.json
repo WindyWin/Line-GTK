@@ -1,4 +1,11 @@
 {
+  "video_loading": "Loading video…",
+  "video_play": "Play",
+  "video_pause": "Pause",
+  "video_replay": "Play again",
+  "video_seek": "Playback position",
+  "video_volume": "Video volume",
+  "video_play_failed": "Could not play this video. Open it in another app or download it to check the file.",
   "sticker_preview": "Sticker preview",
   "sticker_choice": "{pack}: sticker {number}",
   "unsend_message": "Unsend message",

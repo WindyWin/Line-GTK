@@ -79,16 +79,26 @@ pub(super) fn local_media_path(msg: &MessageInfo, for_viewer: bool) -> Option<St
             .cloned();
     }
     if ct == "VIDEO" {
-        if let Some(p) = msg.file_path.as_ref().filter(|p| {
-            std::path::Path::new(p).exists() && p.to_ascii_lowercase().ends_with(".mp4")
-        }) {
-            return Some(p.clone());
-        }
-        // Viewer needs full video; thumb alone is not enough.
-        if for_viewer {
-            return None;
-        }
+        // 再生にも保存にも動画本体だけを使い、サムネイルへフォールバックしない。
+        return msg
+            .file_path
+            .as_ref()
+            .filter(|path| {
+                std::path::Path::new(path).is_file()
+                    && !is_thumb_media_path(path)
+                    && matches!(
+                        std::path::Path::new(path)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .as_str(),
+                        "mp4" | "mov" | "m4v" | "webm" | "mkv"
+                    )
+            })
+            .cloned();
     }
+
     if let Some(p) = msg
         .file_path
         .as_ref()
@@ -158,7 +168,10 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
         return;
     }
     state.status.set_text(&crate::i18n::t("media_downloading"));
-    match state.sidecar.download_media(&chat_mid, &msg.id) {
+    match state
+        .sidecar
+        .download_media(&chat_mid, &msg.id, &msg.content_type)
+    {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,
@@ -368,7 +381,7 @@ pub(super) fn open_media_viewer_for(
 
     match kind {
         ViewerKind::Video => {
-            append_gpu_video_viewer(&body, path);
+            super::video::append(&body, path, &win);
         }
         ViewerKind::Image => {
             append_image_viewer(state, &bar, &body, path, &win);
@@ -554,30 +567,6 @@ pub(super) fn open_path_externally(path: &str) {
         return;
     }
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-}
-
-/// Prefer GPU decode + offloaded composition for in-app video.
-pub(super) fn append_gpu_video_viewer(body: &gtk::Box, path: &str) {
-    let file = gio::File::for_path(path);
-    let stream = gtk::MediaFile::for_file(&file);
-    stream.set_loop(false);
-
-    let video = gtk::Video::for_media_stream(Some(&stream));
-    video.set_autoplay(true);
-    video.set_loop(false);
-    video.set_hexpand(true);
-    video.set_vexpand(true);
-    video.add_css_class("line-media-viewer-video");
-    // GTK 4.14+: keep decoded frames on the GPU instead of round-tripping through CPU.
-    video.set_graphics_offload(gtk::GraphicsOffloadEnabled::Enabled);
-
-    let offload = gtk::GraphicsOffload::new(Some(&video));
-    offload.set_hexpand(true);
-    offload.set_vexpand(true);
-    offload.add_css_class("line-media-viewer-video");
-
-    body.append(&offload);
-    stream.play();
 }
 
 pub(super) fn append_image_viewer(
@@ -2020,7 +2009,35 @@ pub(super) fn pump_media_queue(state: &AppState) {
 
 #[cfg(test)]
 mod viewer_tests {
-    use super::image_viewport_rect;
+    use super::{MessageInfo, image_viewport_rect, local_media_path};
+
+    #[test]
+    fn video_viewing_and_saving_never_use_a_preview_image() {
+        let dir = std::env::temp_dir().join(format!("line-video-test-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let poster = dir.join("1.full.jpg");
+        let movie = dir.join("1.MP4");
+        let thumb = dir.join("1.thumb.mp4");
+        for path in [&poster, &movie, &thumb] {
+            std::fs::write(path, [0u8; 256]).unwrap();
+        }
+        let mut message: MessageInfo = serde_json::from_value(serde_json::json!({
+            "id": "1", "contentType": "VIDEO", "imagePath": poster, "filePath": poster
+        }))
+        .unwrap();
+        for for_viewer in [true, false] {
+            assert_eq!(local_media_path(&message, for_viewer), None);
+        }
+        message.file_path = Some(movie.to_string_lossy().into_owned());
+        for for_viewer in [true, false] {
+            assert_eq!(local_media_path(&message, for_viewer), message.file_path);
+        }
+        message.file_path = Some(thumb.to_string_lossy().into_owned());
+        for for_viewer in [true, false] {
+            assert_eq!(local_media_path(&message, for_viewer), None);
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn scaled_image_does_not_extend_edge_pixels_into_viewer_margins() {

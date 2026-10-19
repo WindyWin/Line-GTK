@@ -1,4 +1,11 @@
 {
+  "video_loading": "กำลังโหลดวิดีโอ…",
+  "video_play": "เล่น",
+  "video_pause": "หยุดชั่วคราว",
+  "video_replay": "เล่นอีกครั้ง",
+  "video_seek": "ตำแหน่งการเล่น",
+  "video_volume": "ระดับเสียงวิดีโอ",
+  "video_play_failed": "ไม่สามารถเล่นวิดีโอนี้ได้ โปรดเปิดในแอปอื่นหรือดาวน์โหลดเพื่อตรวจสอบไฟล์",
   "sticker_preview": "ตัวอย่างสติกเกอร์",
   "sticker_choice": "{pack}: สติกเกอร์ {number}",
   "unsend_message": "ยกเลิกข้อความ",

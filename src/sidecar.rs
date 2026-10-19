@@ -333,10 +333,15 @@ impl Sidecar {
         self.request("send_media", Some(params))
     }
 
-    pub fn download_media(&self, chat_mid: &str, message_id: &str) -> Result<u64> {
+    pub fn download_media(
+        &self,
+        chat_mid: &str,
+        message_id: &str,
+        content_type: &str,
+    ) -> Result<u64> {
         self.request(
             "download_media",
-            Some(json!({ "chatMid": chat_mid, "messageId": message_id })),
+            Some(json!({ "chatMid": chat_mid, "messageId": message_id, "contentType": content_type })),
         )
     }
 

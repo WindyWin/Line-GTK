@@ -28,6 +28,7 @@ mod state;
 mod sticker_preview;
 mod unread_sync;
 mod unsend;
+mod video;
 mod virtual_list;
 
 use crate::config::{AppConfig, apply_animations, apply_font, apply_theme};
