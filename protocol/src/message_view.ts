@@ -32,6 +32,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     const ct = normType(msg.contentType);
     const text = String(msg.text ?? "").trim();
     const L = previewLang();
+    if (ct === "UNSENT") return L.unsent;
     if (msg.decryptionFailed === true) return L.encrypted;
     const call = callHistoryPreview(msg, L);
     if (call) return call;
@@ -50,6 +51,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     if (code === "ja" || code === "ja-jp" || code === "ja_jp") {
       return {
         you: "自分",
+        unsent: "メッセージの送信が取り消されました",
         callIncoming: "着信がありました",
         callOutgoing: "発信しました",
         callMissed: "不在着信",
@@ -74,6 +76,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     return th
       ? {
         you: "คุณ",
+        unsent: "ยกเลิกข้อความแล้ว",
         callIncoming: "มีสายเรียกเข้า",
         callOutgoing: "โทรออก",
         callMissed: "สายที่ไม่ได้รับ",
@@ -95,6 +98,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
       }
       : {
         you: "You",
+        unsent: "Message unsent",
         callIncoming: "Incoming call",
         callOutgoing: "Outgoing call",
         callMissed: "Missed call",

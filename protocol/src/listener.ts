@@ -6,6 +6,7 @@ import type { ReadOperation } from "./read_receipts.ts";
 type Json = Record<string, unknown>;
 
 export type ListenerRuntime = {
+  prepareMessage?: (message: Json) => Promise<Json | null>;
   handleIncomingCall: typeof calls.handleIncomingCall;
   handleCallCancel: typeof calls.handleCallCancel;
   shouldIgnoreMessage?: (message: Json) => boolean;
@@ -56,7 +57,12 @@ export function createListener(runtime: ListenerRuntime) {
         if (runtime.getClient() !== client) return;
         const account = client.base.profile?.mid;
         const tm = msg as TalkMessage;
-        const message = await summarizeTalkMessage(tm, { withMedia: false });
+        let message = await summarizeTalkMessage(tm, { withMedia: false });
+        if (runtime.prepareMessage) {
+          const prepared = await runtime.prepareMessage(message);
+          if (!prepared) return;
+          message = prepared;
+        }
         // 交換直前に受信済みの本文は同じアカウントに限って届け、取りこぼさない。
         const active = runtime.getClient();
         if (

@@ -26,6 +26,7 @@ import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
 import { createContactBlocks } from "./contact_blocks.ts";
 import { createListener } from "./listener.ts";
+import { createUnsendService } from "./unsend.ts";
 import {
   createConnectionRecovery,
   retireClient,
@@ -239,6 +240,7 @@ const messageView = createMessageView({
 });
 const { previewLang, previewLine, extractFlex } = messageView;
 async function forUiMessages(messages: Json[], chatMid?: string) {
+  if (chatMid) messages = await unsends.mask(chatMid, messages);
   if (chatMid) messages = await chatEvents.merge(chatMid, messages);
   messageSenders.observe(messages);
   emojiService.observe(messages);
@@ -374,7 +376,64 @@ const contactBlocks = createContactBlocks({
   emit: emitEvent,
 });
 
+const unsends = createUnsendService({
+  getClient: () => authDead ? null : client,
+  dataDir,
+  emit: emitEvent,
+  findMessage: async (chatMid, id, createdTime) => {
+    const cached = msgCache.get(chatMid)?.messages ??
+      await loadDiskMessages(chatMid);
+    const known = cached?.find((message) => String(message.id) === id);
+    if (known) return known;
+    const current = client;
+    if (!current) return undefined;
+    const raw = await current.base.talk.getPreviousMessagesV2WithRequest({
+      request: {
+        messageBoxId: chatMid,
+        endMessageId: {
+          messageId: coerceI64(id),
+          deliveredTime: coerceI64(
+            Number.isSafeInteger(createdTime) && createdTime > 0
+              ? createdTime
+              : 0,
+          ),
+        },
+        messagesCount: 1,
+      },
+    });
+    const message = raw.find((message) => String(message.id) === id);
+    return message
+      ? { ...message, contentType: normType(message.contentType) }
+      : undefined;
+  },
+  changed: async (chatMid, id) => {
+    const cached = msgCache.get(chatMid)?.messages ??
+      await loadDiskMessages(chatMid);
+    if (cached?.length) {
+      const messages = await unsends.mask(chatMid, cached);
+      msgCache.set(chatMid, { at: Date.now(), messages });
+      await saveDiskMessages(chatMid, messages);
+      await chatPreviews.updateFromMessages(chatMid, messages);
+    }
+    if (String(boxCursor.get(chatMid)?.messageId) === id) {
+      const preview = previewLang().unsent;
+      const row = chatCache?.chats.find((chat) => chat.mid === chatMid);
+      if (row) row.preview = preview;
+      emitEvent("chat_preview", {
+        mid: chatMid,
+        preview,
+        lastActivity: row?.lastActivity ?? 0,
+      });
+      await saveChatCache();
+    }
+  },
+});
+
 const listener = createListener({
+  prepareMessage: async (message) => {
+    const [prepared] = await unsends.mask(conversationMid(message), [message]);
+    return prepared?.contentType === "UNSENT" ? null : prepared ?? null;
+  },
   handleIncomingCall: calls.handleIncomingCall,
   handleCallCancel: calls.handleCallCancel,
   shouldIgnoreMessage: contactBlocks.ignoreMessage,
@@ -396,6 +455,7 @@ const listener = createListener({
   hydrateLiveMedia,
   upsertChatFromContact,
   handleReadReceipt: (operation) =>
+    unsends.handleOperation(operation) ||
     contactBlocks.handleOperation(operation) ||
     unreadSync.handleOperation(operation) ||
     readReceipts.handleOperation(operation) ||
@@ -458,7 +518,11 @@ const commands = createCommandService({
   refreshContactIndex,
   hydrateAvatars,
   hydratePreviews,
-  updateChatPreview: chatPreviews.updateFromMessages,
+  updateChatPreview: async (chatMid, messages) =>
+    await chatPreviews.updateFromMessages(
+      chatMid,
+      await unsends.mask(chatMid, messages),
+    ),
   refreshReadReceipts: readReceipts.refresh,
   reconcileUnread: unreadSync.reconcile,
   readReceiptPermission: (chatMid) =>
@@ -768,7 +832,10 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
     );
     if (Date.now() - Number(raw.at || 0) > cachePolicy().diskMsg) return null;
     if (Array.isArray(raw.messages)) {
-      return restoreCachedMessages(raw.messages as Json[]);
+      return await unsends.mask(
+        chatMid,
+        restoreCachedMessages(raw.messages as Json[]),
+      );
     }
   } catch { /* miss */ }
   return null;
@@ -778,7 +845,7 @@ async function saveDiskMessages(chatMid: string, messages: Json[]) {
   try {
     await atomicWriteJson(join(msgDiskDir, `${chatMid}.json`), {
       at: Date.now(),
-      messages,
+      messages: await unsends.mask(chatMid, messages),
     });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
@@ -1164,6 +1231,7 @@ async function hydrateMedia(
   opts: { isolated?: boolean } = {},
 ) {
   if (!client || !stdoutAlive) return;
+  messages = await unsends.mask(chatMid, messages);
   // Live listen hydrates must not bump the chat epoch — a concurrent fetch would
   // cancel the download and leave the bubble stuck until restart.
   const isolated = !!opts.isolated;
@@ -1412,7 +1480,7 @@ async function hydratePreviews(chats: ChatRow[]) {
       cached?.some((message) =>
         Number(message.createdTime ?? 0) >= chat.lastActivity
       ) && !cached.some(needsDecryptionRefresh)
-    ) return cached;
+    ) return await unsends.mask(chat.mid, cached);
 
     let cursor = boxCursor.get(chat.mid);
     if (!cursor) {
@@ -1435,8 +1503,11 @@ async function hydratePreviews(chats: ChatRow[]) {
         },
       });
     if (!active()) return [];
-    return await Promise.all(
-      messages.map((raw) => summarizeRawMessage(raw, { withMedia: false })),
+    return await unsends.mask(
+      chat.mid,
+      await Promise.all(
+        messages.map((raw) => summarizeRawMessage(raw, { withMedia: false })),
+      ),
     );
   }, active);
 }
@@ -1578,6 +1649,9 @@ async function resolveContactInfo(mid: string): Promise<{
 async function upsertChatFromMessage(message: Json) {
   const peer = conversationMid(message);
   if (!peer) return;
+  const [visible] = await unsends.mask(peer, [message]);
+  if (!visible || visible.contentType === "UNSENT") return;
+  message = visible;
   const preview = previewLine(message);
   const activity = Number(message.createdTime ?? 0);
   if (!chatCache) chatCache = { at: Date.now(), chats: [] };
@@ -1835,6 +1909,16 @@ async function handle(req: Json) {
       throw new Error("contact_blocked_send");
     }
     switch (method) {
+      case "unsend_message":
+        ok(
+          id,
+          await unsends.unsend(
+            String(params.chatMid ?? ""),
+            params.messageId,
+            Number(params.createdTime ?? 0),
+          ),
+        );
+        break;
       case "get_blocked_contacts":
         ok(id, await contactBlocks.refresh());
         break;
