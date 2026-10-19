@@ -25,6 +25,7 @@ mod resume_sync;
 mod settings;
 mod shell;
 mod state;
+mod sticker_preview;
 mod unread_sync;
 mod unsend;
 mod virtual_list;

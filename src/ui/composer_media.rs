@@ -107,6 +107,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
     tab_scroll.set_child(Some(&tabs));
 
     let tab_buttons: Rc<RefCell<Vec<gtk::ToggleButton>>> = Rc::new(RefCell::new(Vec::new()));
+    let hover_preview = sticker_preview::HoverPreview::default();
 
     for (idx, pack) in packs.iter().enumerate() {
         let pack_id = pack
@@ -157,7 +158,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
         let pending_thumbs: Rc<RefCell<Vec<(gtk::Picture, String)>>> =
             Rc::new(RefCell::new(Vec::new()));
         let pack_loaded = Rc::new(RefCell::new(idx == 0));
-        for item in stickers {
+        for (number, item) in stickers.iter().enumerate() {
             let sticker_id = item
                 .get("stickerId")
                 .and_then(|v| v.as_str())
@@ -178,8 +179,15 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
 
             let btn = gtk::Button::builder()
                 .css_classes(["flat", "line-sticker-cell"])
-                .tooltip_text(&display_name)
                 .build();
+            let choice = crate::i18n::tf(
+                "sticker_choice",
+                &[
+                    ("pack", &display_name),
+                    ("number", &(number + 1).to_string()),
+                ],
+            );
+            btn.update_property(&[gtk::accessible::Property::Label(&choice)]);
             let pic = gtk::Picture::builder()
                 .content_fit(gtk::ContentFit::Contain)
                 .can_shrink(true)
@@ -197,6 +205,7 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
                 attach_texture_async(pic.clone(), path, 96);
             }
             btn.set_child(Some(&pic));
+            hover_preview.wire(&btn, path.clone(), display_name.clone());
 
             let s = state.clone();
             let pop = state.sticker_popover.clone();

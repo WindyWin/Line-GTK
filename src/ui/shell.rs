@@ -1325,6 +1325,15 @@ pub fn load_css() {
             padding: 8px;
             border-radius: 12px;
         }
+        .line-sticker-hover-stage {
+            background: #eef0f3;
+            border-radius: 12px;
+            padding: 8px;
+        }
+        .line-sticker-hover-stage label {
+            color: #33363b;
+            padding: 16px;
+        }
         .line-sticker-cell:hover {
             background: alpha(@accent_bg_color, 0.18);
         }

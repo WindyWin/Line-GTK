@@ -1,4 +1,6 @@
 {
+  "sticker_preview": "スタンプのプレビュー",
+  "sticker_choice": "{pack}：スタンプ {number}",
   "unsend_message": "送信を取り消す",
   "unsend_confirm": "このメッセージの送信を取り消しますか？",
   "unsend_body": "自分と相手のトークから取り消します。相手には取消の案内が表示されます。期限などの条件によって取り消せない場合があります。",

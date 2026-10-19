@@ -1,4 +1,6 @@
 {
+  "sticker_preview": "Sticker preview",
+  "sticker_choice": "{pack}: sticker {number}",
   "unsend_message": "Unsend message",
   "unsend_confirm": "Unsend this message?",
   "unsend_body": "This removes the message from both sides of the chat. A notice will appear. Time limits and other LINE conditions apply.",
