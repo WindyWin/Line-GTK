@@ -171,6 +171,9 @@ pub(super) struct AppState {
 #[derive(Debug, Clone)]
 pub(super) struct PendingNotif {
     pub chat_mid: String,
+    pub sender_mid: Option<String>,
+    pub displayed_sender: Option<String>,
+    pub image_path: Option<String>,
     pub title: String,
     pub body: String,
     pub avatar_path: Option<String>,

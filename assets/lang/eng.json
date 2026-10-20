@@ -1,4 +1,5 @@
 {
+  "notification_group_sender": "{sender} ({group})",
   "video_loading": "Loading video…",
   "video_play": "Play",
   "video_pause": "Pause",

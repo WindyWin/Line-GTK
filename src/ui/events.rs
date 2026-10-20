@@ -177,7 +177,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if msg.content_type == "UNSENT" {
                 return;
             }
-            let peer = if msg.mine || msg.to.starts_with('c') {
+            let peer = if msg.mine || msg.to.starts_with(['c', 'r']) {
                 msg.to.clone()
             } else {
                 msg.from.clone()
@@ -203,6 +203,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     name: peer_display_name(state, &peer),
                     kind: if peer.starts_with('c') {
                         "group".into()
+                    } else if peer.starts_with('r') {
+                        "room".into()
                     } else {
                         "dm".into()
                     },

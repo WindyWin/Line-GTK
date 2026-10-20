@@ -1,4 +1,5 @@
 {
+  "notification_group_sender": "{sender} ({group})",
   "video_loading": "กำลังโหลดวิดีโอ…",
   "video_play": "เล่น",
   "video_pause": "หยุดชั่วคราว",

@@ -1,15 +1,20 @@
 use super::*;
 
 pub(super) fn is_group(state: &AppState) -> bool {
-    let current = state.current_chat.borrow();
-    current.as_ref().is_some_and(|mid| {
-        mid.starts_with(['c', 'r'])
-            || state
-                .chats
-                .borrow()
-                .iter()
-                .any(|chat| &chat.mid == mid && matches!(chat.kind.as_str(), "group" | "room"))
-    })
+    state
+        .current_chat
+        .borrow()
+        .as_deref()
+        .is_some_and(|mid| is_group_chat(state, mid))
+}
+
+pub(super) fn is_group_chat(state: &AppState, mid: &str) -> bool {
+    mid.starts_with(['c', 'r'])
+        || state
+            .chats
+            .borrow()
+            .iter()
+            .any(|chat| chat.mid == mid && matches!(chat.kind.as_str(), "group" | "room"))
 }
 
 pub(super) fn known_name(state: &AppState, mid: &str) -> Option<String> {
@@ -66,6 +71,7 @@ pub(super) fn apply(state: &AppState, mid: String, name: String) {
             label.set_tooltip_text(Some(&name));
         }
     }
+    super::notifications::refresh_notification_sender(state, &mid);
     replies::refresh(state);
     chat_events::refresh(state);
 }

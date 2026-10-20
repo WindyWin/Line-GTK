@@ -1,4 +1,4 @@
-use super::{AppState, PendingNotif, notifications_allowed, preview_body_ui};
+use super::{AppState, PendingNotif, message_senders, notifications_allowed, preview_body_ui};
 use crate::desktop_notify::{ChatNotification, NotificationTicket};
 use crate::protocol::MessageInfo;
 use gtk::gio;
@@ -26,6 +26,9 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         .or_else(|| state.media_ready_paths.borrow().get(&msg.id).cloned());
     let meta = PendingNotif {
         chat_mid: peer_mid.to_string(),
+        sender_mid: message_senders::is_group_chat(state, peer_mid).then(|| msg.from.clone()),
+        displayed_sender: None,
+        image_path,
         title: name,
         body: preview_body_ui(msg),
         avatar_path,
@@ -48,19 +51,19 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         }
         pending.insert(msg.id.clone(), meta.clone());
     }
-    if sticker && image_path.is_none() && !msg.id.is_empty() {
-        // すぐ届く画像を待ち、文字だけの通知が先に並ぶのを防ぐ。
+    if wait_for_details(state, &meta) && !msg.id.is_empty() {
+        // 名前とスタンプ画像を短時間待ち、同じ通知の更新で補完する。
         let s = state.clone();
         let id = msg.id.clone();
         glib::timeout_add_local_once(Duration::from_millis(1200), move || {
             if let Some(meta) = pending_for_delivery(&s, &id)
                 && !meta.notified
             {
-                deliver(&s, &id, meta, None);
+                deliver(&s, &id, meta);
             }
         });
     } else {
-        deliver(state, &msg.id, meta, image_path.as_deref());
+        deliver(state, &msg.id, meta);
     }
     if state.config.borrow().notification_sound {
         play_notification_sound(state);
@@ -97,19 +100,56 @@ fn pending_for_delivery(state: &AppState, id: &str) -> Option<PendingNotif> {
     Some(meta)
 }
 
+fn wait_for_details(state: &AppState, meta: &PendingNotif) -> bool {
+    meta.created.elapsed() < Duration::from_millis(1200)
+        && ((meta.sticker && meta.image_path.is_none())
+            || meta.sender_mid.as_deref().is_some_and(|mid| {
+                !mid.is_empty() && message_senders::known_name(state, mid).is_none()
+            }))
+}
+
 pub(super) fn refresh_notification_media(state: &AppState, message_id: &str, image_path: &str) {
     if !Path::new(image_path).is_file() {
         return;
     }
+    if let Some(meta) = state.notif_pending.borrow_mut().get_mut(message_id) {
+        meta.image_path = Some(image_path.to_string());
+    }
+    refresh_pending(state, message_id);
+}
+
+pub(super) fn refresh_notification_sender(state: &AppState, mid: &str) {
+    let Some(name) = message_senders::known_name(state, mid) else {
+        return;
+    };
+    let ids: Vec<String> = state
+        .notif_pending
+        .borrow()
+        .iter()
+        .filter(|(_, meta)| {
+            meta.sender_mid.as_deref() == Some(mid)
+                && meta.displayed_sender.as_deref() != Some(name.as_str())
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        refresh_pending(state, &id);
+    }
+}
+
+fn refresh_pending(state: &AppState, message_id: &str) {
     let Some(meta) = pending_for_delivery(state, message_id) else {
         return;
     };
-    deliver(state, message_id, meta, Some(image_path));
+    if !meta.notified && wait_for_details(state, &meta) {
+        return;
+    }
+    deliver(state, message_id, meta);
 }
 
-fn deliver(state: &AppState, message_id: &str, meta: PendingNotif, image_path: Option<&str>) {
+fn deliver(state: &AppState, message_id: &str, meta: PendingNotif) {
     let preview = if meta.sticker {
-        image_path.and_then(|path| {
+        meta.image_path.as_deref().and_then(|path| {
             crate::desktop_notify::sticker_preview(
                 Path::new(path),
                 &state.data_dir.join("cache/stickers"),
@@ -121,12 +161,25 @@ fn deliver(state: &AppState, message_id: &str, meta: PendingNotif, image_path: O
     let image_path = if meta.sticker {
         preview.as_ref().and_then(|p| p.to_str())
     } else {
-        image_path
+        meta.image_path.as_deref()
+    };
+    // スタンプの本文が画像だけになる通知サーバーでも、送信者を必ず表示する。
+    let sender_name = meta
+        .sender_mid
+        .as_deref()
+        .map(|mid| message_senders::name(state, mid));
+    let title = if let Some(sender) = sender_name.as_deref() {
+        crate::i18n::tf(
+            "notification_group_sender",
+            &[("sender", sender), ("group", &meta.title)],
+        )
+    } else {
+        meta.title.clone()
     };
     let ticket = send_desktop_notification(
         state,
         ChatNotification {
-            title: &meta.title,
+            title: &title,
             body: &meta.body,
             avatar_path: meta.avatar_path.as_deref(),
             image_path,
@@ -139,6 +192,7 @@ fn deliver(state: &AppState, message_id: &str, meta: PendingNotif, image_path: O
     );
     if let Some(pending) = state.notif_pending.borrow_mut().get_mut(message_id) {
         pending.notified = true;
+        pending.displayed_sender = sender_name;
         pending.ticket = ticket;
     }
 }
