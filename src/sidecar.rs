@@ -620,9 +620,8 @@ fn read_loop<R: std::io::Read>(
                         },
                         "session_failed" => ProtocolEvent::SessionFailed {
                             error: resp
-                                .extra
-                                .get("error")
-                                .and_then(|v| v.as_str())
+                                .error
+                                .as_deref()
                                 .unwrap_or("session restore failed")
                                 .to_string(),
                         },
@@ -1093,6 +1092,18 @@ impl Drop for Sidecar {
 #[cfg(test)]
 mod authentication_tests {
     use super::*;
+
+    #[test]
+    fn session_failure_preserves_the_authentication_reason() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event = b"{\"event\":\"session_failed\",\"error\":\"NOT_AUTHORIZED_DEVICE\"}\n";
+        read_loop(&event[..], tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(),ProtocolEvent::SessionFailed {error} if error=="NOT_AUTHORIZED_DEVICE")
+        );
+    }
 
     #[test]
     fn authentication_allows_mobile_verification_time() {

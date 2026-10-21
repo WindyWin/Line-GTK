@@ -3,6 +3,7 @@ use crate::credentials::{self, Action, Credentials};
 
 pub(super) struct State {
     startup_pending: bool,
+    keyring_used: bool,
     generation: u64,
     save_after_login: Option<Action>,
 }
@@ -10,6 +11,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             startup_pending: true,
+            keyring_used: false,
             generation: 0,
             save_after_login: None,
         }
@@ -57,6 +59,7 @@ fn begin(state: &AppState) -> bool {
     if !state.config.borrow().startup_auto_login {
         return false;
     }
+    state.auto_login.borrow_mut().keyring_used = true;
     login::set_method(&state.login, login::LoginMethod::Email);
     show_login(state, &crate::i18n::t("auto_login_loading"));
     login::set_busy(&state.login, true);
@@ -99,15 +102,16 @@ pub(super) fn manual_restart(state: &AppState) {
 
 pub(super) fn prepare_email(state: &AppState, email: &str, password: &str) {
     state.auto_login.borrow_mut().cancel();
-    state.auto_login.borrow_mut().save_after_login =
-        Some(if state.login.remember_login.is_active() {
-            Action::Save(Credentials {
-                email: email.trim().into(),
-                password: password.into(),
-            })
-        } else {
-            Action::Clear
-        });
+    state.auto_login.borrow_mut().save_after_login = if state.login.remember_login.is_active() {
+        Some(Action::Save(Credentials {
+            email: email.trim().into(),
+            password: password.into(),
+        }))
+    } else if state.config.borrow().startup_auto_login {
+        Some(Action::Clear)
+    } else {
+        None
+    };
 }
 
 pub(super) fn failed(state: &AppState) {
@@ -130,6 +134,7 @@ pub(super) fn logged_in(state: &AppState) {
         return;
     };
     let saving = matches!(action, Action::Save(_));
+    state.auto_login.borrow_mut().keyring_used = true;
     enabled(state, false);
     let generation = state.auto_login.borrow().generation;
     let response = credentials::request(action);
@@ -141,8 +146,9 @@ pub(super) fn logged_in(state: &AppState) {
         }
         if success {
             enabled(&s, saving);
+            s.auto_login.borrow_mut().keyring_used = saving;
         }
-        if saving {
+        if saving || !success {
             toast(
                 &s,
                 &crate::i18n::t(if success {
@@ -157,9 +163,26 @@ pub(super) fn logged_in(state: &AppState) {
 
 pub(super) fn manual_logout(state: &AppState) {
     state.auto_login.borrow_mut().cancel();
+    let was_enabled =
+        state.config.borrow().startup_auto_login || state.auto_login.borrow().keyring_used;
     enabled(state, false);
     // 手動ログアウトでは次回起動時にも自動で入り直さない。
-    let _ = credentials::request(Action::Clear);
+    if was_enabled {
+        let response = credentials::request(Action::Clear);
+        let s = state.clone();
+        let generation = state.auto_login.borrow().generation;
+        glib::spawn_future_local(async move {
+            let success = matches!(response.recv().await, Ok(Ok(_)));
+            if s.auto_login.borrow().generation != generation {
+                return;
+            }
+            if success {
+                s.auto_login.borrow_mut().keyring_used = false;
+            } else {
+                toast(&s, &crate::i18n::t("auto_login_save_failed"));
+            }
+        });
+    }
 }
 
 pub(super) fn open_settings(state: &AppState, parent: &gtk::Window) {
@@ -244,6 +267,7 @@ pub(super) fn open_settings(state: &AppState, parent: &gtk::Window) {
             };
             s.auto_login.borrow_mut().cancel();
             let generation = s.auto_login.borrow().generation;
+            s.auto_login.borrow_mut().keyring_used = true;
             enabled(&s, false);
             p.set_text("");
             controls.set_sensitive(false);
@@ -260,6 +284,7 @@ pub(super) fn open_settings(state: &AppState, parent: &gtk::Window) {
                 controls.set_sensitive(true);
                 if success {
                     enabled(&s, saving);
+                    s.auto_login.borrow_mut().keyring_used = saving;
                 }
                 label.set_text(&crate::i18n::t(if success {
                     if saving {

@@ -13,9 +13,16 @@ pub struct Credentials {
 }
 impl Credentials {
     pub fn valid(&self) -> bool {
-        !self.email.trim().is_empty()
-            && self.email.len() <= 320
-            && self.email.contains('@')
+        let email = self.email.trim();
+        self.email.len() <= 320
+            && !email.chars().any(char::is_whitespace)
+            && email.split_once('@').is_some_and(|(user, domain)| {
+                !user.is_empty()
+                    && domain.contains('.')
+                    && !domain.starts_with('.')
+                    && !domain.ends_with('.')
+                    && !domain.contains('@')
+            })
             && !self.password.is_empty()
             && self.password.len() <= 4096
     }

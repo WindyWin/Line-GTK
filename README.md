@@ -87,7 +87,11 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 ## Requirements
 
 メールログインはPCの追加デバイスとして認証します。スマホ側で認証番号の入力が必要になる場合があります。
-パスワードは保存せず、次回はPC用の認証情報でセッションを復元します。
+通常はPC用の認証情報でセッションを復元します。メールログイン画面で「ログイン情報を保存して起動時に自動ログイン」をオンにすると、ログイン成功後にメールアドレスとパスワードをOSキーストアへ保存します。ログイン済みの場合は設定 → アカウント → 起動時の自動ログイン → 設定から登録・変更・削除できます。
+
+自動ログインはアプリ起動時に一度だけ行います。保存セッションを優先し、認証情報がない・失効した場合だけメールログインを試します。一時的な通信失敗ではパスワードログインへ切り替えず、起動後の他PCからのログインによる切断時にも自動で入り直しません。追加認証が必要な場合はスマホ用の認証番号を表示し、誤パスワードなどの失敗時は手動ログイン画面で止まります。
+
+保存先にはSecret Service対応のOSキーストア（GNOME Keyringなど）を使い、メールアドレス・パスワードを設定ファイルやコマンド引数には保存しません。キーストアでの保存に失敗した場合は自動ログインを無効にし、取得に失敗した場合は手動ログインへ案内します。キーストアのロック解除を求められる場合があります。保存情報の削除や手動ログアウトでは自動ログインを無効にし、保存情報を削除します。
 音声通話の試験機能を使う場合はQRコードでログインしてください。
 
 | Dependency | Notes |
@@ -96,6 +100,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 | GTK4 + Libadwaita | `pacman -S gtk4 libadwaita` |
 | Deno | Build-time protocol compiler; source-tree runs use `deno` or `DENO` |
 | ffmpeg / ffprobe | voice record, video thumbs |
+| libsecret (`secret-tool`) + Secret Service | 起動時のメール自動ログインを使う場合に必要 |
 | Optional | `pdftoppm`, `pdftotext` for PDF preview |
 
 Wayland and X11 both work. Tested mainly on Arch-based desktops.
