@@ -13,6 +13,7 @@ pub struct SettingsDeps {
     pub sidecar: Rc<Sidecar>,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,
+    pub on_auto_login: Rc<dyn Fn(&gtk::Window)>,
     pub on_logout: Rc<dyn Fn()>,
     pub on_lang: Rc<dyn Fn()>,
     pub on_animations: Rc<dyn Fn(bool)>,
@@ -954,6 +955,22 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     repair_btn.connect_clicked(move |_| win2.close());
     repair_row.add_suffix(&repair_btn);
     session.add(&repair_row);
+    let auto_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("auto_login_title"))
+        .subtitle(i18n::t("auto_login_settings_note"))
+        .build();
+    let auto_button = gtk::Button::builder()
+        .label(i18n::t("settings"))
+        .valign(gtk::Align::Center)
+        .build();
+    {
+        let on_auto_login = deps.on_auto_login.clone();
+        let parent = win.clone();
+        auto_button.connect_clicked(move |_| on_auto_login(parent.upcast_ref()));
+    }
+    auto_row.add_suffix(&auto_button);
+    session.add(&auto_row);
+
     let logout_row = libadwaita::ActionRow::builder()
         .title(i18n::t("logout"))
         .subtitle(i18n::t("logout_subtitle"))

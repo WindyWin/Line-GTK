@@ -1,4 +1,5 @@
 mod albums;
+mod auto_login;
 mod call_history;
 mod call_window;
 mod calls;
@@ -111,6 +112,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     stack.set_transition_duration(0);
 
     let login = Rc::new(login::build_login_page());
+    login
+        .remember_login
+        .set_active(config.borrow().startup_auto_login);
     let shell = shell::build_shell_page();
 
     stack.add_named(&login.page, Some("login"));
@@ -142,6 +146,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
     let state = AppState {
+        auto_login: Rc::new(RefCell::new(auto_login::State::default())),
         contact_blocks: Rc::new(RefCell::new(contact_blocks::BlockState::default())),
         read_once_btn: shell.read_once_btn,
         app: app.clone(),
@@ -1419,9 +1424,14 @@ fn wire_actions(state: &AppState) {
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),
+            on_auto_login: {
+                let s2 = s.clone();
+                Rc::new(move |parent| auto_login::open_settings(&s2, parent))
+            },
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
+                    auto_login::manual_logout(&s2);
                     albums::close(&s2);
                     hidden_chats::close(&s2);
                     contact_blocks::reset(&s2);
@@ -1765,6 +1775,7 @@ fn submit_email_login(state: &AppState) {
         .login
         .hint
         .set_text(&crate::i18n::t("login_email_signing_in"));
+    auto_login::prepare_email(state, email.trim(), password.as_str());
     let request = state.sidecar.login_email(email.trim(), password.as_str());
     // パスワードを画面や設定へ保持しない。
     state.login.password_entry.set_text("");
@@ -1772,7 +1783,10 @@ fn submit_email_login(state: &AppState) {
         Ok(id) => {
             state.pending.borrow_mut().insert(id, Pending::LoginEmail);
         }
-        Err(_) => login::show_failure(&state.login, &crate::i18n::t("login_email_failed")),
+        Err(_) => {
+            auto_login::failed(state);
+            login::show_failure(&state.login, &crate::i18n::t("login_email_failed"));
+        }
     }
 }
 
@@ -1783,6 +1797,7 @@ fn restart_qr_login(state: &AppState) {
 }
 
 fn restart_login(state: &AppState) {
+    auto_login::manual_restart(state);
     contact_blocks::reset(state);
     resume_sync::cancel(state);
     albums::close(state);

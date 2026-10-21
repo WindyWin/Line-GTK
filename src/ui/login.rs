@@ -31,6 +31,7 @@ pub struct LoginWidgets {
     pub password_entry: gtk::PasswordEntry,
     pub email_submit_btn: gtk::Button,
     pub password_note: gtk::Label,
+    pub remember_login: gtk::CheckButton,
     pub spinner: gtk::Spinner,
     pub method: Cell<LoginMethod>,
     pub busy: Cell<bool>,
@@ -124,12 +125,14 @@ pub fn build_login_page() -> LoginWidgets {
         .justify(gtk::Justification::Center)
         .css_classes(["dim-label", "caption"])
         .build();
+    let remember_login = gtk::CheckButton::with_label(&crate::i18n::t("auto_login_remember"));
     let spinner = gtk::Spinner::builder()
         .halign(gtk::Align::Center)
         .visible(false)
         .build();
     email_box.append(&email_entry);
     email_box.append(&password_entry);
+    email_box.append(&remember_login);
     email_box.append(&email_submit_btn);
     email_box.append(&spinner);
     email_box.append(&password_note);
@@ -229,6 +232,7 @@ pub fn build_login_page() -> LoginWidgets {
         password_entry,
         email_submit_btn,
         password_note,
+        remember_login,
         spinner,
         method: Cell::new(LoginMethod::Qr),
         busy: Cell::new(false),
@@ -267,6 +271,8 @@ pub fn apply_login_language(w: &LoginWidgets) {
         }));
     w.password_note
         .set_text(&crate::i18n::t("login_password_note"));
+    w.remember_login
+        .set_label(Some(&crate::i18n::t("auto_login_remember")));
 }
 
 pub fn method_hint(w: &LoginWidgets) -> String {
@@ -297,6 +303,7 @@ pub fn set_method(w: &LoginWidgets, method: LoginMethod) {
 pub fn set_busy(w: &LoginWidgets, busy: bool) {
     w.busy.set(busy);
     w.email_entry.set_sensitive(!busy);
+    w.remember_login.set_sensitive(!busy);
     w.password_entry.set_sensitive(!busy);
     w.email_submit_btn.set_sensitive(!busy);
     w.email_submit_btn.set_label(&crate::i18n::t(if busy {

@@ -44,6 +44,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if restarting {
                 *state.restarting.borrow_mut() = false;
             }
+            if auto_login::ready(state, has_auth, restarting) {
+                return;
+            }
             if has_auth && !restarting {
                 // Sidecar is already restoring; keep shell visible (no QR flash).
                 show_shell_restoring(state);
@@ -83,6 +86,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::SessionFailed { error } => {
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
+            if auto_login::restore_failed(state, &error) {
+                return;
+            }
+            auto_login::failed(state);
             let msg = if error.contains("relogin_android_required") {
                 crate::i18n::t("relogin_android_required")
             } else if error.contains("NOT_AUTHORIZED_DEVICE")
@@ -630,6 +637,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     return;
                 }
                 if matches!(pending, Some(Pending::Login | Pending::LoginEmail)) {
+                    auto_login::failed(state);
                     let code = error.as_deref().unwrap_or("login_email_failed");
                     let message = if code.starts_with("login_") {
                         crate::i18n::t(code)
@@ -850,6 +858,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     hidden_chats::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
+            auto_login::logged_in(state);
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
                 state.peer_reads.borrow_mut().clear();
             }

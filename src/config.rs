@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// 起動時に限り、保存セッションが使えなければキーストアの認証情報でログインする。
+    pub startup_auto_login: bool,
     pub theme: String,    // system | dark | light
     pub language: String, // en | th | ja
     pub font_scale: f64,  // UI scale 0.60 .. 1.40 (1.0 = 100%)
@@ -74,6 +76,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            startup_auto_login: false,
             theme: "system".into(),
             language: "th".into(),
             font_scale: 1.0,
