@@ -12,7 +12,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [x] Photos, video, voice messages, files
 - [x] Paste and drag-and-drop attachments
 - [x] In-app viewers (image, video, PDF, text)
-- [x] Downloads, tray, Thai / English, themes
+- [x] Downloads, tray, Vietnamese (default) / Thai / English, themes
 - [x] Discord RPC
 - [ ] Voice call (WIP)
 - [ ] Account switcher
@@ -66,6 +66,10 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 deno task --config protocol/deno.json check
 ```
+
+## Future development
+
+We plan to use changes from [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) in future development. See the [fork comparison and integration notes (Vietnamese)](docs/fork-shirafukayayoi.md) for the surveyed features, branch differences, and requirements for preserving Vietnamese as the default language. These changes have not been integrated yet.
 
 ---
 

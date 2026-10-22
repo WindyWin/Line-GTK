@@ -7,6 +7,7 @@ listing="$(tar -tzf "$archive")"
 for required in \
   /line-gtk \
   /protocol/line-gtk-protocol \
+  /assets/lang/vie.json \
   /assets/lang/eng.json \
   /assets/lang/thai.json \
   /dev.linegtk.LineGtk.desktop

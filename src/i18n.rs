@@ -13,10 +13,10 @@ pub struct I18n {
 
 impl I18n {
     pub fn load(repo_root: &Path, code: &str) -> Self {
-        let file = if code == "th" || code == "thai" {
-            "thai.json"
-        } else {
-            "eng.json"
+        let file = match code {
+            "vi" | "vie" | "vietnamese" => "vie.json",
+            "th" | "thai" => "thai.json",
+            _ => "eng.json",
         };
         let path = lang_path(repo_root, file);
         let map = read_map(&path).unwrap_or_else(|| {

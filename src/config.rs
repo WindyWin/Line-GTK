@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct AppConfig {
     pub theme: String,    // system | dark | light
-    pub language: String, // en | th
+    pub language: String, // vi | en | th
     pub font_scale: f64,  // UI scale 0.60 .. 1.40 (1.0 = 100%)
     /// Any installed font family name, e.g. "Noto Sans Thai", "Inter", "Sarasa Gothic"
     pub font_family: String,
@@ -66,7 +66,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            language: "th".into(),
+            language: "vi".into(),
             font_scale: 1.0,
             font_family: "Noto Sans Thai".into(),
             animations: true,
@@ -154,8 +154,8 @@ impl AppConfig {
         if !matches!(self.theme.as_str(), "system" | "dark" | "light") {
             self.theme = "system".into();
         }
-        if !matches!(self.language.as_str(), "en" | "th") {
-            self.language = "en".into();
+        if !matches!(self.language.as_str(), "vi" | "en" | "th") {
+            self.language = "vi".into();
         }
         if !matches!(
             self.cache_retention.as_str(),
@@ -270,7 +270,7 @@ mod tests {
         };
         cfg.normalize();
         assert_eq!(cfg.theme, "system");
-        assert_eq!(cfg.language, "en");
+        assert_eq!(cfg.language, "vi");
         assert_eq!(cfg.cache_retention, "smart");
         assert_eq!(cfg.font_scale, 1.0);
         assert_eq!(cfg.notification_sound_volume, 2.0);

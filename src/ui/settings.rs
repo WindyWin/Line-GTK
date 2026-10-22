@@ -72,10 +72,15 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("language"))
         .subtitle(i18n::t("language_subtitle"))
         .build();
-    let langs = gtk::StringList::new(&[&i18n::t("lang_thai"), &i18n::t("lang_english")]);
+    let langs = gtk::StringList::new(&[
+        &i18n::t("lang_vietnamese"),
+        &i18n::t("lang_thai"),
+        &i18n::t("lang_english"),
+    ]);
     lang_row.set_model(Some(&langs));
     lang_row.set_selected(match deps.config.borrow().language.as_str() {
-        "en" | "eng" => 1,
+        "th" | "thai" => 1,
+        "en" | "eng" => 2,
         _ => 0,
     });
     {
@@ -83,7 +88,11 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         let data_dir = deps.data_dir.clone();
         let on_lang = deps.on_lang.clone();
         lang_row.connect_selected_notify(move |row| {
-            let language = if row.selected() == 1 { "en" } else { "th" };
+            let language = match row.selected() {
+                1 => "th",
+                2 => "en",
+                _ => "vi",
+            };
             cfg.borrow_mut().language = language.into();
             cfg.borrow().save(&data_dir);
             on_lang();
