@@ -8,6 +8,7 @@ for required in \
   /line-gtk \
   /protocol/line-gtk-protocol \
   /assets/lang/vie.json \
+  /docs/fork-shirafukayayoi.md \
   /assets/lang/eng.json \
   /assets/lang/thai.json \
   /dev.linegtk.LineGtk.desktop
