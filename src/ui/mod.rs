@@ -221,6 +221,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         pending_rows: Rc::new(RefCell::new(HashMap::new())),
         restarting: Rc::new(RefCell::new(false)),
         recovery_attempts: Rc::new(RefCell::new(0)),
+        recovery_scheduled: Rc::new(RefCell::new(false)),
         repo_root,
         data_dir,
         config,

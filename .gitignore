@@ -5,6 +5,7 @@
 # Local session / secrets
 /data
 protocol/linejs-storage.json
+protocol/line-gtk-protocol
 
 # OS
 .DS_Store

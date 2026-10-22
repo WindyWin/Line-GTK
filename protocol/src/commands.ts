@@ -10,6 +10,7 @@ import { needsDecryptionRefresh } from "./e2ee_guard.ts";
 import { fetchGroupProfiles } from "./groups.ts";
 import type { ReadPermission } from "./read_policy.ts";
 import { replyMessageId, replySnapshot } from "./replies.ts";
+import { createLineFetch } from "./connection.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -279,7 +280,12 @@ export function createCommandService(runtime: CommandRuntime) {
         onReceiveQRUrl: (url) => emitEvent("qr", { url }),
         onPincodeRequest: (pin) => emitEvent("pin", { pin }),
       },
-      { device, version: LINE_VERSION, storage },
+      {
+        device,
+        version: LINE_VERSION,
+        storage,
+        fetch: createLineFetch(90_000),
+      },
     );
     runtime.setClient(client);
     await saveAuth(client.authToken, device);

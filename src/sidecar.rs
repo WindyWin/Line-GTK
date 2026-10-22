@@ -625,6 +625,22 @@ fn read_loop<R: std::io::Read>(
                                 .unwrap_or("session restore failed")
                                 .to_string(),
                         },
+                        "connection_retry" | "connection_lost" | "connection_failed" => {
+                            ProtocolEvent::Connection {
+                                state: event.to_string(),
+                                kind: resp
+                                    .extra
+                                    .get("kind")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("network")
+                                    .to_string(),
+                                attempt: resp
+                                    .extra
+                                    .get("attempt")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0),
+                            }
+                        }
                         "qr" => ProtocolEvent::Qr {
                             url: resp
                                 .extra

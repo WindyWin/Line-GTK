@@ -103,6 +103,7 @@ pub(super) struct AppState {
     pub pending_rows: Rc<RefCell<HashMap<String, gtk::Box>>>,
     pub restarting: Rc<RefCell<bool>>,
     pub recovery_attempts: Rc<RefCell<u8>>,
+    pub recovery_scheduled: Rc<RefCell<bool>>,
     pub repo_root: PathBuf,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,

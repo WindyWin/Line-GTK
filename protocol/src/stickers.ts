@@ -142,9 +142,7 @@ export function createStickerService(runtime: StickerRuntime) {
       return ownedPackagesCache.packages;
     }
     try {
-      const { ShopService } = await import(
-        "https://jsr.io/@evex/linejs/3.5.0/base/service/shop/mod.ts"
-      );
+      const { ShopService } = await import("@linegtk/shop");
       const shop = new ShopService(client.base as never);
       const res = await shop.getOwnedProductSummaries({
         shopId: "stickershop",

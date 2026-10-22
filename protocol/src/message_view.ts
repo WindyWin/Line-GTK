@@ -47,7 +47,31 @@ export function createMessageView(runtime: MessageViewRuntime) {
   }
 
   function previewLang() {
-    const code = (Deno.env.get("LINE_GTK_LANG") || "th").toLowerCase();
+    const code = (Deno.env.get("LINE_GTK_LANG") || "vi").toLowerCase();
+    if (code === "vi" || code === "vie" || code === "vietnamese") {
+      return {
+        you: "Bạn",
+        unsent: "Tin nhắn đã được thu hồi",
+        callIncoming: "Cuộc gọi đến",
+        callOutgoing: "Cuộc gọi đi",
+        callMissed: "Cuộc gọi nhỡ",
+        callUnanswered: "Cuộc gọi không được trả lời",
+        videoIncoming: "Cuộc gọi video đến",
+        videoOutgoing: "Cuộc gọi video đi",
+        videoMissed: "Cuộc gọi video nhỡ",
+        videoUnanswered: "Cuộc gọi video không được trả lời",
+        they: "Đối phương",
+        photo: "Ảnh",
+        video: "Video",
+        sticker: "Nhãn dán",
+        voice: "Tin nhắn thoại",
+        file: "Tệp",
+        flex: "Tin nhắn Flex",
+        message: "Tin nhắn",
+        encrypted: "Cần lấy lại khóa mã hóa",
+        tap: "Nhấn để mở",
+      };
+    }
     if (code === "ja" || code === "ja-jp" || code === "ja_jp") {
       return {
         you: "自分",

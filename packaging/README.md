@@ -9,6 +9,19 @@ only for packaged releases; source-tree development can still use Deno directly.
 verify the executable, compiled protocol runtime, desktop entry, and language
 catalogs are present.
 
+Both AUR PKGBUILDs disable `strip`: Deno appends its JavaScript payload after
+the ELF sections, and stripping that executable corrupts it. Cargo still strips
+the Rust application through its release profile. `check-package.sh` extracts
+the final tarball or `.pkg.tar.zst` and requires the actual sidecar to emit
+`ready` and answer `ping` with an empty data/cache directory; checking filenames
+alone cannot detect a stripped Deno executable.
+
+Build/check the git AUR package, then validate the resulting artifact with:
+
+```bash
+./packaging/check-package.sh /path/to/line-gtk-git-VERSION-x86_64.pkg.tar.zst
+```
+
 ## Flatpak bundle
 
 `make-flatpak.sh` wraps the prebuilt release in a Flatpak using the GNOME 50

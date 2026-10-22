@@ -71,7 +71,17 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             avatar_path,
             picture_url,
         } => {
-            *state.recovery_attempts.borrow_mut() = 0;
+            // A restored profile does not yet prove that linejs polling stays
+            // alive. Reset only after a stable period, so a crashing listener
+            // cannot create an endless restore/crash loop.
+            let s = state.clone();
+            let pid = state.sidecar.status().pid;
+            glib::timeout_add_local_once(std::time::Duration::from_secs(30), move || {
+                let status = s.sidecar.status();
+                if status.running && status.pid == pid && *s.session_ready.borrow() {
+                    *s.recovery_attempts.borrow_mut() = 0;
+                }
+            });
             let result = serde_json::json!({
                 "mid": mid,
                 "device": device,
@@ -92,7 +102,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             auto_login::failed(state);
             let msg = if error.contains("relogin_android_required") {
                 crate::i18n::t("relogin_android_required")
-            } else if error.contains("NOT_AUTHORIZED_DEVICE")
+            } else if error == "line_auth_expired"
+                || error.contains("NOT_AUTHORIZED_DEVICE")
                 || error.contains("V3_TOKEN_CLIENT_LOGGED_OUT")
                 || error.contains("LOGGED_OUT")
             {
@@ -105,6 +116,35 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             *state.discord_session_start.borrow_mut() = None;
             sync_discord_rpc(state);
             toast(state, &msg);
+        }
+        ProtocolEvent::Connection {
+            state: connection,
+            kind,
+            attempt,
+        } => {
+            if connection == "connection_retry" {
+                state.status.set_text(&crate::i18n::tf(
+                    "line_reconnecting",
+                    &[("attempt", &attempt.to_string())],
+                ));
+            } else if connection == "connection_lost" {
+                schedule_sidecar_recovery(state);
+            } else {
+                let key = match kind.as_str() {
+                    "network" => "line_network_unavailable",
+                    "server" => "line_server_unavailable",
+                    _ => "line_protocol_failed",
+                };
+                let message = crate::i18n::t(key);
+                state.status.set_text(&message);
+                let notice = libadwaita::Toast::new(&message);
+                notice.set_button_label(Some(&crate::i18n::t("retry")));
+                // This action preserves credentials; the login screen's Retry
+                // intentionally clears them to request a fresh QR instead.
+                notice.set_action_name(Some("app.retry-protocol"));
+                notice.set_timeout(0);
+                state.toast_overlay.add_toast(notice);
+            }
         }
         ProtocolEvent::Qr { url } => {
             if state.login.method.get() != login::LoginMethod::Qr {
@@ -809,6 +849,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
 const MAX_SIDECAR_RECOVERY_ATTEMPTS: u8 = 3;
 
 pub(super) fn schedule_sidecar_recovery(state: &AppState) {
+    if *state.recovery_scheduled.borrow() {
+        return;
+    }
     let attempt = {
         let mut attempts = state.recovery_attempts.borrow_mut();
         if *attempts >= MAX_SIDECAR_RECOVERY_ATTEMPTS {
@@ -824,17 +867,21 @@ pub(super) fn schedule_sidecar_recovery(state: &AppState) {
         *attempts
     };
     let delay = 1_u64 << (attempt - 1);
+    *state.recovery_scheduled.borrow_mut() = true;
     state.status.set_text(&crate::i18n::tf(
         "protocol_reconnecting",
         &[("attempt", &attempt.to_string())],
     ));
     let s = state.clone();
     glib::timeout_add_local_once(std::time::Duration::from_secs(delay), move || {
-        recover_sidecar(&s);
+        if *s.recovery_scheduled.borrow() && *s.recovery_attempts.borrow() == attempt {
+            recover_sidecar(&s);
+        }
     });
 }
 
 pub(super) fn recover_sidecar(state: &AppState) {
+    *state.recovery_scheduled.borrow_mut() = false;
     match state.sidecar.recover() {
         Ok(()) => {
             state

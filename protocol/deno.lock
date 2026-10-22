@@ -1,75 +1,20 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@evex/linejs-types@3.5.0": "3.5.0",
-    "jsr:@evex/linejs-types@^3.5.0": "3.5.0",
-    "jsr:@evex/linejs@3.5.0": "3.5.0",
-    "jsr:@evex/loose-types@^1.0.1": "1.0.1",
-    "jsr:@std/assert@1": "1.0.19",
-    "jsr:@std/internal@^1.0.12": "1.0.14",
-    "jsr:@std/internal@^1.0.14": "1.0.14",
-    "jsr:@std/path@1": "1.1.6",
-    "npm:@noble/ciphers@^2.2.0": "2.4.0",
-    "npm:@types/node-int64@~0.4.32": "0.4.32",
-    "npm:@types/thrift@~0.10.17": "0.10.17",
-    "npm:crypto-js@^4.2.0": "4.2.0",
-    "npm:curve25519-js@^0.0.4": "0.0.4",
-    "npm:node-bignumber@^1.2.2": "1.2.2",
-    "npm:node-int64@0.4": "0.4.0",
+    "npm:@noble/ciphers@2.2.0": "2.2.0",
+    "npm:@types/thrift@0.10.17": "0.10.17",
+    "npm:crypto-js@4.2.0": "4.2.0",
+    "npm:curve25519-js@0.0.4": "0.0.4",
+    "npm:node-bignumber@1.2.2": "1.2.2",
+    "npm:node-int64@0.4.0": "0.4.0",
     "npm:opusscript@0.1.1": "0.1.1",
-    "npm:opusscript@~0.1.1": "0.1.1",
-    "npm:thrift@0.20": "0.20.0",
+    "npm:thrift@0.20.0": "0.20.0",
     "npm:tweetnacl@1.0.3": "1.0.3",
-    "npm:tweetnacl@^1.0.3": "1.0.3",
-    "npm:undici@7": "7.30.0"
-  },
-  "jsr": {
-    "@evex/linejs@3.5.0": {
-      "integrity": "c8fc8adba7163f916fb7b75e8197429abd3d29f283e4ac47233877b0b7f5c102",
-      "dependencies": [
-        "jsr:@evex/linejs-types@^3.5.0",
-        "jsr:@evex/loose-types",
-        "npm:@noble/ciphers",
-        "npm:@types/node-int64",
-        "npm:@types/thrift",
-        "npm:crypto-js",
-        "npm:curve25519-js",
-        "npm:node-bignumber",
-        "npm:node-int64",
-        "npm:opusscript@~0.1.1",
-        "npm:thrift",
-        "npm:tweetnacl@^1.0.3",
-        "npm:undici"
-      ]
-    },
-    "@evex/linejs-types@3.5.0": {
-      "integrity": "25759fe36a44902911a4b2c50a44f32b32f86e167def15e9e59c5a63f7be1eaf",
-      "dependencies": [
-        "jsr:@evex/loose-types"
-      ]
-    },
-    "@evex/loose-types@1.0.1": {
-      "integrity": "6f233f1af29a3f2c6c3ba8de3ce3b74d4dc660dc202ed8160a5522170333bd1d"
-    },
-    "@std/assert@1.0.19": {
-      "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
-      "dependencies": [
-        "jsr:@std/internal@^1.0.12"
-      ]
-    },
-    "@std/internal@1.0.14": {
-      "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
-    },
-    "@std/path@1.1.6": {
-      "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
-      "dependencies": [
-        "jsr:@std/internal@^1.0.14"
-      ]
-    }
+    "npm:undici@7.29.0": "7.29.0"
   },
   "npm": {
-    "@noble/ciphers@2.4.0": {
-      "integrity": "sha512-AnjFn0Jv92laAkvMrghlFZq4qQCIN/4DxFV/eooqtC2YTjB7kBeLMS2T9KJX4Dn+ZVXLOwK0lSgqDtx9gvxtiw=="
+    "@noble/ciphers@2.2.0": {
+      "integrity": "sha512-Z6pjIZ/8IJcCGzb2S/0Px5J81yij85xASuk1teLNeg75bfT07MV3a/O2Mtn1I2se43k3lkVEcFaR10N4cgQcZA=="
     },
     "@types/node-int64@0.4.32": {
       "integrity": "sha512-xf/JsSlnXQ+mzvc0IpXemcrO4BrCfpgNpMco+GLcXkFk01k/gW9lGJu+Vof0ZSvHK6DsHJDPSbjFPs36QkWXqw==",
@@ -142,8 +87,8 @@
     "undici-types@8.9.0": {
       "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="
     },
-    "undici@7.30.0": {
-      "integrity": "sha512-dkrQXeHSaoamnItlYbmzG0wFYrM0ZwDxCIg0A7aKjTyyhh9svRzCNFEzV+Vm05/yehjCzjDZ31KXfGEjYSztDQ=="
+    "undici@7.29.0": {
+      "integrity": "sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw=="
     },
     "ws@5.2.7": {
       "integrity": "sha512-Yp1RXz/2h2qC/Gy7d5mqQcpuCWbXiO6FgYw/jTbSvytZF9wD7fh7od+6WzWR/y9EAnXcJjQZpPkYVmj3T2bj+Q==",
@@ -152,13 +97,21 @@
       ]
     }
   },
+  "redirects": {
+    "https://jsr.io/@evex/linejs/3.5.0/base/thrift/readwrite/write.ts": "https://jsr.io/@evex/linejs/3.5.0/"
+  },
   "workspace": {
     "dependencies": [
-      "jsr:@evex/linejs-types@3.5.0",
-      "jsr:@evex/linejs@3.5.0",
-      "jsr:@std/assert@1",
-      "jsr:@std/path@1",
-      "npm:opusscript@0.1.1"
+      "npm:@noble/ciphers@2.2.0",
+      "npm:@types/thrift@0.10.17",
+      "npm:crypto-js@4.2.0",
+      "npm:curve25519-js@0.0.4",
+      "npm:node-bignumber@1.2.2",
+      "npm:node-int64@0.4.0",
+      "npm:opusscript@0.1.1",
+      "npm:thrift@0.20.0",
+      "npm:tweetnacl@1.0.3",
+      "npm:undici@7.29.0"
     ]
   }
 }

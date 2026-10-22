@@ -33,6 +33,11 @@ import {
   retireClient,
   waitForReceiver,
 } from "./connection_recovery.ts";
+import {
+  createLineFetch,
+  failureKind,
+  restoreWithRetry,
+} from "./connection.ts";
 import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
@@ -149,42 +154,42 @@ function fail(id: number | string | null, error: string) {
   emit({ id, ok: false, error });
 }
 
-// linejs listen() async loops can reject without a caller catch (e.g. logged-out token).
+// linejs starts detached polling loops. Classify their failures before Deno
+// exits so a transient outage never masquerades as an expired login.
 let authDead = false;
 globalThis.addEventListener("unhandledrejection", (ev) => {
   const reason = (ev as PromiseRejectionEvent).reason;
-  let msg = "";
-  if (reason instanceof Error) {
-    msg = reason.message;
-  } else if (typeof reason === "string") {
-    msg = reason;
-  } else {
-    try {
-      msg = JSON.stringify(reason ?? "");
-    } catch {
-      msg = String(reason ?? "unhandledrejection");
-    }
-  }
-  const loggedOut = msg.includes("NOT_AUTHORIZED") ||
-    msg.includes("LOGGED_OUT") ||
-    msg.includes("AUTHENTICATION") ||
-    msg.includes("V3_TOKEN_CLIENT_LOGGED_OUT") ||
-    msg.includes("NOT_AUTHORIZED_DEVICE");
-  if (loggedOut) {
+  const kind = failureKind(reason);
+  if (kind === "auth") {
     ev.preventDefault();
+    void sessionFailure(reason);
+  } else if (kind === "network" || kind === "server") {
+    ev.preventDefault();
+    listening = false;
+    emitEvent("connection_lost", { kind });
+  } else {
+    // Unknown programming/protocol errors must remain visible and allow the
+    // existing bounded process recovery to handle an actual sidecar crash.
+    console.error("[unhandledrejection]", reason);
+  }
+});
+
+async function sessionFailure(error: unknown) {
+  const kind = failureKind(error);
+  if (kind === "auth") {
     if (authDead) return;
     authDead = true;
     listening = false;
     if (client) retireClient(client);
     client = null;
     cancelBackgroundWork();
-    console.error("[auth] session ended:", msg);
-    void clearAuth();
-    emitEvent("session_failed", { error: msg });
-    return;
+    await clearAuth();
+    emitEvent("session_failed", { error: "line_auth_expired" });
+  } else {
+    // Keep the saved token and cached chats even when restore retries run out.
+    emitEvent("connection_failed", { kind });
   }
-  console.error("[unhandledrejection]", msg);
-});
+}
 
 let client: Client | null = null;
 const albums = createAlbumService({
@@ -193,6 +198,7 @@ const albums = createAlbumService({
   mediaDir,
 });
 let listening = false;
+let bootRestoreController: AbortController | null = null;
 
 calls.configureCallRuntime({
   getClient: () => client,
@@ -1938,7 +1944,7 @@ async function handle(req: Json) {
         break;
       case "set_language": {
         const language = String(params.language ?? "");
-        if (!["en", "th", "ja"].includes(language)) {
+        if (!["vi", "en", "th", "ja"].includes(language)) {
           throw new Error("表示言語が不正です");
         }
         Deno.env.set("LINE_GTK_LANG", language);
@@ -1946,9 +1952,11 @@ async function handle(req: Json) {
         break;
       }
       case "login_qr":
+        bootRestoreController?.abort();
         await commands.loginQr(id);
         break;
       case "login_email": {
+        bootRestoreController?.abort();
         const email = typeof params.email === "string" ? params.email : "";
         const password = typeof params.password === "string"
           ? params.password
@@ -1974,6 +1982,7 @@ async function handle(req: Json) {
         break;
       }
       case "login_token":
+        bootRestoreController?.abort();
         await commands.loginToken(id, params.token as string | undefined);
         break;
       case "list_chats":
@@ -2282,6 +2291,7 @@ async function handle(req: Json) {
         break;
       }
       case "logout":
+        bootRestoreController?.abort();
         cancelBackgroundWork();
         stickers.resetOwnedCache();
         try {
@@ -2318,20 +2328,46 @@ emitEvent("ready", {
 });
 
 if (bootAuth) {
-  try {
+  const controller = new AbortController();
+  bootRestoreController = controller;
+  // Keep stdin responsive (including ping) while a server is unavailable.
+  void (async () => {
+    let auth = bootAuth;
     const device = bootDevice;
-    client = await restoreSession(bootAuth, device, storagePath, LINE_VERSION);
-    await saveAuth(client.authToken, device);
-    const profile = await client.getMyProfile();
-    patchE2eeGuards();
-    listener.start();
-    emitEvent("session", { ...(await myProfilePayload(profile)), device });
-  } catch (e) {
-    console.error("[boot restore]", e);
-    emitEvent("session_failed", {
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
+    try {
+      const restored = await restoreWithRetry(async () => {
+        const candidate = await restoreSession(
+          auth,
+          device,
+          storagePath,
+          LINE_VERSION,
+          undefined,
+          createLineFetch(25_000, globalThis.fetch, controller.signal),
+        );
+        controller.signal.throwIfAborted();
+        // Save refreshed credentials before another request can fail.
+        auth = candidate.authToken;
+        await saveAuth(auth, device);
+        const profile = await candidate.getMyProfile();
+        controller.signal.throwIfAborted();
+        return { candidate, profile };
+      }, (attempt) => emitEvent("connection_retry", { attempt }));
+      client = restored.candidate;
+      patchE2eeGuards();
+      listener.start();
+      emitEvent("session", {
+        ...(await myProfilePayload(restored.profile)),
+        device,
+      });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        console.error("[boot restore]", error);
+        await sessionFailure(error);
+      }
+    } finally {
+      if (bootRestoreController === controller) bootRestoreController = null;
+    }
+  })();
 }
 
 const decoder = new TextDecoder();

@@ -1,6 +1,7 @@
 import { dirname, join } from "@std/path";
 import { loginWithAuthToken } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
+import { createLineFetch } from "./connection.ts";
 import {
   ensurePrivateDir,
   readPrivateTextFile,
@@ -29,10 +30,12 @@ export async function restoreSession(
   storagePath: string,
   androidVersion: string,
   authenticate: typeof loginWithAuthToken = loginWithAuthToken,
+  fetcher: ReturnType<typeof createLineFetch> = createLineFetch(),
 ) {
   return await authenticate(token, {
     ...loginInit(device, androidVersion),
     storage: await createAuthStorage(storagePath),
+    fetch: fetcher,
   });
 }
 

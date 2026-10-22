@@ -5,9 +5,7 @@ import nacl from "npm:tweetnacl@1.0.3";
 import { BaseClient } from "@evex/linejs/base";
 import { MemoryStorage } from "@evex/linejs/storage";
 import { type NestedArray, Protocols, Thrift } from "@evex/linejs/thrift";
-const thriftSource =
-  "https://jsr.io/@evex/linejs/3.5.0/base/thrift/readwrite/write.ts";
-const { writeStruct } = await import(thriftSource);
+import { writeStruct } from "../vendor/deps/linejs/base/thrift/readwrite/write.ts";
 const E2EE = new BaseClient({
   device: "DESKTOPWIN",
   storage: new MemoryStorage(),

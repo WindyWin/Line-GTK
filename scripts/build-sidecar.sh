@@ -4,8 +4,17 @@ set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 deno_bin="${DENO:-deno}"
 output="${1:-$project_root/protocol/line-gtk-protocol}"
+python3 "$project_root/scripts/vendor-protocol.py" --verify
+offline=()
+if [[ "${DENO_OFFLINE:-0}" == 1 ]]; then
+  offline=(--cached-only)
+fi
 
 "$deno_bin" compile \
+  --config "$project_root/protocol/deno.json" \
+  --lock "$project_root/protocol/deno.lock" \
+  --frozen-lockfile \
+  "${offline[@]}" \
   --no-prompt \
   --allow-read \
   --allow-write \
@@ -17,3 +26,4 @@ output="${1:-$project_root/protocol/line-gtk-protocol}"
   "$project_root/protocol/src/main.ts"
 
 chmod 0755 "$output"
+python3 "$project_root/scripts/check-sidecar.py" "$output"

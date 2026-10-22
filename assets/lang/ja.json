@@ -511,5 +511,9 @@
   "contact_blocks_refresh": "ブロック状態を更新",
   "contact_blocks_loading": "ブロック状態を確認しています…",
   "contact_block_cancel": "キャンセル",
-  "lang_vietnamese": "ベトナム語"
+  "lang_vietnamese": "ベトナム語",
+  "line_reconnecting": "LINEに再接続中（{attempt}回目）…",
+  "line_network_unavailable": "LINEに接続できません。接続を確認して再試行してください。セッションは保存されています。",
+  "line_server_unavailable": "LINEは一時的に利用できないか、リクエストを制限しています。しばらく待って再試行してください。セッションは保存されています。",
+  "line_protocol_failed": "LINEが接続を拒否したか、通信仕様が変更されました。再試行するかアプリを更新してください。セッションは保存されています。"
 }

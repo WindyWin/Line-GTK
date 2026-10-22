@@ -31,6 +31,15 @@ Deno.test("日本語のプレビューと実行中の言語切り替え", () => 
       view.previewBody({ text: "日本語のメッセージ", contentType: "NONE" }),
       "日本語のメッセージ",
     );
+    Deno.env.set("LINE_GTK_LANG", "vi");
+    assertEquals(
+      view.previewLine({ mine: true, contentType: "IMAGE" }),
+      "Bạn: Ảnh",
+    );
+    assertEquals(
+      view.previewBody({ contentType: "UNSENT" }),
+      "Tin nhắn đã được thu hồi",
+    );
     Deno.env.set("LINE_GTK_LANG", "en");
     assertEquals(
       view.previewLine({ mine: true, contentType: "IMAGE" }),

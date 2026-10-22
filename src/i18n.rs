@@ -122,6 +122,28 @@ mod tests {
     }
 
     #[test]
+    fn vietnamese_catalog_is_complete_and_default_language_is_preserved() {
+        let en: HashMap<String, String> =
+            serde_json::from_str(include_str!("../assets/lang/eng.json")).unwrap();
+        let vi: HashMap<String, String> =
+            serde_json::from_str(include_str!("../assets/lang/vie.json")).unwrap();
+        assert_eq!(en.len(), vi.len());
+        for (key, english) in &en {
+            let translated = vi.get(key).expect("Missing Vietnamese translation");
+            assert!(
+                !translated.trim().is_empty(),
+                "Empty Vietnamese translation: {key}"
+            );
+            assert_eq!(placeholders(english), placeholders(translated), "{key}");
+        }
+        let config = crate::config::AppConfig::default();
+        assert_eq!(config.language, "vi");
+        let language = I18n::load(Path::new(env!("CARGO_MANIFEST_DIR")), &config.language);
+        assert_eq!(language.t("send"), "Gửi");
+        assert_eq!(language.tf("reply_to", &[("name", "Lan")]), "Trả lời Lan");
+    }
+
+    #[test]
     fn missing_translations_fall_back_to_english() {
         let root = std::env::temp_dir().join(format!("line-gtk-i18n-test-{}", std::process::id()));
         let directory = root.join("assets/lang");

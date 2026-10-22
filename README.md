@@ -99,6 +99,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 | Rust | stable toolchain |
 | GTK4 + Libadwaita | `pacman -S gtk4 libadwaita` |
 | Deno | Build-time protocol compiler; source-tree runs use `deno` or `DENO` |
+| Python 3 | Dependency verification and package smoke tests |
 | ffmpeg / ffprobe | voice record, video thumbs |
 | libsecret (`secret-tool`) + Secret Service | 起動時のメール自動ログインを使う場合に必要 |
 | Optional | `pdftoppm`, `pdftotext` for PDF preview |
@@ -133,8 +134,15 @@ Arch Linuxでは `noto-fonts-cjk` をインストールしてください。
 git clone https://github.com/MidnightTale/Line-GTK.git
 cd Line-GTK
 cargo build --release
-./target/release/line-gtk
+./scripts/build-sidecar.sh
+LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
+
+JSR libraries, including linejs, are pinned and stored in `protocol/vendor/deps`.
+Builds do not contact JSR. npm dependencies are checked against `protocol/deno.lock`;
+the first build still needs the npm registry and Deno compiler runtime. Once cached,
+use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` to forbid dependency downloads.
+See [dependency and connection recovery notes](docs/protocol-reliability.md).
 
 ## Development checks
 

@@ -199,6 +199,11 @@ pub enum ProtocolEvent {
     SessionFailed {
         error: String,
     },
+    Connection {
+        state: String,
+        kind: String,
+        attempt: u64,
+    },
     Qr {
         url: String,
     },

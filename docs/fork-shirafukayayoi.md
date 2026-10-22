@@ -1,6 +1,6 @@
 # Tham khảo fork shirafukayayoi và định hướng tích hợp
 
-Chúng ta dự định sử dụng các thay đổi từ [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) trong tương lai. Tài liệu này ghi lại kết quả khảo sát ngày **22/10/2026** để làm cơ sở lựa chọn nhánh và tích hợp sau này.
+Repo đã tích hợp các thay đổi từ [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) đến các mốc nêu bên dưới. Tài liệu này ghi lại kết quả khảo sát ngày **22/10/2026** và cập nhật trạng thái tích hợp vào repo này.
 
 Đã tích hợp các commit của `main` đến `727124f` và `personal/features` đến `0907007` vào repo này. Giữ tiếng Việt mặc định, bổ sung bản dịch cho các khóa mới và giữ các thay đổi cục bộ về kết nối/đóng gói. Các giới hạn của tính năng được ghi bên dưới vẫn áp dụng.
 
@@ -65,7 +65,7 @@ PR [#11 — Chat categories](https://github.com/MidnightTale/Line-GTK/pull/11) �
 
 ## Định hướng cho repo này
 
-Ưu tiên tham khảo fork của shirafukayayoi cho các đợt phát triển tiếp theo. Khi bắt đầu tích hợp, kiểm tra lại commit và diff mới nhất, chọn `main` hoặc các phần từ `personal/features` theo phạm vi cần dùng. Đợt tích hợp này đã nhận các thay đổi đến `0907007`; không đổi remote hoặc chuyển nhánh làm việc.
+Ưu tiên tham khảo fork của shirafukayayoi cho các đợt phát triển tiếp theo. Khi cập nhật tiếp, kiểm tra lại commit và diff mới nhất theo phạm vi cần dùng. Đợt tích hợp này đã nhận các thay đổi đến `0907007`; không đổi remote hoặc chuyển nhánh làm việc.
 
 Các yêu cầu cần giữ khi tích hợp:
 
@@ -76,3 +76,10 @@ Các yêu cầu cần giữ khi tích hợp:
 5. Build và chạy kiểm thử Rust/Deno, rồi kiểm tra trực tiếp các luồng đăng nhập, nhắn tin, đã đọc, khôi phục kết nối và tính năng được chọn.
 
 Đã tích hợp mã từ các mốc trên. Phần thông tin người gửi của fork hiện lấy tên thành viên; chưa có giao diện avatar cạnh từng tin nhắn trong nhóm. Phần ảnh nhóm dùng `picturePath` từ API nhóm và tải vào cache.
+
+## Kiểm tra sau tích hợp
+
+- `cargo test --all-targets --all-features`: 57 bài kiểm tra đạt.
+- `deno task --config protocol/deno.json check`: định dạng, lint, kiểm tra kiểu và 144 bài kiểm tra đạt.
+- Dependency cục bộ được nâng lên linejs/linejs-types 3.5.0, cùng mốc mà fork dùng để sửa giải mã.
+- Các kết quả trên dùng kiểm tra tự động và dữ liệu giả lập; chưa xác nhận ảnh nhóm/tin nhắn trên tài khoản LINE thật.
