@@ -2,7 +2,7 @@
 
 Chúng ta dự định sử dụng các thay đổi từ [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) trong tương lai. Tài liệu này ghi lại kết quả khảo sát ngày **22/10/2026** để làm cơ sở lựa chọn nhánh và tích hợp sau này.
 
-Các tính năng bên dưới là của fork được khảo sát, chưa được tích hợp vào repo hiện tại. Việc khảo sát dựa trên mã nguồn, diff và lịch sử commit; chưa build hoặc chạy thử fork để xác nhận độ ổn định.
+Đã tích hợp các commit của `main` đến `727124f` và `personal/features` đến `0907007` vào repo này. Giữ tiếng Việt mặc định, bổ sung bản dịch cho các khóa mới và giữ các thay đổi cục bộ về kết nối/đóng gói. Các giới hạn của tính năng được ghi bên dưới vẫn áp dụng.
 
 ## Kho nguồn và các nhánh
 
@@ -65,7 +65,7 @@ PR [#11 — Chat categories](https://github.com/MidnightTale/Line-GTK/pull/11) �
 
 ## Định hướng cho repo này
 
-Ưu tiên tham khảo fork của shirafukayayoi cho các đợt phát triển tiếp theo. Khi bắt đầu tích hợp, kiểm tra lại commit và diff mới nhất, chọn `main` hoặc các phần từ `personal/features` theo phạm vi cần dùng. Chưa quyết định chuyển toàn bộ repo sang nhánh cá nhân.
+Ưu tiên tham khảo fork của shirafukayayoi cho các đợt phát triển tiếp theo. Khi bắt đầu tích hợp, kiểm tra lại commit và diff mới nhất, chọn `main` hoặc các phần từ `personal/features` theo phạm vi cần dùng. Đợt tích hợp này đã nhận các thay đổi đến `0907007`; không đổi remote hoặc chuyển nhánh làm việc.
 
 Các yêu cầu cần giữ khi tích hợp:
 
@@ -75,4 +75,4 @@ Các yêu cầu cần giữ khi tích hợp:
 4. Kiểm tra tương thích phiên đăng nhập, dữ liệu theo tài khoản, bộ nhớ đệm và phụ thuộc mới trước khi dùng dữ liệu thật.
 5. Build và chạy kiểm thử Rust/Deno, rồi kiểm tra trực tiếp các luồng đăng nhập, nhắn tin, đã đọc, khôi phục kết nối và tính năng được chọn.
 
-Tài liệu này ghi nhận nguồn tham khảo và ý định sử dụng trong tương lai; việc chuyển nhánh, đổi remote hoặc tích hợp mã sẽ được thực hiện trong công việc riêng.
+Đã tích hợp mã từ các mốc trên. Phần thông tin người gửi của fork hiện lấy tên thành viên; chưa có giao diện avatar cạnh từng tin nhắn trong nhóm. Phần ảnh nhóm dùng `picturePath` từ API nhóm và tải vào cache.

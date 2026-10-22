@@ -1,6 +1,7 @@
 use gtk::CssProvider;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,8 +9,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// 起動時に限り、保存セッションが使えなければキーストアの認証情報でログインする。
+    pub startup_auto_login: bool,
     pub theme: String,    // system | dark | light
-    pub language: String, // vi | en | th
+    pub language: String, // vi | en | th | ja
     pub font_scale: f64,  // UI scale 0.60 .. 1.40 (1.0 = 100%)
     /// Any installed font family name, e.g. "Noto Sans Thai", "Inter", "Sarasa Gothic"
     pub font_family: String,
@@ -23,8 +26,16 @@ pub struct AppConfig {
     /// Notification sound gain for file-based fallbacks (0.0 .. 2.0).
     pub notification_sound_volume: f64,
     pub auto_mark_read: bool,
+    /// このアプリからの既読通知を停止する。
+    pub pause_read_receipts: bool,
+    /// アカウントごとに既読通知を止めるトークID。
+    pub read_receipts_paused_chats: BTreeMap<String, BTreeSet<String>>,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
+    /// アカウントごとの非表示トーク（トークID → 復元画面用の名前）。
+    pub hidden_chats: BTreeMap<String, BTreeMap<String, String>>,
+    /// このPCで一覧の上部に固定するトーク。アカウントごとに保存する。
+    pub pinned_chats: BTreeMap<String, BTreeSet<String>>,
     /// PulseAudio / PipeWire source name, or empty / "default".
     pub audio_input: String,
     /// PulseAudio / PipeWire sink name, or empty / "default".
@@ -65,6 +76,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            startup_auto_login: false,
             theme: "system".into(),
             language: "vi".into(),
             font_scale: 1.0,
@@ -75,7 +87,11 @@ impl Default for AppConfig {
             notification_sound: true,
             notification_sound_volume: 1.0,
             auto_mark_read: true,
+            pause_read_receipts: false,
+            read_receipts_paused_chats: BTreeMap::new(),
             last_chat_mid: String::new(),
+            hidden_chats: BTreeMap::new(),
+            pinned_chats: BTreeMap::new(),
             audio_input: String::new(),
             audio_output: String::new(),
             call_mic_volume: 1.0,
@@ -100,6 +116,168 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn is_chat_pinned(&self, account: &str, mid: &str) -> bool {
+        self.pinned_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains(mid))
+    }
+
+    pub fn set_chat_pinned(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        pinned: bool,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.pinned_chats.clone();
+        if pinned {
+            self.pinned_chats
+                .entry(account.into())
+                .or_default()
+                .insert(mid.into());
+        } else if let Some(chats) = self.pinned_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.pinned_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.pinned_chats = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn is_chat_hidden(&self, account: &str, mid: &str) -> bool {
+        self.hidden_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains_key(mid))
+    }
+
+    pub fn set_chat_hidden(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        name: Option<&str>,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.hidden_chats.clone();
+        let last_chat = self.last_chat_mid.clone();
+        if let Some(name) = name {
+            self.hidden_chats.entry(account.into()).or_default().insert(
+                mid.into(),
+                if name.trim().is_empty() { mid } else { name }.into(),
+            );
+            if self.last_chat_mid == mid {
+                self.last_chat_mid.clear();
+            }
+        } else if let Some(chats) = self.hidden_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.hidden_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.hidden_chats = previous;
+            self.last_chat_mid = last_chat;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn can_mark_read(&self) -> bool {
+        self.auto_mark_read && !self.pause_read_receipts
+    }
+
+    pub fn chat_read_receipts_paused(&self, account: &str, mid: &str) -> bool {
+        self.read_receipts_paused_chats
+            .get(account)
+            .is_some_and(|chats| chats.contains(mid))
+    }
+
+    pub fn can_mark_chat_read(&self, account: &str, mid: &str) -> bool {
+        !account.is_empty()
+            && !mid.is_empty()
+            && self.can_mark_read()
+            && !self.chat_read_receipts_paused(account, mid)
+    }
+
+    pub fn set_chat_read_receipts_paused(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        mid: &str,
+        paused: bool,
+    ) -> std::io::Result<()> {
+        if account.trim().is_empty() || mid.trim().is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "アカウントとトークIDが必要です",
+            ));
+        }
+        let previous = self.read_receipts_paused_chats.clone();
+        if paused {
+            self.read_receipts_paused_chats
+                .entry(account.into())
+                .or_default()
+                .insert(mid.into());
+        } else if let Some(chats) = self.read_receipts_paused_chats.get_mut(account) {
+            chats.remove(mid);
+            if chats.is_empty() {
+                self.read_receipts_paused_chats.remove(account);
+            }
+        }
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.read_receipts_paused_chats = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn set_read_receipts_paused(
+        &mut self,
+        data_dir: &Path,
+        paused: bool,
+    ) -> std::io::Result<()> {
+        let previous = self.pause_read_receipts;
+        self.pause_read_receipts = paused;
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.pause_read_receipts = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn set_language(&mut self, language: &str) {
+        // 標準フォントだけを言語に合わせる。利用者が指定したフォントは維持する。
+        let previous_default = if self.language == "ja" {
+            "Noto Sans CJK JP"
+        } else {
+            "Noto Sans Thai"
+        };
+        if self.font_family == previous_default {
+            self.font_family = if language == "ja" {
+                "Noto Sans CJK JP"
+            } else {
+                "Noto Sans Thai"
+            }
+            .into();
+        }
+        self.language = language.into();
+    }
+
     pub fn path(data_dir: &std::path::Path) -> PathBuf {
         data_dir.join("settings.json")
     }
@@ -154,8 +332,11 @@ impl AppConfig {
         if !matches!(self.theme.as_str(), "system" | "dark" | "light") {
             self.theme = "system".into();
         }
-        if !matches!(self.language.as_str(), "vi" | "en" | "th") {
+        if !matches!(self.language.as_str(), "vi" | "en" | "th" | "ja") {
             self.language = "vi".into();
+        }
+        if self.language == "ja" && self.font_family == "Noto Sans Thai" {
+            self.font_family = "Noto Sans CJK JP".into();
         }
         if !matches!(
             self.cache_retention.as_str(),
@@ -170,6 +351,18 @@ impl AppConfig {
         self.call_spk_volume = finite_or(self.call_spk_volume, 1.0).clamp(0.0, 2.5);
         self.sidebar_width = self.sidebar_width.clamp(80, 520);
         self.notifications_muted_until = self.notifications_muted_until.max(0);
+        self.read_receipts_paused_chats.retain(|account, chats| {
+            chats.retain(|mid| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
+        self.hidden_chats.retain(|account, chats| {
+            chats.retain(|mid, _| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
+        self.pinned_chats.retain(|account, chats| {
+            chats.retain(|mid| !mid.trim().is_empty());
+            !account.trim().is_empty() && !chats.is_empty()
+        });
     }
 
     /// Discord Application ID from settings, env, or the built-in default.
@@ -256,6 +449,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn japanese_font_follows_language_and_preserves_custom_fonts() {
+        let mut cfg = AppConfig::default();
+        cfg.set_language("ja");
+        assert_eq!(cfg.font_family, "Noto Sans CJK JP");
+        cfg.set_language("th");
+        assert_eq!(cfg.font_family, "Noto Sans Thai");
+        for family in ["Sarasa Gothic J", ""] {
+            cfg.font_family = family.into();
+            cfg.set_language("ja");
+            cfg.normalize();
+            assert_eq!(cfg.font_family, family);
+        }
+        let mut old = AppConfig {
+            language: "ja".into(),
+            ..AppConfig::default()
+        };
+        old.normalize();
+        assert_eq!(old.font_family, "Noto Sans CJK JP");
+    }
+
+    #[test]
     fn normalize_rejects_invalid_values() {
         let mut cfg = AppConfig {
             theme: "purple".into(),
@@ -280,6 +494,193 @@ mod tests {
     }
 
     #[test]
+    fn normalize_preserves_japanese() {
+        let mut cfg = AppConfig {
+            language: "ja".into(),
+            ..AppConfig::default()
+        };
+        cfg.normalize();
+        assert_eq!(cfg.language, "ja");
+    }
+
+    #[test]
+    fn read_pause_migrates_and_respects_auto_read() {
+        let mut cfg: AppConfig = serde_json::from_str(r#"{"auto_mark_read":true}"#).unwrap();
+        assert!(!cfg.pause_read_receipts);
+        assert!(cfg.can_mark_read());
+        cfg.pause_read_receipts = true;
+        assert!(!cfg.can_mark_read());
+        cfg.pause_read_receipts = false;
+        cfg.auto_mark_read = false;
+        assert!(!cfg.can_mark_read());
+    }
+
+    #[test]
+    fn read_pause_persists_and_rolls_back_on_save_failure() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-read-pause-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig::default();
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(cfg.set_read_receipts_paused(&dir, true).is_err());
+        assert!(!cfg.pause_read_receipts);
+        assert!(!AppConfig::load(&dir).pause_read_receipts);
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_read_receipts_paused(&dir, true).unwrap();
+        assert!(AppConfig::load(&dir).pause_read_receipts);
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(cfg.set_read_receipts_paused(&dir, false).is_err());
+        assert!(cfg.pause_read_receipts);
+        assert!(AppConfig::load(&dir).pause_read_receipts);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pinned_chats_persist_per_account_and_failed_saves_roll_back() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-pins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(!cfg.is_chat_pinned("u-self", "u-friend"));
+        cfg.last_chat_mid = "u-open".into();
+        cfg.set_chat_pinned(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        let mut loaded = AppConfig::load(&dir);
+        assert!(loaded.is_chat_pinned("u-self", "u-friend"));
+        assert!(!loaded.is_chat_pinned("u-other", "u-friend"));
+        assert_eq!(loaded.last_chat_mid, "u-open");
+        assert!(loaded.can_mark_read());
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            loaded
+                .set_chat_pinned(&dir, "u-self", "u-friend", false)
+                .is_err()
+        );
+        assert!(loaded.is_chat_pinned("u-self", "u-friend"));
+        assert!(
+            loaded
+                .set_chat_pinned(&dir, "u-self", "u-new", true)
+                .is_err()
+        );
+        assert!(!loaded.is_chat_pinned("u-self", "u-new"));
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        loaded
+            .set_chat_pinned(&dir, "u-self", "u-friend", false)
+            .unwrap();
+        assert!(!AppConfig::load(&dir).pinned_chats.contains_key("u-self"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_chats_persist_per_account_without_changing_read_policy() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-hidden-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.hidden_chats.is_empty());
+        cfg.last_chat_mid = "c-group".into();
+        cfg.set_chat_hidden(&dir, "u-first", "c-group", Some("検証グループ"))
+            .unwrap();
+        let mut loaded = AppConfig::load(&dir);
+        assert!(loaded.is_chat_hidden("u-first", "c-group"));
+        assert!(!loaded.is_chat_hidden("u-second", "c-group"));
+        assert_eq!(loaded.hidden_chats["u-first"]["c-group"], "検証グループ");
+        assert!(loaded.last_chat_mid.is_empty());
+        assert!(loaded.can_mark_read());
+        loaded
+            .set_chat_hidden(&dir, "u-second", "c-group", Some("別アカウント"))
+            .unwrap();
+        loaded
+            .set_chat_hidden(&dir, "u-first", "c-group", None)
+            .unwrap();
+        let loaded = AppConfig::load(&dir);
+        assert!(!loaded.is_chat_hidden("u-first", "c-group"));
+        assert!(loaded.is_chat_hidden("u-second", "c-group"));
+        assert!(!loaded.hidden_chats.contains_key("u-first"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hidden_chat_save_failure_restores_visibility_and_last_chat() {
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-hidden-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig {
+            last_chat_mid: "u-friend".into(),
+            ..AppConfig::default()
+        };
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_hidden(&dir, "u-self", "u-friend", Some("友だち"))
+                .is_err()
+        );
+        assert!(!cfg.is_chat_hidden("u-self", "u-friend"));
+        assert_eq!(cfg.last_chat_mid, "u-friend");
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_chat_hidden(&dir, "u-self", "u-friend", Some("友だち"))
+            .unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_hidden(&dir, "u-self", "u-friend", None)
+                .is_err()
+        );
+        assert!(cfg.is_chat_hidden("u-self", "u-friend"));
+        assert!(AppConfig::load(&dir).is_chat_hidden("u-self", "u-friend"));
+        assert!(cfg.set_chat_hidden(&dir, "", "u-friend", None).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn per_chat_read_pause_is_persistent_and_account_scoped() {
+        let dir = std::env::temp_dir().join(format!("line-gtk-chat-read-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg: AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.can_mark_chat_read("u-self", "u-friend"));
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        let mut cfg = AppConfig::load(&dir);
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        assert!(cfg.can_mark_chat_read("u-self", "u-other"));
+        assert!(cfg.can_mark_chat_read("u-another-account", "u-friend"));
+        assert!(!cfg.can_mark_chat_read("", "u-friend"));
+        cfg.pause_read_receipts = true;
+        assert!(!cfg.can_mark_chat_read("u-self", "u-other"));
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", false)
+            .unwrap();
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        cfg.pause_read_receipts = false;
+        cfg.auto_mark_read = false;
+        assert!(!cfg.can_mark_chat_read("u-self", "u-friend"));
+        assert!(cfg.read_receipts_paused_chats.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn per_chat_read_pause_rolls_back_both_changes_on_save_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-chat-read-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut cfg = AppConfig::default();
+        cfg.save_atomic(&dir).unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+                .is_err()
+        );
+        assert!(!cfg.chat_read_receipts_paused("u-self", "u-friend"));
+        fs::remove_dir(dir.join(".settings.json.tmp")).unwrap();
+        cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", true)
+            .unwrap();
+        fs::create_dir(dir.join(".settings.json.tmp")).unwrap();
+        assert!(
+            cfg.set_chat_read_receipts_paused(&dir, "u-self", "u-friend", false)
+                .is_err()
+        );
+        assert!(cfg.chat_read_receipts_paused("u-self", "u-friend"));
+        assert!(AppConfig::load(&dir).chat_read_receipts_paused("u-self", "u-friend"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn save_is_atomic_and_private() {
         let dir = std::env::temp_dir().join(format!(
             "line-gtk-config-test-{}-{}",
@@ -287,7 +688,10 @@ mod tests {
             std::thread::current().name().unwrap_or("unnamed")
         ));
         let _ = fs::remove_dir_all(&dir);
-        let cfg = AppConfig::default();
+        let cfg = AppConfig {
+            language: "ja".into(),
+            ..AppConfig::default()
+        };
         cfg.save_atomic(&dir).expect("save settings");
         assert_eq!(AppConfig::load(&dir).language, cfg.language);
         assert!(!dir.join(".settings.json.tmp").exists());

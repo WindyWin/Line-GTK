@@ -1,31 +1,49 @@
 use super::*;
 
-pub(super) fn message_list_fingerprint(messages: &[MessageInfo]) -> (usize, String, String) {
-    let first = messages.first().map(|m| m.id.clone()).unwrap_or_default();
-    let last = messages.last().map(|m| m.id.clone()).unwrap_or_default();
-    (messages.len(), first, last)
-}
-
 pub(super) fn same_message_list(
     state: &AppState,
     chat_mid: &str,
     messages: &[MessageInfo],
 ) -> bool {
-    let (len, first, last) = message_list_fingerprint(messages);
     matches!(
         state.msg_list_fp.borrow().as_ref(),
-        Some((mid, l, f, la)) if mid == chat_mid && *l == len && f == &first && la == &last
+        Some((mid, previous)) if mid == chat_mid && previous == messages
     )
 }
 
 pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+    if let Some(account) = state.self_mid.borrow().clone() {
+        state.unsent_ids.borrow_mut().extend(
+            messages
+                .iter()
+                .filter(|m| m.content_type == "UNSENT")
+                .map(|m| (account.clone(), m.id.clone())),
+        );
+    }
+    messages = messages
+        .iter()
+        .map(|message| unsend::masked(state, message))
+        .collect();
+    // 取得中に届いたイベントを、先に開始した履歴の応答で消さない。
+    let existing_events: Vec<_> = state
+        .reply_messages
+        .borrow()
+        .values()
+        .filter(|m| m.chat_event.is_some() && !messages.iter().any(|item| item.id == m.id))
+        .cloned()
+        .collect();
+    messages.extend(existing_events);
     clear_messages(state);
+    state
+        .reply_messages
+        .borrow_mut()
+        .extend(messages.iter().map(|m| (m.id.clone(), m.clone())));
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
     messages.sort_by_key(|m| m.created_time);
     if let Some(mid) = state.current_chat.borrow().clone() {
-        let (len, first, last) = message_list_fingerprint(&messages);
-        *state.msg_list_fp.borrow_mut() = Some((mid, len, first, last));
+        // 同じIDの行でも、再取得で復号された本文を画面へ反映する。
+        *state.msg_list_fp.borrow_mut() = Some((mid, messages.clone()));
     } else {
         *state.msg_list_fp.borrow_mut() = None;
     }
@@ -46,16 +64,23 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     let last_incoming = messages
         .iter()
         .rev()
-        .find(|m| !m.mine)
+        .find(|m| !m.mine && m.chat_event.is_none() && m.content_type != "UNSENT")
         .map(|m| m.id.clone());
     if let Some(id) = last_incoming.clone() {
         *state.last_incoming_id.borrow_mut() = Some(id);
     }
 
     let chat_mid = state.current_chat.borrow().clone();
+    let generation = *state.message_render_generation.borrow();
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
     glib::idle_add_local(move || {
+        // トーク変更後に、前の履歴や引用候補を挿入しない。
+        if *state_c.current_chat.borrow() != chat_mid
+            || *state_c.message_render_generation.borrow() != generation
+        {
+            return glib::ControlFlow::Break;
+        }
         let mut left = batch.borrow_mut();
         let take = left.len().min(14);
         if take == 0 {
@@ -78,17 +103,20 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
+    let masked = unsend::masked(state, msg);
+    let msg = &masked;
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
         return;
     }
 
     // Prefer a path that already finished hydrating (race with list rebuild).
     let ready_path = {
-        let missing = msg
-            .image_path
-            .as_deref()
-            .map(|p| !std::path::Path::new(p).exists())
-            .unwrap_or(true);
+        let missing = msg.content_type != "UNSENT"
+            && msg
+                .image_path
+                .as_deref()
+                .map(|p| !std::path::Path::new(p).exists())
+                .unwrap_or(true);
         if missing {
             state
                 .media_ready_paths
@@ -111,6 +139,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         msg
     };
 
+    state
+        .reply_messages
+        .borrow_mut()
+        .insert(msg.id.clone(), msg.clone());
     let list = &state.message_list;
 
     // Date separator like mobile LINE (Today / Yesterday / Fri, Jul 24).
@@ -119,22 +151,37 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         let need_sep = state.last_msg_day.borrow().as_deref() != Some(day.as_str());
         if need_sep {
             *state.last_msg_day.borrow_mut() = Some(day);
-            let sep_row = gtk::ListBoxRow::builder()
-                .selectable(false)
-                .activatable(false)
-                .css_classes(["line-day-sep-row"])
+            let sep_row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .css_classes(["line-message-row", "line-day-sep-row"])
                 .build();
             let sep = gtk::Label::builder()
                 .label(format_day_separator(msg.created_time))
                 .halign(gtk::Align::Center)
                 .css_classes(["line-day-sep"])
                 .build();
-            sep_row.set_child(Some(&sep));
+            sep_row.append(&sep);
             list.append(&sep_row);
         }
     }
 
-    let row = gtk::ListBoxRow::new();
+    if let Some(event) = &msg.chat_event {
+        chat_events::append(state, event);
+        return;
+    }
+    // ListViewが行のフォーカスを管理するため、ListBox専用の行を入れ子にしない。
+    let row = gtk::Box::builder()
+        .css_classes(["line-message-row"])
+        .build();
+    state
+        .message_rows
+        .borrow_mut()
+        .insert(msg.id.clone(), row.clone());
+    if msg.content_type == "UNSENT" {
+        unsend::placeholder(&row);
+        list.append(&row);
+        return;
+    }
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
@@ -192,7 +239,28 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         .map(|p| std::path::Path::new(p).exists())
         .unwrap_or(false);
 
-    if let Some(flex) = msg.flex.as_ref() {
+    if let Some(quote) = msg.reply_to.as_ref() {
+        replies::append_quote(state, &bubble, quote);
+    }
+    replies::wire_context(&bubble, msg);
+
+    if msg.decryption_failed {
+        let label = gtk::Label::builder()
+            .label(crate::i18n::t("message_decryption_failed"))
+            .wrap(true)
+            .max_width_chars(36)
+            .xalign(0.0)
+            .css_classes(["dim-label"])
+            .build();
+        bubble.append(&label);
+        let repair = gtk::Button::builder()
+            .label(crate::i18n::t("e2ee_repair"))
+            .action_name("app.repair-e2ee")
+            .build();
+        bubble.append(&repair);
+    } else if msg.content_type.eq_ignore_ascii_case("CALL") {
+        call_history::append_history_card(&bubble, msg);
+    } else if let Some(flex) = msg.flex.as_ref() {
         append_flex_card(state, &bubble, msg, flex);
     } else if is_audio {
         append_voice_card(state, &bubble, msg, has_audio);
@@ -205,7 +273,10 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             && msg.text != "[Sticker]"
             && !is_sticker;
 
-        if show_text {
+        if show_text && !msg.emojis.is_empty() {
+            emojis::append(state, &bubble, msg);
+            append_link_chips(state, &bubble, &msg.text);
+        } else if show_text {
             let label = gtk::Label::builder()
                 .label(&msg.text)
                 .xalign(0.0)
@@ -215,6 +286,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
                 .max_width_chars(42)
                 .css_classes(["line-bubble-text"])
                 .build();
+            label.set_extra_menu(Some(&replies::menu(msg)));
             bubble.append(&label);
             append_link_chips(state, &bubble, &msg.text);
         } else if !has_image && !waiting_visual {
@@ -302,30 +374,36 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
             .halign(gtk::Align::End)
             .hexpand(true)
             .build();
-        col.append(&bubble);
+        if let Some(reply) = replies::button(msg) {
+            let content = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(6)
+                .halign(gtk::Align::End)
+                .build();
+            content.append(&reply);
+            content.append(&bubble);
+            col.append(&content);
+        } else {
+            col.append(&bubble);
+        }
 
-        let read = state
-            .current_chat
-            .borrow()
-            .as_ref()
-            .and_then(|mid| state.read_upto.borrow().get(mid).cloned())
-            .map(|upto| msg_id_le(&msg.id, &upto))
-            .unwrap_or(false);
+        let tracks_receipt = !msg.content_type.eq_ignore_ascii_case("CALL");
+        let (text, tooltip, read) = if tracks_receipt {
+            receipt_status(state, &msg.id, msg.created_time)
+        } else {
+            (time_txt.clone(), String::new(), false)
+        };
         let status = gtk::Label::builder()
-            .label(format_outgoing_status(read, msg.created_time))
+            .label(text)
             .halign(gtk::Align::End)
-            .tooltip_text(if read {
-                crate::i18n::t("status_read")
-            } else {
-                crate::i18n::t("status_sent")
-            })
+            .tooltip_text(tooltip)
             .css_classes(if read {
                 vec!["line-msg-status", "line-msg-status-read"]
             } else {
                 vec!["line-msg-status"]
             })
             .build();
-        if !msg.id.is_empty() {
+        if tracks_receipt && !msg.id.is_empty() {
             state
                 .receipt_slots
                 .borrow_mut()
@@ -336,17 +414,45 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         outer.append(&col);
     } else {
         // Incoming: bubble + time on the right (mobile style).
+        let incoming = if message_senders::is_group(state) {
+            let column = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(3)
+                .hexpand(true)
+                .build();
+            let name = message_senders::name(state, &msg.from);
+            let sender = gtk::Label::builder()
+                .label(&name)
+                .tooltip_text(&name)
+                .xalign(0.0)
+                .halign(gtk::Align::Start)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .max_width_chars(36)
+                .css_classes(["line-message-sender"])
+                .build();
+            message_senders::register(state, &msg.from, &sender);
+            column.append(&sender);
+            let content = gtk::Box::builder().spacing(8).hexpand(true).build();
+            column.append(&content);
+            outer.append(&column);
+            content
+        } else {
+            outer.clone()
+        };
         let time = gtk::Label::builder()
             .label(&time_txt)
             .valign(gtk::Align::End)
             .css_classes(["line-msg-time"])
             .build();
-        outer.append(&bubble);
-        outer.append(&time);
-        outer.append(&gtk::Box::builder().hexpand(true).build());
+        incoming.append(&bubble);
+        if let Some(reply) = replies::button(msg) {
+            incoming.append(&reply);
+        }
+        incoming.append(&time);
+        incoming.append(&gtk::Box::builder().hexpand(true).build());
     }
 
-    row.set_child(Some(&outer));
+    row.append(&outer);
     if is_pending {
         row.add_css_class("line-msg-pending-row");
         state
@@ -368,19 +474,23 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
     list.append(&row);
 }
 
-pub(super) fn format_outgoing_status(read: bool, created_ms: i64) -> String {
-    let t = format_msg_time(created_ms);
-    if read {
-        // Mobile LINE style: "Read 4:34 PM" (+ ✓✓ cue)
-        if t.is_empty() {
-            format!("✓✓ {}", crate::i18n::t("status_read"))
-        } else {
-            format!("✓✓ {} {}", crate::i18n::t("status_read"), t)
-        }
-    } else if t.is_empty() {
-        "✓".into()
+pub(super) fn outgoing_read_label(read_count: usize, group: bool) -> String {
+    if read_count == 0 {
+        crate::i18n::t("status_sent")
+    } else if group {
+        crate::i18n::tf("status_read_count", &[("n", &read_count.to_string())])
     } else {
-        format!("✓ {t}")
+        crate::i18n::t("status_read")
+    }
+}
+
+pub(super) fn format_outgoing_status(read_count: usize, group: bool, created_ms: i64) -> String {
+    let status = outgoing_read_label(read_count, group);
+    let time = format_msg_time(created_ms);
+    if time.is_empty() {
+        status
+    } else {
+        format!("{status} · {time}")
     }
 }
 
@@ -416,7 +526,7 @@ pub(super) fn format_day_separator(ts_ms: i64) -> String {
     } else if day == today - chrono::Duration::days(1) {
         crate::i18n::t("day_yesterday")
     } else {
-        local.format("%a, %b %-d").to_string()
+        local.format(&crate::i18n::t("date_format")).to_string()
     }
 }
 
@@ -432,7 +542,7 @@ pub(super) fn format_msg_time(ts_ms: i64) -> String {
     chrono::DateTime::from_timestamp(secs, 0)
         .map(|d| {
             d.with_timezone(&chrono::Local)
-                .format("%-I:%M %p")
+                .format(&crate::i18n::t("time_format"))
                 .to_string()
         })
         .unwrap_or_default()
@@ -959,8 +1069,17 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     while let Some(child) = bubble.first_child() {
         bubble.remove(&child);
     }
+    let original = state.reply_messages.borrow().get(message_id).cloned();
+    if let Some(quote) = original
+        .as_ref()
+        .and_then(|message| message.reply_to.as_ref())
+    {
+        replies::append_quote(state, &bubble, quote);
+    }
     let duration_ms = ffprobe_duration_ms(std::path::Path::new(path)).map(|v| v as i64);
     let msg = MessageInfo {
+        chat_event: None,
+        emojis: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
         from: String::new(),
@@ -974,6 +1093,9 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
         file_path: Some(path.to_string()),
         duration_ms,
         flex: None,
+        call_history: None,
+        decryption_failed: false,
+        reply_to: None,
     };
     append_voice_card(state, &bubble, &msg, true);
 }
@@ -1049,23 +1171,7 @@ pub(super) fn spawn_audio_player(
 }
 
 pub(super) fn filter_chats(state: &AppState, query: &str) {
-    let q = query.trim().to_lowercase();
-    let chats = state.chats.borrow();
-    let mut idx = 0;
-    while let Some(row) = state.chat_list.row_at_index(idx) {
-        let visible = if q.is_empty() {
-            true
-        } else {
-            chats
-                .get(idx as usize)
-                .map(|c| {
-                    c.name.to_lowercase().contains(&q) || c.preview.to_lowercase().contains(&q)
-                })
-                .unwrap_or(true)
-        };
-        row.set_visible(visible);
-        idx += 1;
-    }
+    chat_filter::set_query(state, query);
 }
 
 pub(super) fn append_flex_card(
@@ -1208,11 +1314,27 @@ pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str
 }
 
 pub(super) fn clear_messages(state: &AppState) {
+    state.chat_event_labels.borrow_mut().clear();
+    let generation = state.message_render_generation.borrow().wrapping_add(1);
+    *state.message_render_generation.borrow_mut() = generation;
+    state.emoji_views.borrow_mut().clear();
+    if state.emoji_textures.borrow().len() > 1024 {
+        state.emoji_textures.borrow_mut().clear();
+    }
+    let changed_chat = state.reply_target.borrow().as_ref().is_some_and(|target| {
+        state.current_chat.borrow().as_deref() != Some(target.chat_mid.as_str())
+    });
+    if changed_chat {
+        replies::cancel(state);
+    }
+    state.reply_messages.borrow_mut().clear();
+    state.message_rows.borrow_mut().clear();
     stop_voice_playback(state);
     state.message_list.clear();
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
+    state.sender_labels.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
     state.pending_rows.borrow_mut().clear();
     *state.last_msg_day.borrow_mut() = None;
@@ -1259,8 +1381,12 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
 }
 
 pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
+    if let Some(preview) = call_history::history_preview(msg) {
+        return preview;
+    }
     let ct = msg.content_type.to_ascii_uppercase();
     match ct.as_str() {
+        "UNSENT" => crate::i18n::t("message_unsent"),
         "IMAGE" => crate::i18n::t("preview_photo"),
         "VIDEO" => crate::i18n::t("preview_video"),
         "STICKER" => crate::i18n::t("preview_sticker"),
@@ -1299,6 +1425,8 @@ pub(super) fn localize_preview(preview: &str) -> String {
         ("They: ", "they"),
         ("คุณ: ", "you"),
         ("เขา: ", "they"),
+        ("自分: ", "you"),
+        ("相手: ", "they"),
     ];
     for (prefix, key) in pairs {
         if let Some(rest) = s.strip_prefix(prefix) {
@@ -1329,6 +1457,16 @@ pub(super) fn localize_preview(preview: &str) -> String {
         ("แตะเพื่อเปิด", "tap_open"),
         ("กำลังโหลดข้อความล่าสุด…", "loading_last"),
         ("ไม่มีข้อความล่าสุด", "no_recent"),
+        ("写真", "preview_photo"),
+        ("動画", "preview_video"),
+        ("スタンプ", "preview_sticker"),
+        ("ボイスメッセージ", "voice_message"),
+        ("ファイル", "preview_file"),
+        ("Flexメッセージ", "preview_flex"),
+        ("メッセージ", "preview_message"),
+        ("タップして開く", "tap_open"),
+        ("最新のメッセージを読み込み中…", "loading_last"),
+        ("最近のメッセージはありません", "no_recent"),
     ];
     if let Some((who, body)) = s.split_once(": ") {
         let mut body = body.to_string();
@@ -1439,10 +1577,9 @@ pub(super) fn ensure_new_message_separator(state: &AppState) {
     if state.new_sep_row.borrow().is_some() {
         return;
     }
-    let sep_row = gtk::ListBoxRow::builder()
-        .selectable(false)
-        .activatable(false)
-        .css_classes(["line-new-sep-row"])
+    let sep_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["line-message-row", "line-new-sep-row"])
         .build();
     let row_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -1464,7 +1601,7 @@ pub(super) fn ensure_new_message_separator(state: &AppState) {
         .build();
     row_box.append(&line);
     row_box.append(&badge);
-    sep_row.set_child(Some(&row_box));
+    sep_row.append(&row_box);
     state.message_list.append(&sep_row);
     *state.new_sep_row.borrow_mut() = Some(sep_row);
 }
@@ -1498,5 +1635,40 @@ pub(super) fn jump_to_latest(state: &AppState) {
     if let Some(mid) = state.current_chat.borrow().clone() {
         mark_chat_read(state, &mid);
         clear_unread_badge(state, &mid);
+    }
+}
+
+#[cfg(test)]
+mod localization_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn cached_previews_and_dates_follow_japanese() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        crate::i18n::set_lang(root, "ja");
+        assert_eq!(localize_preview("You: Photo"), "自分: 写真");
+        assert_eq!(localize_preview("เขา: สติกเกอร์"), "相手: スタンプ");
+        assert_eq!(
+            localize_preview("You: 日本語の本文です"),
+            "自分: 日本語の本文です"
+        );
+        let timestamp = chrono::Local
+            .with_ymd_and_hms(2020, 1, 2, 13, 5, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(format_day_separator(timestamp), "2020年1月2日");
+        assert_eq!(format_msg_time(timestamp), "13:05");
+        assert_eq!(
+            format_outgoing_status(0, false, timestamp),
+            "送信済み · 13:05"
+        );
+        assert_eq!(format_outgoing_status(1, false, timestamp), "既読 · 13:05");
+        assert_eq!(format_outgoing_status(2, true, timestamp), "既読 2 · 13:05");
+        crate::i18n::set_lang(root, "en");
+        assert_eq!(localize_preview("自分: 写真"), "You: Photo");
+        assert_eq!(localize_preview("相手: スタンプ"), "They: Sticker");
+        assert_eq!(format_msg_time(timestamp), "1:05 PM");
     }
 }

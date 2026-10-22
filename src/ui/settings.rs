@@ -9,13 +9,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct SettingsDeps {
+    pub read_pause_switch: gtk::Switch,
     pub sidecar: Rc<Sidecar>,
     pub data_dir: PathBuf,
     pub config: Rc<RefCell<AppConfig>>,
+    pub on_auto_login: Rc<dyn Fn(&gtk::Window)>,
     pub on_logout: Rc<dyn Fn()>,
     pub on_lang: Rc<dyn Fn()>,
     pub on_animations: Rc<dyn Fn(bool)>,
     pub on_experimental_calls: Rc<dyn Fn(bool)>,
+    pub on_hidden_chats: Rc<dyn Fn(&gtk::Window)>,
+    pub on_blocked_contacts: Rc<dyn Fn(&gtk::Window)>,
     pub on_tray_settings: Rc<dyn Fn()>,
     pub on_discord_rpc: Rc<dyn Fn()>,
     pub toast: Rc<dyn Fn(&str)>,
@@ -76,11 +80,13 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         &i18n::t("lang_vietnamese"),
         &i18n::t("lang_thai"),
         &i18n::t("lang_english"),
+        &i18n::t("lang_japanese"),
     ]);
     lang_row.set_model(Some(&langs));
     lang_row.set_selected(match deps.config.borrow().language.as_str() {
         "th" | "thai" => 1,
         "en" | "eng" => 2,
+        "ja" => 3,
         _ => 0,
     });
     {
@@ -91,9 +97,11 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
             let language = match row.selected() {
                 1 => "th",
                 2 => "en",
+                3 => "ja",
                 _ => "vi",
             };
-            cfg.borrow_mut().language = language.into();
+            cfg.borrow_mut().set_language(language);
+            apply_font(&cfg.borrow().font_family, cfg.borrow().font_scale);
             cfg.borrow().save(&data_dir);
             on_lang();
         });
@@ -308,6 +316,13 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     font_entry.set_show_apply_button(true);
     {
         let cfg = deps.config.clone();
+        let font_entry = font_entry.clone();
+        lang_row.connect_selected_notify(move |_| {
+            font_entry.set_text(&cfg.borrow().font_family);
+        });
+    }
+    {
+        let cfg = deps.config.clone();
         let data_dir = deps.data_dir.clone();
         let toast = deps.toast.clone();
         font_entry.connect_apply(move |row| {
@@ -365,6 +380,36 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         .title(i18n::t("features_chat"))
         .description(i18n::t("features_chat_desc"))
         .build();
+    let hidden_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("hidden_chats"))
+        .subtitle(i18n::t("hidden_chats_subtitle"))
+        .activatable(true)
+        .build();
+    hidden_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    {
+        let on_hidden_chats = deps.on_hidden_chats.clone();
+        let weak = win.downgrade();
+        hidden_row.connect_activated(move |_| {
+            if let Some(win) = weak.upgrade() {
+                on_hidden_chats(win.upcast_ref());
+            }
+        });
+    }
+    chat_grp.add(&hidden_row);
+    let blocked_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("blocked_contacts"))
+        .subtitle(i18n::t("blocked_contacts_subtitle"))
+        .activatable(true)
+        .build();
+    blocked_row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    let on_blocked = deps.on_blocked_contacts.clone();
+    let weak = win.downgrade();
+    blocked_row.connect_activated(move |_| {
+        if let Some(win) = weak.upgrade() {
+            on_blocked(win.upcast_ref());
+        }
+    });
+    chat_grp.add(&blocked_row);
     let notif_row = libadwaita::SwitchRow::builder()
         .title(i18n::t("notifications"))
         .subtitle(i18n::t("notifications_subtitle"))
@@ -425,6 +470,17 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         });
     }
 
+    let pause_row = libadwaita::SwitchRow::builder()
+        .title(i18n::t("read_receipts_pause"))
+        .subtitle(i18n::t("read_receipts_pause_subtitle"))
+        .build();
+    deps.read_pause_switch
+        .bind_property("active", &pause_row, "active")
+        .bidirectional()
+        .sync_create()
+        .build();
+    chat_grp.add(&pause_row);
+
     let mark_row = libadwaita::SwitchRow::builder()
         .title(i18n::t("auto_mark_read"))
         .subtitle(i18n::t("auto_mark_read_subtitle"))
@@ -436,6 +492,15 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         mark_row.connect_active_notify(move |row| {
             cfg.borrow_mut().auto_mark_read = row.is_active();
             cfg.borrow().save(&data_dir);
+        });
+    }
+    mark_row.set_sensitive(!deps.read_pause_switch.is_active());
+    {
+        let mark_row = mark_row.downgrade();
+        deps.read_pause_switch.connect_active_notify(move |switch| {
+            if let Some(mark_row) = mark_row.upgrade() {
+                mark_row.set_sensitive(!switch.is_active());
+            }
         });
     }
     chat_grp.add(&mark_row);
@@ -831,7 +896,8 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
             };
             cfg.borrow_mut().cache_retention = retention.into();
             cfg.borrow().save(&data_dir);
-            toast(&i18n::tf("cache_retention_saved", &[("mode", retention)]));
+            let mode = i18n::t(&format!("cache_ret_{retention}"));
+            toast(&i18n::tf("cache_retention_saved", &[("mode", &mode)]));
         });
     }
     retention_grp.add(&retention_row);
@@ -849,8 +915,12 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         let sidecar = deps.sidecar.clone();
         let toast = deps.toast.clone();
         let kind = kind.to_string();
+        let title_key = title_key.to_string();
         btn.connect_clicked(move |_| match sidecar.clear_cache(&kind) {
-            Ok(_) => toast(&i18n::tf("cleared_cache", &[("kind", &kind)])),
+            Ok(_) => toast(&i18n::tf(
+                "cleared_cache",
+                &[("kind", &i18n::t(&title_key))],
+            )),
             Err(e) => toast(&i18n::tf("clear_failed", &[("error", &e.to_string())])),
         });
         row.add_suffix(&btn);
@@ -875,6 +945,35 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     let session = libadwaita::PreferencesGroup::builder()
         .title(i18n::t("session"))
         .build();
+    let repair_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("e2ee_repair"))
+        .subtitle(i18n::t("e2ee_repair_hint"))
+        .build();
+    let repair_btn = gtk::Button::builder()
+        .label(i18n::t("e2ee_repair"))
+        .valign(gtk::Align::Center)
+        .action_name("app.repair-e2ee")
+        .build();
+    let win2 = win.clone();
+    repair_btn.connect_clicked(move |_| win2.close());
+    repair_row.add_suffix(&repair_btn);
+    session.add(&repair_row);
+    let auto_row = libadwaita::ActionRow::builder()
+        .title(i18n::t("auto_login_title"))
+        .subtitle(i18n::t("auto_login_settings_note"))
+        .build();
+    let auto_button = gtk::Button::builder()
+        .label(i18n::t("settings"))
+        .valign(gtk::Align::Center)
+        .build();
+    {
+        let on_auto_login = deps.on_auto_login.clone();
+        let parent = win.clone();
+        auto_button.connect_clicked(move |_| on_auto_login(parent.upcast_ref()));
+    }
+    auto_row.add_suffix(&auto_button);
+    session.add(&auto_row);
+
     let logout_row = libadwaita::ActionRow::builder()
         .title(i18n::t("logout"))
         .subtitle(i18n::t("logout_subtitle"))

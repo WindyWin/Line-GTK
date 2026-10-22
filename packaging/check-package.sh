@@ -11,6 +11,7 @@ for required in \
   /docs/fork-shirafukayayoi.md \
   /assets/lang/eng.json \
   /assets/lang/thai.json \
+  /assets/lang/ja.json \
   /dev.linegtk.LineGtk.desktop
 do
   if ! grep -q "${required}$" <<<"$listing"; then

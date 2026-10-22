@@ -23,6 +23,8 @@ pub struct Response {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
     pub mid: String,
+    #[serde(default)]
+    pub device: String,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "statusMessage", default)]
@@ -54,6 +56,12 @@ pub struct ChatInfo {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct BlockedContact {
+    pub mid: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FlexAction {
     #[serde(default)]
     pub label: String,
@@ -65,7 +73,7 @@ pub struct FlexAction {
     pub uri: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FlexInfo {
     #[serde(rename = "altText", default)]
     pub alt_text: String,
@@ -75,8 +83,60 @@ pub struct FlexInfo {
     pub actions: Vec<FlexAction>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct MessageReadRange {
+    #[serde(rename = "startMessageId")]
+    pub start_message_id: String,
+    #[serde(rename = "endMessageId")]
+    pub end_message_id: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
+pub struct ReaderRanges {
+    #[serde(rename = "userMid")]
+    pub user_mid: String,
+    pub ranges: Vec<MessageReadRange>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CallHistory {
+    #[serde(default)]
+    pub video: bool,
+    #[serde(default)]
+    pub status: String,
+    #[serde(rename = "durationMs", default)]
+    pub duration_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ReplyInfo {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub mine: bool,
+    #[serde(rename = "contentType", default)]
+    pub content_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LineEmoji {
+    pub start: usize,
+    pub end: usize,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MessageInfo {
+    #[serde(rename = "chatEvent", default)]
+    pub chat_event: Option<ChatEventInfo>,
+    #[serde(default)]
+    pub emojis: Vec<LineEmoji>,
+    #[serde(rename = "replyTo", default)]
+    pub reply_to: Option<ReplyInfo>,
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -91,6 +151,8 @@ pub struct MessageInfo {
     pub created_time: i64,
     #[serde(rename = "contentType", default)]
     pub content_type: String,
+    #[serde(rename = "decryptionFailed", default)]
+    pub decryption_failed: bool,
     #[serde(rename = "imagePath", default)]
     pub image_path: Option<String>,
     #[serde(rename = "audioPath", default)]
@@ -101,17 +163,33 @@ pub struct MessageInfo {
     pub file_path: Option<String>,
     #[serde(rename = "durationMs", default)]
     pub duration_ms: Option<i64>,
+    #[serde(rename = "callHistory", default)]
+    pub call_history: Option<CallHistory>,
     #[serde(default)]
     pub flex: Option<FlexInfo>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct ChatEventInfo {
+    pub kind: String,
+    #[serde(rename = "actorMid")]
+    pub actor_mid: String,
+    #[serde(rename = "targetMids", default)]
+    pub target_mids: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProtocolEvent {
+    ChatEvent {
+        account_mid: String,
+        message: Box<MessageInfo>,
+    },
     Ready {
         has_auth: bool,
     },
     Session {
         mid: String,
+        device: String,
         display_name: String,
         status_message: String,
         picture_path: Option<String>,
@@ -128,7 +206,12 @@ pub enum ProtocolEvent {
         pin: String,
     },
     Listening,
-    Message(MessageInfo),
+    MessageUnsent {
+        account_mid: String,
+        chat_mid: String,
+        message_id: String,
+    },
+    Message(Box<MessageInfo>),
     Chats {
         chats: Vec<ChatInfo>,
         cached: bool,
@@ -140,6 +223,14 @@ pub enum ProtocolEvent {
     AvatarReady {
         mid: String,
         avatar_path: String,
+    },
+    SenderProfile {
+        mid: String,
+        name: String,
+    },
+    EmojiReady {
+        key: String,
+        path: String,
     },
     FriendsUpdated {
         friends: Vec<ChatInfo>,
@@ -179,9 +270,24 @@ pub enum ProtocolEvent {
         label: String,
         done: bool,
     },
+    ChatUnread {
+        chat_mid: String,
+        account_mid: String,
+        through_message_id: String,
+        unread: i64,
+    },
+    ContactBlocks {
+        account_mid: String,
+        contacts: Vec<BlockedContact>,
+    },
     ReadReceipt {
         chat_mid: String,
+        user_mid: String,
         message_id: String,
+    },
+    ReadRanges {
+        chat_mid: String,
+        readers: Vec<ReaderRanges>,
     },
     CallIncoming {
         call_id: String,

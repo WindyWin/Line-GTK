@@ -1,18 +1,35 @@
+mod albums;
+mod auto_login;
+mod call_history;
 mod call_window;
 mod calls;
+mod chat_events;
+mod chat_filter;
 mod chats;
 mod composer_media;
+mod contact_blocks;
 mod diagnostics;
 mod downloads;
+mod emojis;
 mod events;
 mod friends;
+mod hidden_chats;
 mod login;
 mod media;
+mod message_senders;
 mod messages;
 mod notifications;
+mod pinned_chats;
+mod read_pause;
+mod replies;
+mod resume_sync;
 mod settings;
 mod shell;
 mod state;
+mod sticker_preview;
+mod unread_sync;
+mod unsend;
+mod video;
 mod virtual_list;
 
 use crate::config::{AppConfig, apply_animations, apply_font, apply_theme};
@@ -45,6 +62,16 @@ pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
         .build();
 
     app.connect_activate(move |app| {
+        // 再起動要求は既存の画面を表示する。鍵を共有する通信処理を重複させない。
+        if let Some(window) = app
+            .windows()
+            .into_iter()
+            .find(|w| w.is::<ApplicationWindow>())
+        {
+            window.set_visible(true);
+            window.present();
+            return;
+        }
         if let Err(e) = build_ui(app, repo_root.clone(), data_dir.clone()) {
             eprintln!("failed to start UI: {e:#}");
         }
@@ -85,6 +112,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     stack.set_transition_duration(0);
 
     let login = Rc::new(login::build_login_page());
+    login
+        .remember_login
+        .set_active(config.borrow().startup_auto_login);
     let shell = shell::build_shell_page();
 
     stack.add_named(&login.page, Some("login"));
@@ -116,6 +146,9 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
     let state = AppState {
+        auto_login: Rc::new(RefCell::new(auto_login::State::default())),
+        contact_blocks: Rc::new(RefCell::new(contact_blocks::BlockState::default())),
+        read_once_btn: shell.read_once_btn,
         app: app.clone(),
         sidecar: sidecar.clone(),
         window: window.clone(),
@@ -125,10 +158,17 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
         composer: shell.composer,
+        reply_preview: shell.reply_preview,
+        reply_title: shell.reply_title,
+        reply_text: shell.reply_text,
+        reply_cancel: shell.reply_cancel,
         composer_row: shell.composer_row,
         conversation: shell.conversation,
         send_btn: shell.send_btn,
         status: shell.status,
+        read_pause_switch: shell.read_pause_switch,
+        read_pause_label: shell.read_pause_label,
+        read_pause_box: shell.read_pause_box,
         login,
         profile_label: shell.profile_label,
         profile_avatar: shell.profile_avatar,
@@ -146,10 +186,17 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_load_label: shell.msg_load_label,
         msg_idle: shell.msg_idle,
         current_chat: Rc::new(RefCell::new(None)),
+        reply_target: Rc::new(RefCell::new(None)),
+        reply_messages: Rc::new(RefCell::new(HashMap::new())),
+        message_rows: Rc::new(RefCell::new(HashMap::new())),
+        unsent_ids: Rc::new(RefCell::new(HashSet::new())),
         chats: Rc::new(RefCell::new(Vec::new())),
         chat_avatars: Rc::new(RefCell::new(HashMap::new())),
         chat_previews: Rc::new(RefCell::new(HashMap::new())),
         chat_unread_badges: Rc::new(RefCell::new(HashMap::new())),
+        sender_names: Rc::new(RefCell::new(HashMap::new())),
+        chat_event_labels: Rc::new(RefCell::new(Vec::new())),
+        sender_labels: Rc::new(RefCell::new(HashMap::new())),
         media_slots: Rc::new(RefCell::new(HashMap::new())),
         media_msgs: Rc::new(RefCell::new(HashMap::new())),
         receipt_slots: Rc::new(RefCell::new(HashMap::new())),
@@ -157,7 +204,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         last_msg_day: Rc::new(RefCell::new(None)),
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
         last_incoming_id: Rc::new(RefCell::new(None)),
-        read_upto: Rc::new(RefCell::new(HashMap::new())),
+        peer_reads: Rc::new(RefCell::new(crate::read_receipts::ReadReceipts::default())),
+        unread_sync: Rc::new(RefCell::new(unread_sync::UnreadSync::default())),
         restored_last_chat: Rc::new(RefCell::new(false)),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
         media_pumping: Rc::new(RefCell::new(false)),
@@ -178,9 +226,17 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         config,
         settings_btn: shell.settings_btn,
         friends_btn: shell.friends_btn,
+        album_btn: shell.album_btn,
+        album_ui: Rc::new(RefCell::new(None)),
+        hidden_chats_ui: Rc::new(RefCell::new(None)),
         friends_ui: Rc::new(RefCell::new(None)),
         side_title: shell.side_title,
         search_entry: shell.search_entry,
+        chat_filter_bar: shell.chat_filter_bar,
+        chat_filter_buttons: shell.chat_filter_buttons,
+        compact_filter_btn: shell.compact_filter_btn,
+        chat_category: Rc::new(RefCell::new(chat_filter::ChatCategory::default())),
+        chat_query: Rc::new(RefCell::new(String::new())),
         compact_search_btn: shell.compact_search_btn,
         compact_search_entry: shell.compact_search_entry,
         sidebar: shell.sidebar,
@@ -208,6 +264,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         recording_tick: Rc::new(RefCell::new(None)),
         voice_playback: Rc::new(RefCell::new(None)),
         session_ready: Rc::new(RefCell::new(false)),
+        session_device: Rc::new(RefCell::new(String::new())),
         active_call_peer: Rc::new(RefCell::new(None)),
         incoming_call_from: Rc::new(RefCell::new(None)),
         call_ui: Rc::new(RefCell::new(None)),
@@ -222,17 +279,31 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         self_avatar_path: Rc::new(RefCell::new(None)),
         self_picture_url: Rc::new(RefCell::new(None)),
         msg_list_fp: Rc::new(RefCell::new(None)),
+        message_render_generation: Rc::new(RefCell::new(0)),
+        history_request_generation: Rc::new(RefCell::new(0)),
+        resume_sync: Rc::new(RefCell::new(resume_sync::ResumeSync::default())),
         notif_pending: Rc::new(RefCell::new(HashMap::new())),
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
+        emoji_views: Rc::new(RefCell::new(Vec::new())),
+        emoji_textures: Rc::new(RefCell::new(HashMap::new())),
     };
 
+    read_pause::wire(&state);
+    albums::wire(&state);
+    chat_filter::wire(&state);
+    hidden_chats::wire(&state);
+    contact_blocks::wire(&state);
+    pinned_chats::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
     wire_composer_narrow(&state);
     wire_actions(&state);
+    replies::wire(&state);
+    unsend::wire(&state);
     wire_scroll_pin(&state);
     wire_notification_actions(&state);
+    resume_sync::wire(&state);
     sync_tray(&state);
     apply_close_behavior(&state);
     sync_discord_rpc(&state);
@@ -485,6 +556,7 @@ fn refresh_tray_menu(state: &AppState) {
     chats.sort_by_key(|chat| std::cmp::Reverse(chat.last_activity));
     let recent: Vec<crate::tray::TrayChatItem> = chats
         .into_iter()
+        .filter(|chat| !hidden_chats::is_hidden(state, &chat.mid))
         .take(8)
         .map(|c| crate::tray::TrayChatItem {
             mid: c.mid,
@@ -610,6 +682,20 @@ fn wire_notification_actions(state: &AppState) {
         recover_sidecar(&s);
     });
     state.app.add_action(&retry);
+    let repair = gio::SimpleAction::new("repair-e2ee", None);
+    let s = state.clone();
+    repair.connect_activate(move |_, _| {
+        if *s.restarting.borrow() {
+            return;
+        }
+        *s.session_ready.borrow_mut() = false;
+        *s.current_chat.borrow_mut() = None;
+        *s.restored_last_chat.borrow_mut() = false;
+        clear_messages(&s);
+        // 既存のQR再認証処理を使う。保存済みの暗号鍵は削除しない。
+        restart_qr_login(&s);
+    });
+    state.app.add_action(&repair);
 }
 /// Composer switches to icon-only send below this conversation width.
 const COMPOSER_NARROW_PX: i32 = 420;
@@ -750,6 +836,8 @@ fn apply_sidebar_compact(state: &AppState, width: i32) {
             }
         }
         state.search_entry.set_visible(!compact);
+        state.chat_filter_bar.set_visible(!compact);
+        state.compact_filter_btn.set_visible(compact);
         state.side_title.set_visible(!compact);
         state.side_header.set_visible(!compact);
         state.compact_search_btn.set_visible(compact);
@@ -816,12 +904,6 @@ fn set_avatar_tier(overlay: &gtk::Overlay, compact: bool) {
     {
         frame.set_width_request(px);
         frame.set_height_request(px);
-        if let Some(pic_w) = frame.first_child()
-            && let Ok(pic) = pic_w.downcast::<gtk::Picture>()
-        {
-            pic.set_width_request(px);
-            pic.set_height_request(px);
-        }
     }
 }
 
@@ -933,13 +1015,25 @@ fn send_current(state: &AppState) {
         toast(state, &crate::i18n::t("select_chat_first"));
         return;
     };
-    match state.sidecar.send_message(&chat_mid, &text) {
+    let reply_to = state
+        .reply_target
+        .borrow()
+        .as_ref()
+        .filter(|target| target.chat_mid == chat_mid)
+        .map(|target| target.quote.clone());
+    match state.sidecar.send_reply(
+        &chat_mid,
+        &text,
+        reply_to.as_ref().map(|quote| quote.message_id.as_str()),
+    ) {
         Ok(id) => {
             begin_optimistic_send(
                 state,
                 id,
                 &chat_mid,
                 MessageInfo {
+                    chat_event: None,
+                    emojis: Vec::new(),
                     id: String::new(),
                     text,
                     from: String::new(),
@@ -953,8 +1047,12 @@ fn send_current(state: &AppState) {
                     file_path: None,
                     duration_ms: None,
                     flex: None,
+                    call_history: None,
+                    decryption_failed: false,
+                    reply_to,
                 },
             );
+            replies::cancel(state);
             state.composer.set_text("");
             dismiss_new_marker(state);
             pin_messages_to_latest(state);
@@ -977,6 +1075,8 @@ fn remove_pending_placeholder(state: &AppState, placeholder_id: &str) {
     if let Some(row) = state.pending_rows.borrow_mut().remove(placeholder_id) {
         state.message_list.remove(&row);
     }
+    state.reply_messages.borrow_mut().remove(placeholder_id);
+    state.message_rows.borrow_mut().remove(placeholder_id);
     state.seen_msg_ids.borrow_mut().remove(placeholder_id);
     state.media_slots.borrow_mut().remove(placeholder_id);
     state.media_msgs.borrow_mut().remove(placeholder_id);
@@ -1002,16 +1102,45 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         Pending::Send {
             chat_mid: chat_mid.into(),
             placeholder_id,
+            reply_draft: msg.reply_to.clone().map(|quote| replies::ReplyDraft {
+                chat_mid: chat_mid.into(),
+                text: msg.text.clone(),
+                quote,
+            }),
         },
     );
 }
 
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
+    read_pause::apply_language(state);
+    // 再ログインせず、プレビュー生成側にも選択した言語を反映する。
+    if let Err(error) = state.sidecar.request(
+        "set_language",
+        Some(serde_json::json!({ "language": state.config.borrow().language })),
+    ) {
+        tracing::warn!(%error, "プレビューの言語を更新できませんでした");
+    }
+    replies::refresh(state);
+    chat_events::refresh(state);
+    state
+        .composer
+        .update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
+            "type_message",
+        ))]);
+    chat_filter::apply_language(state);
+    state.album_btn.set_label(&crate::i18n::t("albums"));
+    state
+        .album_btn
+        .set_tooltip_text(Some(&crate::i18n::t("albums")));
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
         .composer
         .set_placeholder_text(Some(&crate::i18n::t("type_message")));
+    state.composer.set_icon_tooltip_text(
+        gtk::EntryIconPosition::Secondary,
+        Some(&crate::i18n::t("insert_emoji")),
+    );
     if *state.composer_narrow.borrow() {
         state.send_btn.set_label("");
         state.send_btn.set_icon_name("mail-send-symbolic");
@@ -1074,7 +1203,7 @@ fn apply_ui_language(state: &AppState) {
     state.brand_label.set_text(&crate::i18n::t("app_name"));
     apply_brand_icon(&state.brand_icon, &state.repo_root);
 
-    // Relocalize chat list previews (cached English → Thai/English).
+    // キャッシュされたプレビューを現在の表示言語に合わせる。
     for chat in state.chats.borrow_mut().iter_mut() {
         if chat.preview.is_empty() {
             continue;
@@ -1084,6 +1213,9 @@ fn apply_ui_language(state: &AppState) {
             label.set_text(&chat.preview);
         }
     }
+    chat_filter::refresh(state);
+    refresh_read_labels(state);
+    refresh_tray_menu(state);
     sync_discord_rpc(state);
 }
 
@@ -1220,6 +1352,7 @@ fn wire_actions(state: &AppState) {
     let esc = gtk::EventControllerKey::new();
     esc.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
+            replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
@@ -1229,9 +1362,10 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     let esc_win = gtk::EventControllerKey::new();
-    esc_win.set_propagation_phase(gtk::PropagationPhase::Capture);
+    esc_win.set_propagation_phase(gtk::PropagationPhase::Bubble);
     esc_win.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape && state_chat_open(&s) {
+            replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
         }
@@ -1257,18 +1391,51 @@ fn wire_actions(state: &AppState) {
 
     let s = state.clone();
     state.login.retry_btn.connect_clicked(move |_| {
-        restart_qr_login(&s);
+        restart_login(&s);
+    });
+
+    let s = state.clone();
+    state.login.qr_method_btn.connect_clicked(move |_| {
+        switch_login_method(&s, login::LoginMethod::Qr);
+    });
+    let s = state.clone();
+    state.login.email_method_btn.connect_clicked(move |_| {
+        switch_login_method(&s, login::LoginMethod::Email);
+    });
+    let s = state.clone();
+    state
+        .login
+        .email_submit_btn
+        .connect_clicked(move |_| submit_email_login(&s));
+    let s = state.clone();
+    state
+        .login
+        .password_entry
+        .connect_activate(move |_| submit_email_login(&s));
+    let password = state.login.password_entry.clone();
+    state.login.email_entry.connect_activate(move |_| {
+        password.grab_focus();
     });
 
     let s = state.clone();
     state.settings_btn.connect_clicked(move |_| {
         let deps = settings::SettingsDeps {
+            read_pause_switch: s.read_pause_switch.clone(),
             sidecar: s.sidecar.clone(),
             data_dir: s.data_dir.clone(),
             config: s.config.clone(),
+            on_auto_login: {
+                let s2 = s.clone();
+                Rc::new(move |parent| auto_login::open_settings(&s2, parent))
+            },
             on_logout: {
                 let s2 = s.clone();
                 Rc::new(move || {
+                    auto_login::manual_logout(&s2);
+                    albums::close(&s2);
+                    hidden_chats::close(&s2);
+                    contact_blocks::reset(&s2);
+                    resume_sync::cancel(&s2);
                     *s2.session_ready.borrow_mut() = false;
                     s2.pending.borrow_mut().clear();
                     *s2.current_chat.borrow_mut() = None;
@@ -1276,6 +1443,8 @@ fn wire_actions(state: &AppState) {
                     clear_list(&s2.chat_list);
                     clear_messages(&s2);
                     s2.chats.borrow_mut().clear();
+                    login::set_method(&s2.login, login::LoginMethod::Qr);
+                    s2.session_device.borrow_mut().clear();
                     login::show_qr_stage(&s2.login);
                     s2.stack.set_visible_child_name("login");
                     s2.login.hint.set_text(&crate::i18n::t("logged_out_hint"));
@@ -1303,6 +1472,10 @@ fn wire_actions(state: &AppState) {
             on_experimental_calls: {
                 let s2 = s.clone();
                 Rc::new(move |_on: bool| {
+                    albums::close(&s2);
+                    hidden_chats::close(&s2);
+                    contact_blocks::reset(&s2);
+                    resume_sync::cancel(&s2);
                     refresh_call_controls(&s2);
                     // Experimental call mode binds to session/device path: force re-login.
                     *s2.session_ready.borrow_mut() = false;
@@ -1314,6 +1487,8 @@ fn wire_actions(state: &AppState) {
                     close_active_call_ui(&s2);
                     *s2.active_call_peer.borrow_mut() = None;
                     *s2.incoming_call_from.borrow_mut() = None;
+                    login::set_method(&s2.login, login::LoginMethod::Qr);
+                    s2.session_device.borrow_mut().clear();
                     login::show_qr_stage(&s2.login);
                     s2.stack.set_visible_child_name("login");
                     s2.login
@@ -1328,6 +1503,14 @@ fn wire_actions(state: &AppState) {
                         );
                     }
                 })
+            },
+            on_hidden_chats: {
+                let s2 = s.clone();
+                Rc::new(move |parent| hidden_chats::open(&s2, parent))
+            },
+            on_blocked_contacts: {
+                let s2 = s.clone();
+                Rc::new(move |parent| contact_blocks::open(&s2, parent))
             },
             on_tray_settings: {
                 let s2 = s.clone();
@@ -1492,6 +1675,11 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         return;
     }
 
+    if hidden_chats::is_hidden(state, &chat.mid) {
+        toast(state, &crate::i18n::t("hidden_chat_open_hint"));
+        return;
+    }
+
     let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
     if already_open {
         // Tap again while already open: mark read without reloading the thread.
@@ -1503,6 +1691,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    read_pause::refresh_once_button(state);
     hide_upload_progress(state);
     {
         let mut cfg = state.config.borrow_mut();
@@ -1524,6 +1713,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         .set_text(&crate::i18n::tf("chat_prefix", &[("name", &chat.name)]));
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
+    contact_blocks::refresh_controls(state);
     let can_mute = chat.mid.starts_with('u');
     state.mute_btn.set_sensitive(can_mute);
     update_mute_btn(state, chat.muted);
@@ -1531,12 +1721,15 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     set_msg_state(state, "loading", None);
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
+    let generation = state.history_request_generation.borrow().wrapping_add(1);
+    *state.history_request_generation.borrow_mut() = generation;
     match state.sidecar.fetch_messages(&chat.mid, 40) {
         Ok(id) => {
             state.pending.borrow_mut().insert(
                 id,
                 Pending::FetchMessages {
                     chat_mid: chat.mid.clone(),
+                    generation: *state.history_request_generation.borrow(),
                 },
             );
         }
@@ -1551,18 +1744,79 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     sync_discord_rpc(state);
 }
 
+fn switch_login_method(state: &AppState, method: login::LoginMethod) {
+    if state.login.method.get() == method {
+        return;
+    }
+    if method == login::LoginMethod::Qr {
+        restart_qr_login(state);
+    } else {
+        login::set_method(&state.login, method);
+        restart_login(state);
+    }
+}
+
+fn submit_email_login(state: &AppState) {
+    if state.login.busy.get()
+        || *state.restarting.borrow()
+        || state.login.method.get() != login::LoginMethod::Email
+    {
+        return;
+    }
+    let email = state.login.email_entry.text();
+    let password = state.login.password_entry.text();
+    if email.trim().is_empty() || password.is_empty() {
+        login::show_failure(&state.login, &crate::i18n::t("login_email_missing"));
+        return;
+    }
+    *state.login.error.borrow_mut() = None;
+    login::set_busy(&state.login, true);
+    state
+        .login
+        .hint
+        .set_text(&crate::i18n::t("login_email_signing_in"));
+    auto_login::prepare_email(state, email.trim(), password.as_str());
+    let request = state.sidecar.login_email(email.trim(), password.as_str());
+    // パスワードを画面や設定へ保持しない。
+    state.login.password_entry.set_text("");
+    match request {
+        Ok(id) => {
+            state.pending.borrow_mut().insert(id, Pending::LoginEmail);
+        }
+        Err(_) => {
+            auto_login::failed(state);
+            login::show_failure(&state.login, &crate::i18n::t("login_email_failed"));
+        }
+    }
+}
+
 fn restart_qr_login(state: &AppState) {
+    // 暗号鍵を再取得する操作は、ログイン中の方式によらずQRへ切り替える。
+    login::set_method(&state.login, login::LoginMethod::Qr);
+    restart_login(state);
+}
+
+fn restart_login(state: &AppState) {
+    auto_login::manual_restart(state);
+    contact_blocks::reset(state);
+    resume_sync::cancel(state);
+    albums::close(state);
+    hidden_chats::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();
-    login::show_qr_stage(&state.login);
+    *state.login.error.borrow_mut() = None;
+    state.login.password_entry.set_text("");
+    login::set_busy(&state.login, true);
+    login::show_method_stage(&state.login);
     state
         .login
         .hint
         .set_text(&crate::i18n::t("restarting_login"));
     state.stack.set_visible_child_name("login");
 
-    if let Err(e) = state.sidecar.restart() {
+    if let Err(e) = state.sidecar.restart_for_login() {
         *state.restarting.borrow_mut() = false;
+        login::set_busy(&state.login, false);
         toast(
             state,
             &crate::i18n::tf("restart_failed_err", &[("error", &e.to_string())]),

@@ -18,23 +18,53 @@ pub(super) fn pump_events(state: AppState) {
 
 pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
     match ev {
+        ProtocolEvent::MessageUnsent {
+            account_mid,
+            chat_mid,
+            message_id,
+        } => unsend::apply(state, &account_mid, &chat_mid, &message_id),
+        ProtocolEvent::ChatEvent {
+            account_mid,
+            message,
+        } => {
+            if *state.session_ready.borrow()
+                && state.self_mid.borrow().as_deref() == Some(account_mid.as_str())
+                && state.current_chat.borrow().as_deref() == Some(message.to.as_str())
+            {
+                let stick = *state.stick_bottom.borrow();
+                set_msg_state(state, "list", None);
+                append_message(state, &message, true);
+                if stick {
+                    pin_messages_to_latest(state);
+                }
+            }
+        }
         ProtocolEvent::Ready { has_auth } => {
             let restarting = *state.restarting.borrow();
             if restarting {
                 *state.restarting.borrow_mut() = false;
             }
+            if auto_login::ready(state, has_auth, restarting) {
+                return;
+            }
             if has_auth && !restarting {
                 // Sidecar is already restoring; keep shell visible (no QR flash).
                 show_shell_restoring(state);
             } else if restarting || !has_auth {
-                show_login(state, &crate::i18n::t("login_qr_hint"));
-                if let Ok(id) = state.sidecar.login_qr() {
-                    state.pending.borrow_mut().insert(id, Pending::Login);
+                login::set_busy(&state.login, false);
+                show_login(state, &login::method_hint(&state.login));
+                if state.login.method.get() == login::LoginMethod::Qr {
+                    if let Ok(id) = state.sidecar.login_qr() {
+                        state.pending.borrow_mut().insert(id, Pending::Login);
+                    } else {
+                        login::show_failure(&state.login, &crate::i18n::t("login_email_failed"));
+                    }
                 }
             }
         }
         ProtocolEvent::Session {
             mid,
+            device,
             display_name,
             status_message,
             picture_path,
@@ -44,6 +74,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             *state.recovery_attempts.borrow_mut() = 0;
             let result = serde_json::json!({
                 "mid": mid,
+                "device": device,
                 "displayName": display_name,
                 "statusMessage": status_message,
                 "picturePath": picture_path,
@@ -55,6 +86,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::SessionFailed { error } => {
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
+            if auto_login::restore_failed(state, &error) {
+                return;
+            }
+            auto_login::failed(state);
             let msg = if error.contains("relogin_android_required") {
                 crate::i18n::t("relogin_android_required")
             } else if error.contains("NOT_AUTHORIZED_DEVICE")
@@ -65,13 +100,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             } else {
                 error.clone()
             };
-            show_login(state, &format!("{msg}\nTap Retry to sign in with QR."));
-            state.login.retry_btn.set_visible(true);
+            show_login(state, &msg);
+            login::show_failure(&state.login, &msg);
             *state.discord_session_start.borrow_mut() = None;
             sync_discord_rpc(state);
             toast(state, &msg);
         }
         ProtocolEvent::Qr { url } => {
+            if state.login.method.get() != login::LoginMethod::Qr {
+                return;
+            }
             show_login(state, &crate::i18n::t("login_qr_hint"));
             login::show_qr_stage(&state.login);
             if let Err(e) = login::set_qr(&state.login.qr_picture, &url) {
@@ -79,6 +117,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
         }
         ProtocolEvent::Pin { pin } => {
+            if !state
+                .pending
+                .borrow()
+                .values()
+                .any(|request| matches!(request, Pending::Login | Pending::LoginEmail))
+            {
+                return;
+            }
             show_login(state, &crate::i18n::t("login_pin_waiting"));
             login::show_pin_stage(&state.login, &pin);
         }
@@ -133,11 +179,18 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
         ProtocolEvent::Message(msg) => {
-            let peer = if msg.mine {
+            let msg = unsend::masked(state, &msg);
+            // 取消後に遅れて届いた本文で、一覧や通知を復活させない。
+            if msg.content_type == "UNSENT" {
+                return;
+            }
+            let peer = if msg.mine || msg.to.starts_with(['c', 'r']) {
                 msg.to.clone()
             } else {
                 msg.from.clone()
             };
+            let already_read = state.unread_sync.borrow().already_read(&peer, &msg.id);
+            state.unread_sync.borrow_mut().observe(&peer, &msg.id);
             let mut preview = format!(
                 "{}: {}",
                 if msg.mine {
@@ -157,6 +210,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     name: peer_display_name(state, &peer),
                     kind: if peer.starts_with('c') {
                         "group".into()
+                    } else if peer.starts_with('r') {
+                        "room".into()
                     } else {
                         "dm".into()
                     },
@@ -189,30 +244,36 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 // Capture before append — layout growth can briefly look "scrolled up".
                 let was_stuck = *state.stick_bottom.borrow();
                 // "New" marker only when the user is scrolled up (LINE-like).
-                if !msg.mine && !was_stuck {
+                if !msg.mine && !already_read && !was_stuck {
                     ensure_new_message_separator(state);
                 }
                 append_message(state, &msg, true);
                 if was_stuck {
                     pin_messages_to_latest(state);
-                    if !msg.mine {
+                    if !msg.mine && !already_read {
                         // Only suppress alerts when this chat is open AND focused.
                         if window_focused {
-                            mark_chat_read(state, &peer);
-                            clear_unread_badge(state, &peer);
+                            if read_pause::is_paused(state, &peer)
+                                || resume_sync::in_progress(state)
+                            {
+                                bump_unread(state, &peer);
+                            } else {
+                                mark_chat_read(state, &peer);
+                                clear_unread_badge(state, &peer);
+                            }
                         } else {
                             bump_unread(state, &peer);
                             notify_incoming(state, &msg, &peer);
                         }
                     }
-                } else if !msg.mine {
+                } else if !msg.mine && !already_read {
                     let n = state.pending_new_below.borrow().saturating_add(1);
                     *state.pending_new_below.borrow_mut() = n;
                     update_jump_banner(state);
                     bump_unread(state, &peer);
                     notify_incoming(state, &msg, &peer);
                 }
-            } else if !msg.mine {
+            } else if !msg.mine && !already_read {
                 bump_unread(state, &peer);
                 notify_incoming(state, &msg, &peer);
             }
@@ -224,20 +285,56 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             upsert_chat_row(state, chat);
         }
+        ProtocolEvent::ContactBlocks {
+            account_mid,
+            contacts,
+        } => contact_blocks::apply(state, &account_mid, contacts),
+        ProtocolEvent::ChatUnread {
+            chat_mid,
+            account_mid,
+            through_message_id,
+            unread,
+        } => {
+            unread_sync::apply(state, &account_mid, &chat_mid, &through_message_id, unread);
+        }
         ProtocolEvent::ReadReceipt {
             chat_mid,
+            user_mid,
             message_id,
         } => {
-            apply_peer_read(state, &chat_mid, &message_id);
+            let self_mid = state.self_mid.borrow().clone().unwrap_or_default();
+            if state
+                .peer_reads
+                .borrow_mut()
+                .observe(&chat_mid, &user_mid, &message_id, &self_mid)
+                && state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+            {
+                refresh_read_labels(state);
+            }
+        }
+        ProtocolEvent::ReadRanges { chat_mid, readers } => {
+            let self_mid = state.self_mid.borrow().clone().unwrap_or_default();
+            if state
+                .peer_reads
+                .borrow_mut()
+                .apply_snapshot(&chat_mid, &readers, &self_mid)
+                && state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+            {
+                refresh_read_labels(state);
+            }
         }
         ProtocolEvent::Chats { chats, cached } => {
             apply_chats(state, chats, cached);
         }
         ProtocolEvent::Messages { chat_mid, messages } => {
-            if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
+            if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
+                && !resume_sync::stale_history_event(state, &chat_mid)
+            {
                 apply_messages(state, messages);
             }
         }
+        ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
+        ProtocolEvent::EmojiReady { key, path } => emojis::ready(state, key, path),
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
@@ -285,6 +382,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     chat.last_activity = last_activity;
                 }
             }
+            chat_filter::refresh(state);
         }
         ProtocolEvent::ChatMute { mid, muted } => {
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
@@ -384,9 +482,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     "ready" => {
                         state.side_spinner.set_spinning(false);
                         state.side_spinner.set_visible(false);
-                        if !state.chats.borrow().is_empty() {
-                            set_side_state(state, "list", None);
-                        }
+                        chat_filter::refresh(state);
                     }
                     "empty" => {
                         state.side_spinner.set_spinning(false);
@@ -478,19 +574,89 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::Unsend {
+                account,
+                chat_mid,
+                message_id,
+            }) = pending
+            {
+                unsend::response(
+                    state,
+                    &account,
+                    &chat_mid,
+                    &message_id,
+                    ok && result.get("unsent").and_then(|v| v.as_bool()) == Some(true),
+                );
+                return;
+            }
+            if let Some(Pending::ContactBlocks { account, change }) = pending {
+                contact_blocks::response(state, &account, change, ok);
+                return;
+            }
+            if let Some(Pending::MarkReadOnce { account, chat_mid }) = pending {
+                read_pause::once_response(state, &account, &chat_mid, ok, &result);
+                return;
+            }
+            if let Some(Pending::Album {
+                ui,
+                generation,
+                request,
+            }) = pending
+            {
+                if let Some(ui) = ui.upgrade() {
+                    albums::response(
+                        state,
+                        &ui,
+                        generation,
+                        request,
+                        ok,
+                        &result,
+                        error.as_deref(),
+                    );
+                }
+                return;
+            }
+            if let Some(Pending::ResumeSync {
+                generation,
+                account,
+                chat_mid,
+            }) = pending
+            {
+                resume_sync::response(state, generation, account, chat_mid, ok, result);
+                return;
+            }
+            if let Some(Pending::FetchMessages { generation, .. }) = pending.as_ref()
+                && *generation != *state.history_request_generation.borrow()
+            {
+                return;
+            }
             if !ok {
-                if matches!(pending, Some(Pending::Login)) && *state.restarting.borrow() {
+                if matches!(pending, Some(Pending::Login | Pending::LoginEmail))
+                    && *state.restarting.borrow()
+                {
                     return;
                 }
-                if matches!(pending, Some(Pending::Login)) {
-                    show_login(
-                        state,
-                        error
-                            .as_deref()
-                            .unwrap_or("Login failed. Tap Retry to start over."),
-                    );
-                    login::show_qr_stage(&state.login);
-                    state.login.retry_btn.set_visible(true);
+                if matches!(pending, Some(Pending::Login | Pending::LoginEmail)) {
+                    auto_login::failed(state);
+                    let code = error.as_deref().unwrap_or("login_email_failed");
+                    let message = if code.starts_with("login_") {
+                        crate::i18n::t(code)
+                    } else if code.contains("timed out") {
+                        crate::i18n::t("login_email_timeout")
+                    } else {
+                        code.into()
+                    };
+                    show_login(state, &message);
+                    login::show_failure(&state.login, &message);
+                    // タイムアウトした通信が後から認証を確定しないようキャンセルする。
+                    if code.contains("timed out") {
+                        *state.restarting.borrow_mut() = true;
+                        if state.sidecar.restart_for_login().is_err() {
+                            *state.restarting.borrow_mut() = false;
+                        }
+                    }
+                    toast(state, &message);
+                    return;
                 }
                 if matches!(pending, Some(Pending::ListChats)) {
                     set_side_state(
@@ -516,20 +682,30 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             .unwrap_or(&crate::i18n::t("friends_load_failed")),
                     );
                 }
-                if let Some(Pending::Send { placeholder_id, .. }) = pending.as_ref() {
+                if let Some(Pending::Send {
+                    placeholder_id,
+                    reply_draft,
+                    ..
+                }) = pending.as_ref()
+                {
                     hide_upload_progress(state);
                     remove_pending_placeholder(state, placeholder_id);
+                    if let Some(draft) = reply_draft {
+                        replies::restore_failed(state, draft);
+                    }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
+                } else if err.contains("contact_blocked_send") {
+                    toast(state, &crate::i18n::t("contact_blocked_send"));
                 } else {
                     toast(state, err);
                 }
                 return;
             }
             match pending {
-                Some(Pending::Login) => on_logged_in(state, &result),
+                Some(Pending::Login | Pending::LoginEmail) => on_logged_in(state, &result),
                 Some(Pending::ListChats) => {
                     let chats: Vec<ChatInfo> = result
                         .get("chats")
@@ -552,7 +728,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         friends::apply_friends(ui, friends);
                     }
                 }
-                Some(Pending::FetchMessages { chat_mid }) => {
+                Some(Pending::FetchMessages { chat_mid, .. }) => {
                     if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str()) {
                         let messages: Vec<MessageInfo> = result
                             .get("messages")
@@ -567,6 +743,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(Pending::Send {
                     placeholder_id,
                     chat_mid,
+                    ..
                 }) => {
                     remove_pending_placeholder(state, &placeholder_id);
                     if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
@@ -606,11 +783,21 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         toast(state, &crate::i18n::t("media_download_failed"));
                     }
                 }
-                None => {}
+                Some(
+                    Pending::Album { .. }
+                    | Pending::Unsend { .. }
+                    | Pending::ResumeSync { .. }
+                    | Pending::MarkReadOnce { .. }
+                    | Pending::ContactBlocks { .. },
+                )
+                | None => {}
             }
         }
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
+            resume_sync::cancel(state);
+            albums::close(state);
+            hidden_chats::close(state);
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -662,8 +849,24 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    contact_blocks::reset(state);
+    *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
+    state.notif_pending.borrow_mut().clear();
+    resume_sync::cancel(state);
+    state.sender_names.borrow_mut().clear();
+    albums::close(state);
+    hidden_chats::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
+            auto_login::logged_in(state);
+            if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
+                state.peer_reads.borrow_mut().clear();
+            }
+            state.login.password_entry.set_text("");
+            login::set_busy(&state.login, false);
+            *state.login.error.borrow_mut() = None;
+            *state.session_device.borrow_mut() = profile.device.clone();
+            refresh_call_controls(state);
             *state.session_ready.borrow_mut() = true;
             apply_self_profile(
                 state,
@@ -694,6 +897,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
             state.status.set_text(&crate::i18n::t("loading_chats"));
             set_side_state(state, "loading", None);
             set_msg_state(state, "idle", None);
+            contact_blocks::request_refresh(state);
             if let Ok(id) = state.sidecar.list_chats() {
                 state.pending.borrow_mut().insert(id, Pending::ListChats);
             }
@@ -727,8 +931,14 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
+    state.notif_pending.borrow_mut().clear();
+    resume_sync::cancel(state);
+    state.sender_names.borrow_mut().clear();
+    albums::close(state);
+    hidden_chats::close(state);
     state.stack.set_visible_child_name("login");
-    login::show_qr_stage(&state.login);
+    login::show_method_stage(&state.login);
     state.login.hint.set_text(hint);
     sync_discord_rpc(state);
 }

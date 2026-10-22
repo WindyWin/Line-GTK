@@ -1,15 +1,15 @@
-import {
-  type Client,
-  loginWithAuthToken,
-  loginWithQR,
-  type TalkMessage,
-} from "@evex/linejs";
+import { type Client, loginWithQR, type TalkMessage } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { join } from "@std/path";
-import { atomicWriteJson } from "./storage.ts";
+import { restoreSession } from "./auth.ts";
+import { authenticateEmail } from "./email_login.ts";
 import type { CachePolicy } from "./cache_policy.ts";
-import { friendName, picturePathOf } from "./contacts.ts";
+import { contactKind, friendName, picturePathOf } from "./contacts.ts";
 import type { LineDevice } from "./auth.ts";
+import { needsDecryptionRefresh } from "./e2ee_guard.ts";
+import { fetchGroupProfiles } from "./groups.ts";
+import type { ReadPermission } from "./read_policy.ts";
+import { replyMessageId, replySnapshot } from "./replies.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -44,6 +44,7 @@ export type CommandRuntime = {
   boxCursor: Map<string, BoxCursor>;
   avatarDir: string;
   chatCachePath: string;
+  saveChatCache: () => Promise<void>;
   storagePath: string;
   lineDevice: LineDevice;
   lineVersion: string;
@@ -56,13 +57,19 @@ export type CommandRuntime = {
   ) => void;
   existingFile: (path: string) => Promise<string | null>;
   loadDiskContacts: () => Promise<void>;
+  saveDiskContacts: () => Promise<void>;
   refreshContactIndex: (force?: boolean) => Promise<void>;
   hydrateAvatars: (chats: ChatRow[]) => Promise<void>;
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
+  updateChatPreview: (chatMid: string, messages: Json[]) => Promise<void>;
+  refreshReadReceipts: (chatMid: string) => Promise<void>;
+  reconcileUnread?: (chats: ChatRow[]) => void;
+  readReceiptPermission: (chatMid: string) => Promise<ReadPermission>;
+  recordOwnRead?: (chatMid: string, through: string) => void;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
   saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
-  forUiMessages: (messages: Json[]) => Promise<Json[]>;
+  forUiMessages: (messages: Json[], chatMid?: string) => Promise<Json[]>;
   hydrateMedia: (messages: Json[], chatMid: string) => Promise<void>;
   summarizeTalkMessage: (
     message: TalkMessage,
@@ -98,6 +105,22 @@ export type CommandRuntime = {
 };
 
 export function createCommandService(runtime: CommandRuntime) {
+  let loginInFlight = false;
+  async function withLogin(
+    id: number | string | null,
+    operation: () => Promise<void>,
+  ) {
+    if (loginInFlight) {
+      runtime.fail(id, "login_in_progress");
+      return;
+    }
+    loginInFlight = true;
+    try {
+      await operation();
+    } finally {
+      loginInFlight = false;
+    }
+  }
   const {
     msgCache,
     contactIndex,
@@ -116,6 +139,7 @@ export function createCommandService(runtime: CommandRuntime) {
     refreshContactIndex,
     hydrateAvatars,
     hydratePreviews,
+    updateChatPreview,
     bumpMediaEpoch,
     loadDiskMessages,
     saveDiskMessages,
@@ -126,7 +150,6 @@ export function createCommandService(runtime: CommandRuntime) {
     saveAuth,
     loadAuth,
     loadAuthDevice,
-    clearAuth,
     myProfilePayload,
     patchE2eeGuards,
     startListen,
@@ -141,6 +164,7 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     lastMessageId: string,
+    once = false,
   ) {
     const client = runtime.getClient();
     const chatCache = runtime.getChatCache();
@@ -154,17 +178,42 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
     try {
+      let permission = once
+        ? "allowed"
+        : await runtime.readReceiptPermission(chatMid);
+      if (permission !== "allowed") {
+        ok(id, { marked: false, skipped: permission });
+        return;
+      }
       const requestSequence = client.base.getReqseq;
       const seq = typeof requestSequence === "function"
         ? await requestSequence.call(client.base)
         : Number(requestSequence);
+      // 自動既読は、順序番号を待つ間に停止へ切り替えられた場合も送信しない。
+      permission = once
+        ? "allowed"
+        : await runtime.readReceiptPermission(chatMid);
+      if (permission !== "allowed" || runtime.getClient() !== client) {
+        ok(id, {
+          marked: false,
+          skipped: permission !== "allowed" ? permission : "session_changed",
+        });
+        return;
+      }
       // thrift STRING (ftype 11) — must be string, not i64/bigint
       await client.base.talk.sendChatChecked({
         chatMid: String(chatMid),
         lastMessageId: String(lastMessageId),
         seq,
       });
-      if (chatCache) {
+      if (runtime.getClient() !== client) {
+        ok(id, { marked: false, skipped: "session_changed" });
+        return;
+      }
+      if (once) {
+        // 新着が追い越した場合は、既存の未読同期でサーバーの残件数を確認する。
+        runtime.recordOwnRead?.(chatMid, lastMessageId);
+      } else if (chatCache) {
         const row = chatCache.chats.find((x) => x.mid === chatMid);
         if (row) row.unread = 0;
       }
@@ -176,6 +225,45 @@ export function createCommandService(runtime: CommandRuntime) {
         marked: false,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  }
+
+  // 通常の自動既読とは別の、ユーザーが明示的に押す一回限りの操作。
+  async function doMarkReadOnce(
+    id: number | string | null,
+    chatMid: string,
+    through = "",
+  ) {
+    const client = runtime.getClient();
+    if (!client || !/^[ucr][a-zA-Z0-9_-]+$/.test(chatMid)) {
+      ok(id, { marked: false, skipped: "not_logged_in_or_invalid_chat" });
+      return;
+    }
+    try {
+      // 開いているトークはクリック時点の位置を使い、後続の新着まで読まない。
+      if (!through) {
+        const boxes = await client.base.talk.getMessageBoxes({
+          messageBoxListRequest: {},
+        });
+        const cursor = boxes.messageBoxes?.find((box) => box.id === chatMid)
+          ?.lastDeliveredMessageId?.messageId;
+        if (typeof cursor === "number" && !Number.isSafeInteger(cursor)) {
+          ok(id, { marked: false, skipped: "missing_ids" });
+          return;
+        }
+        through = String(cursor ?? "");
+      }
+      if (runtime.getClient() !== client) {
+        ok(id, { marked: false, skipped: "session_changed" });
+        return;
+      }
+      if (!/^\d+$/.test(through) || BigInt(through) <= 0n) {
+        ok(id, { marked: false, skipped: "missing_ids" });
+        return;
+      }
+      await doMarkRead(id, chatMid, through, true);
+    } catch {
+      ok(id, { marked: false, error: "mark_read_once_failed" });
     }
   }
 
@@ -222,22 +310,8 @@ export function createCommandService(runtime: CommandRuntime) {
       fail(id, "no_auth_token");
       return;
     }
-    const storage = new FileStorage(storagePath);
-    let device = await loadAuthDevice();
-    // Migrate legacy DESKTOPWIN sessions — tokens are device-bound; force re-QR.
-    if (device === "DESKTOPWIN") {
-      await clearAuth();
-      fail(id, "relogin_android_required");
-      return;
-    }
-    if (device !== "ANDROID" && device !== "ANDROIDSECONDARY") {
-      device = "ANDROIDSECONDARY";
-    }
-    client = await loginWithAuthToken(auth, {
-      device: device as "ANDROID" | "ANDROIDSECONDARY",
-      version: LINE_VERSION,
-      storage,
-    });
+    const device = await loadAuthDevice();
+    client = await restoreSession(auth, device, storagePath, LINE_VERSION);
     runtime.setClient(client);
     await saveAuth(client.authToken, device);
     const profile = await client.getMyProfile();
@@ -247,6 +321,26 @@ export function createCommandService(runtime: CommandRuntime) {
       ...(await myProfilePayload(profile)),
       device,
     });
+  }
+
+  async function doLoginEmail(
+    id: number | string | null,
+    email: string,
+    password: string,
+  ) {
+    runtime.setAuthDead(false);
+    const client = await authenticateEmail(
+      email,
+      password,
+      storagePath,
+      (pin) => emitEvent("pin", { pin }),
+    );
+    runtime.setClient(client);
+    const profile = await client.getMyProfile();
+    await saveAuth(client.authToken, "DESKTOPWIN");
+    patchE2eeGuards();
+    await startListen();
+    ok(id, { ...(await myProfilePayload(profile)), device: "DESKTOPWIN" });
   }
 
   async function loadDiskChatCache(): Promise<ChatRow[] | null> {
@@ -263,7 +357,14 @@ export function createCommandService(runtime: CommandRuntime) {
     return null;
   }
 
-  async function doListChats(id: number | string | null, force = false) {
+  async function doListChats(
+    id: number | string | null,
+    force = false,
+    quiet = false,
+  ) {
+    const emitEvent = (event: string, payload?: Json) => {
+      if (!quiet || event !== "progress") runtime.emitEvent(event, payload);
+    };
     const client = runtime.getClient();
     let chatCache = runtime.getChatCache();
     if (!client) {
@@ -276,11 +377,13 @@ export function createCommandService(runtime: CommandRuntime) {
       if (
         !force && chatCache && Date.now() - chatCache.at < cachePolicy().memChat
       ) {
+        runtime.reconcileUnread?.(chatCache.chats);
         ok(id, {
           chats: chatCache.chats,
           count: chatCache.chats.length,
           cached: true,
         });
+        void hydratePreviews(chatCache.chats);
         return;
       }
 
@@ -288,6 +391,9 @@ export function createCommandService(runtime: CommandRuntime) {
       if (!force) {
         const disk = await loadDiskChatCache();
         if (disk?.length) {
+          runtime.reconcileUnread?.(disk);
+          chatCache = { at: 0, chats: disk };
+          runtime.setChatCache(chatCache);
           emitEvent("chats", { chats: disk, count: disk.length, cached: true });
           emitEvent("progress", { scope: "chats", state: "ready" });
         }
@@ -306,9 +412,14 @@ export function createCommandService(runtime: CommandRuntime) {
           const mid = String(box.id ?? "");
           if (!mid) continue;
           storeBoxCursor(mid, box.lastDeliveredMessageId);
-          const prevPreview = chatCache?.chats.find((x) =>
-            x.mid === mid
-          )?.preview ?? "";
+          const previous = chatCache?.chats.find((row) => row.mid === mid);
+          const activity = Number(
+            box.lastDeliveredMessageId?.deliveredTime ?? 0,
+          );
+          // 新着がある場合、前回の本文を最新プレビューとして使い回さない。
+          const prevPreview = previous && previous.lastActivity >= activity
+            ? previous.preview
+            : "";
           byMid.set(mid, {
             mid,
             name: contactIndex.get(mid)?.name || mid,
@@ -326,6 +437,10 @@ export function createCommandService(runtime: CommandRuntime) {
         }
       } catch (e) {
         console.error("[list_chats] boxes", e);
+        if (force) {
+          fail(id, "chat_sync_failed");
+          return;
+        }
       }
 
       // 2) Contacts + bots/OA (getContacts mids — fetchUsers misses bots)
@@ -368,16 +483,21 @@ export function createCommandService(runtime: CommandRuntime) {
             const picturePath = picturePathOf(
               user as unknown as Record<string, unknown>,
             );
+            const kind = contactKind(
+              (user.raw as { contact?: unknown })?.contact,
+              contactIndex.get(user.mid)?.kind,
+            );
             contactIndex.set(user.mid, {
               name,
               picturePath,
-              kind: "dm",
+              kind,
               muted: false,
             });
             const prev = byMid.get(user.mid);
             if (prev) {
               prev.name = name;
               prev.picturePath = picturePath;
+              prev.kind = kind;
             }
           }
         } catch (e2) {
@@ -385,22 +505,35 @@ export function createCommandService(runtime: CommandRuntime) {
         }
       }
 
-      // 3) Groups optional (often empty) — don't block naming
+      // グループは専用APIで小分けに取得し、次回起動時にも名前を表示する。
       try {
-        const chats = await client!.fetchJoinedChats();
+        const chats = await fetchGroupProfiles(client!.base.talk, [
+          ...byMid.keys(),
+        ], () => {
+          console.error("[groups] 一部のグループ情報を取得できませんでした。");
+        });
         for (const chat of chats) {
           const prev = byMid.get(chat.mid);
+          const cached = contactIndex.get(chat.mid);
+          const name = chat.name !== chat.mid
+            ? chat.name
+            : prev?.name || cached?.name || chat.mid;
+          const picturePath = chat.picturePath ?? cached?.picturePath ??
+            prev?.picturePath ?? null;
+          contactIndex.set(chat.mid, { ...chat, name, picturePath });
           byMid.set(chat.mid, {
             mid: chat.mid,
-            name: chat.name || chat.raw.chatName || chat.mid,
+            name,
             kind: "group",
             lastActivity: prev?.lastActivity ?? 0,
             unread: prev?.unread ?? 0,
             preview: prev?.preview ?? "",
-            picturePath: prev?.picturePath ?? null,
+            picturePath,
             avatarPath: prev?.avatarPath ?? null,
+            muted: chat.muted,
           });
         }
+        await runtime.saveDiskContacts();
       } catch (e) {
         console.error("[list_chats] groups", e);
       }
@@ -412,10 +545,11 @@ export function createCommandService(runtime: CommandRuntime) {
         return a.name.localeCompare(b.name);
       });
 
+      runtime.reconcileUnread?.(chats);
       chatCache = { at: Date.now(), chats };
       runtime.setChatCache(chatCache);
       try {
-        await atomicWriteJson(chatCachePath, chatCache);
+        await runtime.saveChatCache();
       } catch (error) {
         console.error("[chat-list-cache]", error);
       }
@@ -437,7 +571,11 @@ export function createCommandService(runtime: CommandRuntime) {
     chatMid: string,
     limit = 50,
     force = false,
+    quiet = false,
   ) {
+    const emitEvent = (event: string, payload?: Json) => {
+      if (!quiet || event !== "progress") runtime.emitEvent(event, payload);
+    };
     const client = runtime.getClient();
     if (!client) {
       fail(id, "not_logged_in");
@@ -449,11 +587,17 @@ export function createCommandService(runtime: CommandRuntime) {
     }
 
     await refreshCachePolicy();
+    // 本文の取得元にかかわらず、サーバーの既読情報を背景で同期する。
+    void runtime.refreshReadReceipts(chatMid);
     await dedupe(`msgs:${chatMid}:${limit}:${force}`, async () => {
       bumpMediaEpoch(chatMid); // cancel any prior hydrate for this chat
       const cached = msgCache.get(chatMid);
-      if (!force && cached && Date.now() - cached.at < cachePolicy().memMsg) {
-        const ui = await forUiMessages(cached.messages);
+      if (
+        !force && cached && Date.now() - cached.at < cachePolicy().memMsg &&
+        !cached.messages.some(needsDecryptionRefresh)
+      ) {
+        await updateChatPreview(chatMid, cached.messages);
+        const ui = await forUiMessages(cached.messages, chatMid);
         ok(id, { messages: ui, cached: true });
         hydrateMedia(cached.messages, chatMid);
         return;
@@ -464,9 +608,10 @@ export function createCommandService(runtime: CommandRuntime) {
         const disk = await loadDiskMessages(chatMid);
         if (disk?.length) {
           msgCache.set(chatMid, { at: Date.now(), messages: disk });
+          await updateChatPreview(chatMid, disk);
           emitEvent("messages", {
             chatMid,
-            messages: await forUiMessages(disk),
+            messages: await forUiMessages(disk, chatMid),
             cached: true,
           });
           emitEvent("progress", {
@@ -480,9 +625,10 @@ export function createCommandService(runtime: CommandRuntime) {
       }
 
       if (!force && cached?.messages?.length) {
+        await updateChatPreview(chatMid, cached.messages);
         emitEvent("messages", {
           chatMid,
-          messages: await forUiMessages(cached.messages),
+          messages: await forUiMessages(cached.messages, chatMid),
           cached: true,
         });
         emitEvent("progress", {
@@ -515,7 +661,7 @@ export function createCommandService(runtime: CommandRuntime) {
 
         if (usedBoxes || !out.length) {
           let cursor = boxCursor.get(chatMid);
-          if (!cursor) {
+          if (force || !cursor) {
             const boxes = await client!.base.talk.getMessageBoxes({
               messageBoxListRequest: {},
             });
@@ -527,7 +673,8 @@ export function createCommandService(runtime: CommandRuntime) {
           }
           if (!cursor) {
             msgCache.set(chatMid, { at: Date.now(), messages: [] });
-            ok(id, { messages: [] });
+            await updateChatPreview(chatMid, []);
+            ok(id, { messages: await forUiMessages([], chatMid) });
             emitEvent("progress", {
               scope: "messages",
               chatMid,
@@ -547,6 +694,7 @@ export function createCommandService(runtime: CommandRuntime) {
               },
             });
           out = [];
+          let officialChanged = false;
           for (const raw of messages) {
             try {
               const meta = (raw as { contentMetadata?: Record<string, string> })
@@ -554,6 +702,7 @@ export function createCommandService(runtime: CommandRuntime) {
               if (meta?.BOT_CHECK || meta?.BOT_ORIGIN) {
                 const from = String((raw as { from?: string }).from ?? chatMid);
                 const cur = contactIndex.get(from);
+                if (cur?.kind !== "bot") officialChanged = true;
                 if (cur) cur.kind = "bot";
                 else {
                   contactIndex.set(from, {
@@ -563,10 +712,29 @@ export function createCommandService(runtime: CommandRuntime) {
                     muted: false,
                   });
                 }
+                const row = runtime.getChatCache()?.chats.find((chat) =>
+                  chat.mid === from
+                );
+                if (row && row.kind !== "group" && row.kind !== "bot") {
+                  row.kind = "bot";
+                  emitEvent("chat_upsert", { chat: { ...row } });
+                  officialChanged = true;
+                }
               }
               out.push(await summarizeRawMessage(raw, { withMedia: false }));
             } catch (e) {
               console.error("[fetch msg skip]", e);
+            }
+          }
+          if (officialChanged) {
+            try {
+              await runtime.saveDiskContacts();
+              await runtime.saveChatCache();
+            } catch (error) {
+              console.error(
+                "[chat-category] 公式アカウントの分類を保存できませんでした。",
+                error,
+              );
             }
           }
         }
@@ -574,7 +742,8 @@ export function createCommandService(runtime: CommandRuntime) {
         out.sort((a, b) => Number(a.createdTime) - Number(b.createdTime));
         msgCache.set(chatMid, { at: Date.now(), messages: out });
         await saveDiskMessages(chatMid, out);
-        ok(id, { messages: await forUiMessages(out), cached: false });
+        await updateChatPreview(chatMid, out);
+        ok(id, { messages: await forUiMessages(out, chatMid), cached: false });
         emitEvent("progress", {
           scope: "messages",
           chatMid,
@@ -598,6 +767,7 @@ export function createCommandService(runtime: CommandRuntime) {
     id: number | string | null,
     chatMid: string,
     text: string,
+    replyToMessageId?: unknown,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -609,6 +779,20 @@ export function createCommandService(runtime: CommandRuntime) {
       return;
     }
 
+    const relatedMessageId = replyToMessageId == null
+      ? undefined
+      : replyMessageId(replyToMessageId);
+    if (relatedMessageId === null) {
+      fail(id, "invalid_reply_target");
+      return;
+    }
+    const original = msgCache.get(chatMid)?.messages.find((m) =>
+      m.id === relatedMessageId
+    );
+    const replyTo = relatedMessageId
+      ? (original ? replySnapshot(original) : { messageId: relatedMessageId })
+      : null;
+
     let sent:
       | { id?: unknown; createdTime?: unknown; contentType?: unknown }
       | null = null;
@@ -618,6 +802,7 @@ export function createCommandService(runtime: CommandRuntime) {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
+        relatedMessageId,
         e2ee: false,
       }) as unknown as typeof sent;
     } catch (e1) {
@@ -625,12 +810,13 @@ export function createCommandService(runtime: CommandRuntime) {
         sent = await client.base.talk.sendMessage({
           to: chatMid,
           text,
+          relatedMessageId,
           e2ee: true,
         }) as unknown as typeof sent;
       } catch (e2) {
         try {
           const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage(text);
+          const m = await chat.sendMessage({ text, relatedMessageId });
           const message = await summarizeTalkMessage(m, { withMedia: false })
             .catch(() =>
               sentMessagePayload(
@@ -642,6 +828,7 @@ export function createCommandService(runtime: CommandRuntime) {
                 text,
               )
             );
+          message.replyTo = replyTo;
           msgCache.delete(chatMid);
           runtime.setChatCache(null);
           touchChatPreviewFromMessage(message);
@@ -665,15 +852,19 @@ export function createCommandService(runtime: CommandRuntime) {
 
     msgCache.delete(chatMid);
     runtime.setChatCache(null);
-    const message = sentMessagePayload(sent, chatMid, text);
+    const message = { ...sentMessagePayload(sent, chatMid, text), replyTo };
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }
 
   return {
     markRead: doMarkRead,
-    loginQr: doLoginQr,
-    loginToken: doLoginToken,
+    markReadOnce: doMarkReadOnce,
+    loginQr: (id: number | string | null) => withLogin(id, () => doLoginQr(id)),
+    loginEmail: (id: number | string | null, email: string, password: string) =>
+      withLogin(id, () => doLoginEmail(id, email, password)),
+    loginToken: (id: number | string | null, token?: string) =>
+      withLogin(id, () => doLoginToken(id, token)),
     listChats: doListChats,
     fetchMessages: doFetchMessages,
     sendMessage: doSend,

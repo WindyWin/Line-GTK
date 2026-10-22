@@ -14,6 +14,7 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
 
     for chat in &chats {
         let (row, avatar, preview, badge) = build_chat_row(chat, *state.sidebar_compact.borrow());
+        hidden_chats::wire_context(state, &row, chat);
         state
             .chat_avatars
             .borrow_mut()
@@ -31,6 +32,7 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
 
     let n = chats.len();
     *state.chats.borrow_mut() = chats;
+    chat_filter::refresh(state);
 
     if n == 0 {
         set_side_state(state, "empty", Some(&crate::i18n::t("no_chats")));
@@ -48,7 +50,9 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
         select_sidebar_chat(state, state.current_chat.borrow().as_deref());
         maybe_restore_last_chat(state);
     }
+    chat_filter::refresh(state);
     refresh_tray_menu(state);
+    hidden_chats::refresh(state);
 }
 
 pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
@@ -58,10 +62,11 @@ pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
     let Some(pos) = state.chats.borrow().iter().position(|c| c.mid == mid) else {
         return;
     };
-    if let Some(row) = state.chat_list.row_at_index(pos as i32) {
+    if let Some(row) = state.chat_list.row_at_index(pos as i32)
+        && row.is_visible()
+    {
         state.chat_list.select_row(Some(&row));
-        // Ensure the selected row is scrolled into view.
-        row.grab_focus();
+        // 新着や送信後の選択同期では、入力欄など操作中のウィジェットからフォーカスを奪わない。
     }
 }
 
@@ -115,10 +120,12 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
                 attach_texture_async(img, path.to_string(), 72);
             }
         }
+        chat_filter::refresh(state);
         return;
     }
 
     let (row, avatar, preview, badge) = build_chat_row(&chat, *state.sidebar_compact.borrow());
+    hidden_chats::wire_context(state, &row, &chat);
     state.chat_avatars.borrow_mut().insert(mid.clone(), avatar);
     state
         .chat_previews
@@ -136,6 +143,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         "status_chats_live",
         &[("n", &n.to_string())],
     ));
+    chat_filter::refresh(state);
     refresh_tray_menu(state);
 }
 
@@ -146,6 +154,7 @@ pub(super) fn promote_chat_to_top(state: &AppState, mid: &str) {
     };
     let Some(pos) = pos else { return };
     if pos == 0 {
+        chat_filter::refresh(state);
         return;
     }
     {
@@ -164,6 +173,7 @@ pub(super) fn promote_chat_to_top(state: &AppState, mid: &str) {
             });
         }
     }
+    chat_filter::refresh(state);
     // Keep selection on the open chat after row reorder.
     select_sidebar_chat(state, state.current_chat.borrow().as_deref());
     refresh_tray_menu(state);
@@ -208,7 +218,7 @@ pub(super) fn maybe_restore_last_chat(state: &AppState) {
         return;
     }
     let last = state.config.borrow().last_chat_mid.clone();
-    if last.is_empty() {
+    if last.is_empty() || hidden_chats::is_hidden(state, &last) {
         *state.restored_last_chat.borrow_mut() = true;
         return;
     }
@@ -259,8 +269,6 @@ pub(super) fn build_chat_row(
     let avatar = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)
         .can_shrink(true)
-        .width_request(avatar_px)
-        .height_request(avatar_px)
         .css_classes(["line-avatar"])
         .build();
     if let Some(path) = chat.avatar_path.as_deref()
@@ -268,14 +276,16 @@ pub(super) fn build_chat_row(
     {
         attach_texture_async(avatar.clone(), path.to_string(), avatar_px * 2);
     }
-    avatar_frame.append(&avatar);
-
     let avatar_overlay = gtk::Overlay::builder()
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .css_classes(["line-avatar-overlay"])
         .build();
     avatar_overlay.set_child(Some(&avatar_frame));
+    // 画像の解像度・縦横比を行の寸法に反映せず、表示枠に収める。
+    avatar_overlay.add_overlay(&avatar);
+    avatar_overlay.set_measure_overlay(&avatar, false);
+    avatar_overlay.set_clip_overlay(&avatar, true);
 
     let badge = gtk::Label::builder()
         .label(if chat.unread > 0 {
@@ -289,6 +299,37 @@ pub(super) fn build_chat_row(
         .visible(chat.unread > 0)
         .build();
     avatar_overlay.add_overlay(&badge);
+    let read_paused = gtk::Image::builder()
+        .icon_name("view-conceal-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Start)
+        .visible(false)
+        .css_classes(["line-chat-read-paused"])
+        .build();
+    avatar_overlay.add_overlay(&read_paused);
+    avatar_overlay.set_measure_overlay(&read_paused, false);
+    let pin = gtk::Image::builder()
+        .icon_name("view-pin-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .visible(false)
+        .css_classes(["line-chat-pinned"])
+        .build();
+    avatar_overlay.add_overlay(&pin);
+    avatar_overlay.set_measure_overlay(&pin, false);
+    let blocked = gtk::Image::builder()
+        .icon_name("action-unavailable-symbolic")
+        .pixel_size(14)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::End)
+        .visible(false)
+        .tooltip_text(crate::i18n::t("contact_blocked"))
+        .css_classes(["line-chat-blocked"])
+        .build();
+    avatar_overlay.add_overlay(&blocked);
+    avatar_overlay.set_measure_overlay(&blocked, false);
 
     let text_col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -375,15 +416,8 @@ pub(super) fn clear_list(list: &gtk::ListBox) {
     }
 }
 
-pub(super) fn msg_id_le(a: &str, b: &str) -> bool {
-    match (a.parse::<u128>(), b.parse::<u128>()) {
-        (Ok(x), Ok(y)) => x <= y,
-        _ => a <= b,
-    }
-}
-
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
-    if !state.config.borrow().auto_mark_read {
+    if !read_pause::can_mark_read(state, chat_mid) {
         return;
     }
     let Some(last_id) = state.last_incoming_id.borrow().clone() else {
@@ -396,6 +430,9 @@ pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
 }
 
 pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
+    if read_pause::is_paused(state, chat_mid) {
+        return;
+    }
     if let Some(chat) = state
         .chats
         .borrow_mut()
@@ -414,6 +451,7 @@ pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
             .set_text(&crate::i18n::t("conversation"));
     }
     refresh_tray_menu(state);
+    read_pause::refresh_once_button(state);
 }
 
 pub(super) fn bump_unread(state: &AppState, chat_mid: &str) {
@@ -433,6 +471,7 @@ pub(super) fn bump_unread(state: &AppState, chat_mid: &str) {
         badge.set_visible(true);
     }
     refresh_tray_menu(state);
+    read_pause::refresh_once_button(state);
 }
 
 pub(super) fn update_mute_btn(state: &AppState, muted: bool) {
@@ -479,31 +518,42 @@ pub(super) fn toggle_chat_mute(state: &AppState) {
     }
 }
 
-pub(super) fn apply_peer_read(state: &AppState, chat_mid: &str, message_id: &str) {
-    if chat_mid.is_empty() || message_id.is_empty() {
-        return;
-    }
-    let prev = state.read_upto.borrow().get(chat_mid).cloned();
-    if let Some(p) = prev.as_deref()
-        && msg_id_le(message_id, p)
-    {
-        return;
-    }
-    state
-        .read_upto
-        .borrow_mut()
-        .insert(chat_mid.to_string(), message_id.to_string());
-
-    if state.current_chat.borrow().as_deref() != Some(chat_mid) {
-        return;
-    }
-    let times = state.msg_created.borrow().clone();
+// 表示している行だけを更新し、スクロール位置と本文は維持する。
+pub(super) fn refresh_read_labels(state: &AppState) {
+    let times = state.msg_created.borrow();
     for (id, label) in state.receipt_slots.borrow().iter() {
-        if msg_id_le(id, message_id) {
-            let ts = times.get(id).copied().unwrap_or(0);
-            label.set_text(&format_outgoing_status(true, ts));
-            label.set_tooltip_text(Some(&crate::i18n::t("status_read")));
+        let (text, tooltip, read) = receipt_status(state, id, times.get(id).copied().unwrap_or(0));
+        label.set_text(&text);
+        label.set_tooltip_text(Some(&tooltip));
+        if read {
             label.add_css_class("line-msg-status-read");
+        } else {
+            label.remove_css_class("line-msg-status-read");
         }
     }
+}
+
+pub(super) fn receipt_status(
+    state: &AppState,
+    id: &str,
+    created_time: i64,
+) -> (String, String, bool) {
+    if id.starts_with("pending-") {
+        let text = crate::i18n::t("media_sending");
+        return (text.clone(), text, false);
+    }
+    let mid = state.current_chat.borrow().clone().unwrap_or_default();
+    let self_mid = state.self_mid.borrow().clone().unwrap_or_default();
+    let count = state.peer_reads.borrow().count(&mid, id, &self_mid);
+    let group = mid.starts_with('c') || mid.starts_with('r');
+    let tooltip = if count > 0 {
+        outgoing_read_label(count, group)
+    } else {
+        crate::i18n::t("status_read_unconfirmed")
+    };
+    (
+        format_outgoing_status(count, group, created_time),
+        tooltip,
+        count > 0,
+    )
 }

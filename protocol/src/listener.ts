@@ -1,10 +1,18 @@
-import type { Client, TalkMessage } from "@evex/linejs";
-import * as calls from "./calls.ts";
+import { type Client, TalkMessage } from "@evex/linejs";
+import type * as calls from "./calls.ts";
+import { conversationMid } from "./messages.ts";
+import type { ReadOperation } from "./read_receipts.ts";
 
 type Json = Record<string, unknown>;
 
 export type ListenerRuntime = {
+  prepareMessage?: (message: Json) => Promise<Json | null>;
+  handleIncomingCall: typeof calls.handleIncomingCall;
+  handleCallCancel: typeof calls.handleCallCancel;
+  shouldIgnoreMessage?: (message: Json) => boolean;
   getClient: () => Client | null;
+  observeMessage?: (message: Json) => void;
+  refreshMessageSender?: (mid: string) => void;
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
   invalidateMessages: (chatMid: string) => void;
@@ -24,9 +32,11 @@ export type ListenerRuntime = {
   ) => Promise<void>;
   upsertChatFromContact: (mid: string) => Promise<void>;
   emitEvent: (event: string, payload?: Json) => void;
+  handleReadReceipt: (operation: ReadOperation) => boolean;
 };
 
 export function createListener(runtime: ListenerRuntime) {
+  const delivered = new Set<string>();
   const {
     summarizeTalkMessage,
     storeBoxCursor,
@@ -44,9 +54,33 @@ export function createListener(runtime: ListenerRuntime) {
     // Register BEFORE listen() so early ops are not missed.
     client.on("message", async (msg) => {
       try {
+        if (runtime.getClient() !== client) return;
+        const account = client.base.profile?.mid;
         const tm = msg as TalkMessage;
-        const message = await summarizeTalkMessage(tm, { withMedia: false });
-        const peer = message.mine ? String(message.to) : String(message.from);
+        let message = await summarizeTalkMessage(tm, { withMedia: false });
+        if (runtime.prepareMessage) {
+          const prepared = await runtime.prepareMessage(message);
+          if (!prepared) return;
+          message = prepared;
+        }
+        // 交換直前に受信済みの本文は同じアカウントに限って届け、取りこぼさない。
+        const active = runtime.getClient();
+        if (
+          !active ||
+          (active !== client &&
+            (!account || active.base.profile?.mid !== account))
+        ) return;
+        if (runtime.shouldIgnoreMessage?.(message)) return;
+        const peer = conversationMid(message);
+        if (message.id) {
+          const key = `${account}:${peer}:${message.id}`;
+          if (delivered.has(key)) return;
+          delivered.add(key);
+          if (delivered.size > 2048) {
+            delivered.delete(delivered.values().next().value!);
+          }
+        }
+        runtime.observeMessage?.(message);
         runtime.invalidateMessages(peer);
         // Advance box cursor so later refetch can see this message.
         storeBoxCursor(peer, {
@@ -58,7 +92,15 @@ export function createListener(runtime: ListenerRuntime) {
         if (message.needsMedia) {
           // Use the live TalkMessage.getData path — history refetch often misses
           // brand-new messages and left bubbles on "Image unavailable" until restart.
-          void hydrateLiveMedia(tm, message, peer);
+          const mediaClient = runtime.getClient();
+          if (
+            mediaClient && account && mediaClient.base.profile?.mid === account
+          ) {
+            const mediaMessage = mediaClient === client
+              ? tm
+              : new TalkMessage({ client: mediaClient, raw: tm.raw });
+            void hydrateLiveMedia(mediaMessage, message, peer);
+          }
         }
       } catch (e) {
         console.error("[listen message]", e);
@@ -72,13 +114,10 @@ export function createListener(runtime: ListenerRuntime) {
       param3?: string;
     }) => {
       try {
+        if (runtime.getClient() !== client) return;
         const type = String(op?.type ?? "");
-        if (type === "NOTIFIED_READ_MESSAGE") {
-          emitEvent("read_receipt", {
-            chatMid: String(op.param1 ?? ""),
-            userMid: String(op.param2 ?? ""),
-            messageId: String(op.param3 ?? ""),
-          });
+        if (runtime.handleReadReceipt(op)) {
+          return;
         } else if (
           type.includes("ADD_CONTACT") ||
           type.includes("ACCEPT_CONTACT") ||
@@ -86,6 +125,9 @@ export function createListener(runtime: ListenerRuntime) {
           type === "NOTIFIED_UPDATE_PROFILE"
         ) {
           const mid = String(op.param1 ?? op.param2 ?? "");
+          if (type === "NOTIFIED_UPDATE_PROFILE" && mid) {
+            runtime.refreshMessageSender?.(mid);
+          }
           if (mid) void upsertChatFromContact(mid);
         }
       } catch (e) {
@@ -95,11 +137,15 @@ export function createListener(runtime: ListenerRuntime) {
 
     client.on(
       "call:incoming",
-      calls.handleIncomingCall,
+      (event) => {
+        if (runtime.getClient() === client) runtime.handleIncomingCall(event);
+      },
     );
     client.on(
       "call:cancel",
-      calls.handleCallCancel,
+      (event) => {
+        if (runtime.getClient() === client) runtime.handleCallCancel(event);
+      },
     );
 
     client.listen({ talk: true, square: false });

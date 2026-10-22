@@ -3,21 +3,46 @@
  * NDJSON over stdin/stdout. Heavy I/O is cached + async so GTK stays snappy.
  */
 
-import { Client, loginWithAuthToken, TalkMessage } from "@evex/linejs";
-import { FileStorage } from "@evex/linejs/storage";
+import { Client, TalkMessage } from "@evex/linejs";
 import { fromFileUrl, join } from "@std/path";
 import { atomicWriteJson, ensurePrivateDir } from "./storage.ts";
-import { AuthStore, LineDevice } from "./auth.ts";
+import { AuthStore, LineDevice, restoreSession } from "./auth.ts";
+import { emailLoginError } from "./email_login.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
-import { picturePathOf, profileUrl } from "./contacts.ts";
-import { coerceI64, normalizeRaw } from "./messages.ts";
+import { contactKind, picturePathOf, profileUrl } from "./contacts.ts";
+import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
+import { replyToOf } from "./replies.ts";
+import { groupProfile } from "./groups.ts";
+import {
+  DECRYPTION_FAILED,
+  guardedDecrypt,
+  needsDecryptionRefresh,
+  restoreCachedMessages,
+} from "./e2ee_guard.ts";
 import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
+import { patchMediaDecryption } from "./media_crypto.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
+import { createContactBlocks } from "./contact_blocks.ts";
 import { createListener } from "./listener.ts";
+import { createUnsendService } from "./unsend.ts";
+import {
+  createConnectionRecovery,
+  retireClient,
+  waitForReceiver,
+} from "./connection_recovery.ts";
 import { createMessageView } from "./message_view.ts";
+import { callHistoryOf } from "./call_history.ts";
+import { createReadReceipts } from "./read_receipts.ts";
+import { createUnreadSync } from "./unread_sync.ts";
+import { createChatEvents } from "./chat_events.ts";
+import { readReceiptPermission } from "./read_policy.ts";
+import { createEmojiService, lineEmojis } from "./emojis.ts";
+import { createChatPreviews } from "./chat_previews.ts";
+import { createAlbumService } from "./albums.ts";
+import { createMessageSenders } from "./message_senders.ts";
 
 type Json = Record<string, unknown>;
 
@@ -85,8 +110,6 @@ function cachePolicy(): CachePolicy {
 }
 const AVATAR_CONCURRENCY = 3;
 const MEDIA_CONCURRENCY = 1;
-const PREVIEW_CONCURRENCY = 2;
-const PREVIEW_TOP = 28;
 const MEDIA_FIRST_BATCH = 5;
 const THUMB_MAX = 440;
 const THUMB_BYTES = 220_000;
@@ -152,6 +175,7 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
     if (authDead) return;
     authDead = true;
     listening = false;
+    if (client) retireClient(client);
     client = null;
     cancelBackgroundWork();
     console.error("[auth] session ended:", msg);
@@ -163,6 +187,11 @@ globalThis.addEventListener("unhandledrejection", (ev) => {
 });
 
 let client: Client | null = null;
+const albums = createAlbumService({
+  getClient: () => client,
+  sessionId: () => myMid(),
+  mediaDir,
+});
 let listening = false;
 
 calls.configureCallRuntime({
@@ -210,7 +239,14 @@ const messageView = createMessageView({
   uiMediaPath,
   stickerDir,
 });
-const { previewLang, previewLine, extractFlex, forUiMessages } = messageView;
+const { previewLang, previewLine, extractFlex } = messageView;
+async function forUiMessages(messages: Json[], chatMid?: string) {
+  if (chatMid) messages = await unsends.mask(chatMid, messages);
+  if (chatMid) messages = await chatEvents.merge(chatMid, messages);
+  messageSenders.observe(messages);
+  emojiService.observe(messages);
+  return messageView.forUiMessages(messages);
+}
 
 const stickers = createStickerService({
   getClient: () => client,
@@ -260,6 +296,16 @@ const outgoingMedia = createOutgoingMedia({
 });
 
 let chatCache: { at: number; chats: ChatRow[] } | null = null;
+let chatCacheWrite = Promise.resolve();
+function saveChatCache(): Promise<void> {
+  const write = chatCacheWrite.then(async () => {
+    if (chatCache) await atomicWriteJson(chatCachePath, chatCache);
+  });
+  // 1回の保存失敗で、後続の更新まで停止しないようにする。
+  chatCacheWrite = write.catch(() => {});
+  return write;
+}
+
 const msgCache = new Map<string, { at: number; messages: Json[] }>();
 const inFlight = new Map<string, Promise<unknown>>();
 const contactIndex = new Map<
@@ -272,9 +318,133 @@ type BoxCursor = {
   deliveredTime: bigint | number;
 };
 const boxCursor = new Map<string, BoxCursor>();
+const messageSenders = createMessageSenders({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  knownName: (mid) => contactIndex.get(mid)?.name,
+  emit: (mid, name) => emitEvent("sender_profile", { mid, name }),
+});
+const emojiService = createEmojiService({
+  directory: mediaDir,
+  emit: (key, path) => emitEvent("emoji_ready", { key, path }),
+});
+
+const chatPreviews = createChatPreviews({
+  getChats: () => chatCache?.chats ?? [],
+  previewLine,
+  fallback: () => previewLang().tap,
+  emit: (chat) => emitEvent("chat_preview", chat),
+  save: async () => {
+    if (chatCache) {
+      try {
+        await saveChatCache();
+      } catch {
+        console.error(
+          "[chat-preview-cache] プレビューを保存できませんでした。",
+        );
+      }
+    }
+  },
+});
+
+const readReceipts = createReadReceipts({
+  getClient: () => client,
+  selfMid: myMid,
+  emit: emitEvent,
+});
+
+const unreadSync = createUnreadSync({
+  getClient: () => client,
+  selfMid: myMid,
+  latestMessageId: (mid) => boxCursor.get(mid)?.messageId,
+  getChats: () => chatCache?.chats ?? [],
+  save: saveChatCache,
+  emit: emitEvent,
+});
+
+const chatEvents = createChatEvents({
+  directory: msgDiskDir,
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  observeProfiles: messageSenders.observe,
+  emit: emitEvent,
+});
+
+const contactBlocks = createContactBlocks({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  name: (mid) => contactIndex.get(mid)?.name,
+  emit: emitEvent,
+});
+
+const unsends = createUnsendService({
+  getClient: () => authDead ? null : client,
+  dataDir,
+  emit: emitEvent,
+  findMessage: async (chatMid, id, createdTime) => {
+    const cached = msgCache.get(chatMid)?.messages ??
+      await loadDiskMessages(chatMid);
+    const known = cached?.find((message) => String(message.id) === id);
+    if (known) return known;
+    const current = client;
+    if (!current) return undefined;
+    const raw = await current.base.talk.getPreviousMessagesV2WithRequest({
+      request: {
+        messageBoxId: chatMid,
+        endMessageId: {
+          messageId: coerceI64(id),
+          deliveredTime: coerceI64(
+            Number.isSafeInteger(createdTime) && createdTime > 0
+              ? createdTime
+              : 0,
+          ),
+        },
+        messagesCount: 1,
+      },
+    });
+    const message = raw.find((message) => String(message.id) === id);
+    return message
+      ? { ...message, contentType: normType(message.contentType) }
+      : undefined;
+  },
+  changed: async (chatMid, id) => {
+    const cached = msgCache.get(chatMid)?.messages ??
+      await loadDiskMessages(chatMid);
+    if (cached?.length) {
+      const messages = await unsends.mask(chatMid, cached);
+      msgCache.set(chatMid, { at: Date.now(), messages });
+      await saveDiskMessages(chatMid, messages);
+      await chatPreviews.updateFromMessages(chatMid, messages);
+    }
+    if (String(boxCursor.get(chatMid)?.messageId) === id) {
+      const preview = previewLang().unsent;
+      const row = chatCache?.chats.find((chat) => chat.mid === chatMid);
+      if (row) row.preview = preview;
+      emitEvent("chat_preview", {
+        mid: chatMid,
+        preview,
+        lastActivity: row?.lastActivity ?? 0,
+      });
+      await saveChatCache();
+    }
+  },
+});
 
 const listener = createListener({
+  prepareMessage: async (message) => {
+    const [prepared] = await unsends.mask(conversationMid(message), [message]);
+    return prepared?.contentType === "UNSENT" ? null : prepared ?? null;
+  },
+  handleIncomingCall: calls.handleIncomingCall,
+  handleCallCancel: calls.handleCallCancel,
+  shouldIgnoreMessage: contactBlocks.ignoreMessage,
   getClient: () => client,
+  observeMessage: (message) => {
+    unreadSync.observeMessage(message);
+    messageSenders.observe([message]);
+    emojiService.observe([message]);
+  },
+  refreshMessageSender: messageSenders.refresh,
   isListening: () => listening,
   setListening: (next) => {
     listening = next;
@@ -285,10 +455,39 @@ const listener = createListener({
   upsertChatFromMessage,
   hydrateLiveMedia,
   upsertChatFromContact,
+  handleReadReceipt: (operation) =>
+    unsends.handleOperation(operation) ||
+    contactBlocks.handleOperation(operation) ||
+    unreadSync.handleOperation(operation) ||
+    readReceipts.handleOperation(operation) ||
+    chatEvents.handleOperation(operation),
   emitEvent,
 });
 
+const connectionRecovery = createConnectionRecovery({
+  getClient: () => authDead ? null : client,
+  restore: async (current) => {
+    const token = current.authToken;
+    const device = await loadAuthDevice();
+    return await restoreSession(token, device, storagePath, LINE_VERSION);
+  },
+  activate: (next) => {
+    client = next;
+    listening = false;
+    // 休止前の応答しない取得に、復帰後の取得を合流させない。
+    inFlight.clear();
+    patchE2eeGuards();
+    listener.start();
+  },
+});
+
 const commands = createCommandService({
+  recordOwnRead: (chatMid, through) => {
+    unreadSync.handleOperation(
+      { type: 40, param1: chatMid, param2: through },
+      true,
+    );
+  },
   getClient: () => client,
   setClient: (next) => {
     client = next;
@@ -306,6 +505,7 @@ const commands = createCommandService({
   boxCursor,
   avatarDir,
   chatCachePath,
+  saveChatCache,
   storagePath,
   lineDevice: LINE_DEVICE,
   lineVersion: LINE_VERSION,
@@ -315,9 +515,19 @@ const commands = createCommandService({
   storeBoxCursor,
   existingFile,
   loadDiskContacts,
+  saveDiskContacts,
   refreshContactIndex,
   hydrateAvatars,
   hydratePreviews,
+  updateChatPreview: async (chatMid, messages) =>
+    await chatPreviews.updateFromMessages(
+      chatMid,
+      await unsends.mask(chatMid, messages),
+    ),
+  refreshReadReceipts: readReceipts.refresh,
+  reconcileUnread: unreadSync.reconcile,
+  readReceiptPermission: (chatMid) =>
+    readReceiptPermission(join(dataDir, "settings.json"), myMid(), chatMid),
   bumpMediaEpoch,
   loadDiskMessages,
   saveDiskMessages,
@@ -420,21 +630,18 @@ async function fromRawTalkSafe(raw: unknown): Promise<TalkMessage> {
 
 function patchE2eeGuards() {
   if (!client) return;
+  patchMediaDecryption(client.base.e2ee);
   const e2ee = client.base.e2ee as unknown as {
     decryptE2EEMessage: (
       m: Record<string, unknown>,
     ) => Promise<Record<string, unknown>>;
   };
   const orig = e2ee.decryptE2EEMessage.bind(e2ee);
-  e2ee.decryptE2EEMessage = async (messageObj) => {
-    const msg = normalizeRaw(messageObj);
-    try {
-      return await orig(msg);
-    } catch (e) {
-      console.error("[e2ee decrypt fallback]", e);
-      return msg;
-    }
-  };
+  e2ee.decryptE2EEMessage = guardedDecrypt(orig, () => {
+    console.error(
+      "[e2ee] メッセージを復号できません。暗号鍵の再取得が必要です。",
+    );
+  });
 }
 
 async function refetchMessageData(
@@ -485,7 +692,9 @@ async function refetchMessageData(
 function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const existing = inFlight.get(key);
   if (existing) return existing as Promise<T>;
-  const p = fn().finally(() => inFlight.delete(key));
+  const p = fn().finally(() => {
+    if (inFlight.get(key) === p) inFlight.delete(key);
+  });
   inFlight.set(key, p);
   return p;
 }
@@ -594,7 +803,9 @@ async function loadDiskContacts() {
       });
     }
     const at = Number(raw.at || 0);
-    if (Number.isFinite(at) && at > 0) contactsAt = at;
+    if (raw.classificationVersion === 1 && Number.isFinite(at) && at > 0) {
+      contactsAt = at;
+    }
   } catch { /* miss */ }
 }
 
@@ -605,7 +816,11 @@ async function saveDiskContacts() {
   > = {};
   for (const [mid, c] of contactIndex) contacts[mid] = c;
   try {
-    await atomicWriteJson(contactCachePath, { at: Date.now(), contacts });
+    await atomicWriteJson(contactCachePath, {
+      at: Date.now(),
+      contacts,
+      classificationVersion: contactsAt > 0 ? 1 : 0,
+    });
   } catch (error) {
     console.error("[contacts-cache]", error);
   }
@@ -618,7 +833,12 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
       await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
     );
     if (Date.now() - Number(raw.at || 0) > cachePolicy().diskMsg) return null;
-    if (Array.isArray(raw.messages)) return raw.messages as Json[];
+    if (Array.isArray(raw.messages)) {
+      return await unsends.mask(
+        chatMid,
+        restoreCachedMessages(raw.messages as Json[]),
+      );
+    }
   } catch { /* miss */ }
   return null;
 }
@@ -627,7 +847,7 @@ async function saveDiskMessages(chatMid: string, messages: Json[]) {
   try {
     await atomicWriteJson(join(msgDiskDir, `${chatMid}.json`), {
       at: Date.now(),
-      messages,
+      messages: await unsends.mask(chatMid, messages),
     });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
@@ -666,8 +886,7 @@ async function refreshContactIndex(force = false) {
       for (const c of contacts ?? []) {
         const mid = String(c.mid ?? "");
         if (!mid) continue;
-        const type = String(c.type ?? "");
-        const kind = /BOT/i.test(type) ? "bot" : "dm";
+        const kind = contactKind(c, contactIndex.get(mid)?.kind);
         contactIndex.set(mid, {
           name: c.displayName || mid,
           picturePath: c.picturePath ?? null,
@@ -681,11 +900,10 @@ async function refreshContactIndex(force = false) {
       for (const mid of slice) {
         try {
           const c = await client.base.talk.getContact({ mid });
-          const type = String(c.type ?? "");
           contactIndex.set(mid, {
             name: c.displayName || mid,
             picturePath: c.picturePath ?? null,
-            kind: /BOT/i.test(type) ? "bot" : "dm",
+            kind: contactKind(c, contactIndex.get(mid)?.kind),
             muted: !!(c as { notificationDisabled?: boolean })
               .notificationDisabled,
           });
@@ -711,10 +929,49 @@ async function summarizeTalkMessage(
     createdTime?: number | string | bigint;
     contentType?: string | number;
     contentMetadata?: Record<string, string>;
+    relatedMessageId?: unknown;
+    messageRelationType?: unknown;
+    relatedMessageServiceCode?: unknown;
   };
+  const replyTo = replyToOf(raw);
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
+  if (meta[DECRYPTION_FAILED] === "1") {
+    return {
+      replyTo,
+      id: String(raw.id ?? ""),
+      text: "",
+      from: raw.from ?? "",
+      to: raw.to ?? "",
+      mine: isMineFrom(raw.from),
+      createdTime: Number(raw.createdTime ?? 0),
+      contentType,
+      decryptionFailed: true,
+      needsMedia: false,
+    };
+  }
   let text = tm.text || meta.ALT_TEXT || meta.STKTXT || "";
+  const callHistory = callHistoryOf({
+    contentType,
+    text,
+    contentMetadata: meta,
+  });
+  if (callHistory) {
+    return {
+      replyTo,
+      id: String(raw.id ?? ""),
+      from: raw.from ?? "",
+      to: raw.to ?? "",
+      mine: isMineFrom(raw.from),
+      createdTime: Number(raw.createdTime ?? 0),
+      contentType: "CALL",
+      text: "",
+      callHistory,
+      durationMs: callHistory.durationMs,
+      needsMedia: false,
+    };
+  }
+
   let imagePath: string | null = null;
   let imageUrl: string | null = meta.PREVIEW_URL || meta.DOWNLOAD_URL || null;
   const id = String(raw.id ?? "");
@@ -770,6 +1027,7 @@ async function summarizeTalkMessage(
     }
     const flex = null;
     return {
+      replyTo,
       id,
       text: duration
         ? `Voice message (${Math.round(Number(duration) / 1000)}s)`
@@ -886,8 +1144,10 @@ async function summarizeTalkMessage(
   const flex = contentType === "FLEX" ? extractFlex(meta) : null;
 
   return {
+    replyTo,
     id,
     text,
+    emojis: contentType === "NONE" ? lineEmojis(text, meta) : [],
     from: raw.from ?? "",
     to: raw.to ?? "",
     mine: isMineFrom(raw.from),
@@ -924,6 +1184,11 @@ async function summarizeRawMessage(
     const meta = (r.contentMetadata ?? {}) as Record<string, string>;
     const contentType = normType(r.contentType);
     let text = String(r.text ?? meta.ALT_TEXT ?? meta.STKTXT ?? "");
+    const callHistory = callHistoryOf({
+      contentType,
+      text,
+      contentMetadata: meta,
+    });
     if (!text) {
       if (contentType === "AUDIO") text = "Voice message";
       else if (contentType === "IMAGE") text = "[Image]";
@@ -934,13 +1199,18 @@ async function summarizeRawMessage(
       else if (contentType !== "NONE") text = `[${contentType}]`;
     }
     return {
+      replyTo: replyToOf(r),
       id: String(r.id ?? ""),
-      text,
+      text: callHistory ? "" : text,
+      emojis: !callHistory && contentType === "NONE"
+        ? lineEmojis(text, meta)
+        : [],
+      callHistory,
       from: String(r.from ?? ""),
       to: String(r.to ?? ""),
       mine: isMineFrom(r.from),
       createdTime: Number(r.createdTime ?? 0),
-      contentType,
+      contentType: callHistory ? "CALL" : contentType,
       imagePath: null,
       imageUrl: meta.PREVIEW_URL || meta.DOWNLOAD_URL || null,
       audioPath: null,
@@ -949,7 +1219,8 @@ async function summarizeRawMessage(
       stickerId: meta.STKID || null,
       stickerPackageId: meta.STKPKGID || null,
       flex: contentType === "FLEX" ? extractFlex(meta) : null,
-      durationMs: meta.DURATION ? Number(meta.DURATION) : null,
+      durationMs: callHistory?.durationMs ??
+        (meta.DURATION ? Number(meta.DURATION) : null),
       needsMedia: contentType === "IMAGE" || contentType === "VIDEO" ||
         contentType === "STICKER" || contentType === "AUDIO",
     };
@@ -962,6 +1233,7 @@ async function hydrateMedia(
   opts: { isolated?: boolean } = {},
 ) {
   if (!client || !stdoutAlive) return;
+  messages = await unsends.mask(chatMid, messages);
   // Live listen hydrates must not bump the chat epoch — a concurrent fetch would
   // cancel the download and leave the bubble stuck until restart.
   const isolated = !!opts.isolated;
@@ -1199,86 +1471,54 @@ async function hydrateMedia(
 async function hydratePreviews(chats: ChatRow[]) {
   if (!client || !stdoutAlive) return;
   const gen = workGen;
-  const need = chats
-    .filter((c) => {
-      const L = previewLang();
-      return c.lastActivity > 0 &&
-        (!c.preview || c.preview === "Tap to open" || c.preview === L.tap);
-    })
-    .slice(0, PREVIEW_TOP);
-  if (!need.length) return;
+  const currentClient = client;
+  const active = () =>
+    client === currentClient && stdoutAlive && workGen === gen;
+  await chatPreviews.hydrate(chats, async (chat) => {
+    const cached = msgCache.get(chat.mid)?.messages ??
+      await loadDiskMessages(chat.mid);
+    if (!active()) return [];
+    if (
+      cached?.some((message) =>
+        Number(message.createdTime ?? 0) >= chat.lastActivity
+      ) && !cached.some(needsDecryptionRefresh)
+    ) return await unsends.mask(chat.mid, cached);
 
-  await mapPool(need, PREVIEW_CONCURRENCY, async (c) => {
-    if (!client || !stdoutAlive || workGen !== gen) return;
-    try {
-      let cursor = boxCursor.get(c.mid);
-      if (!cursor) {
-        // refresh cursors cheaply only when missing
-        const boxes = await client.base.talk.getMessageBoxes({
-          messageBoxListRequest: {},
-        });
-        if (!client || workGen !== gen) return;
-        for (const box of boxes.messageBoxes ?? []) {
-          const mid = String(box.id ?? "");
-          storeBoxCursor(mid, box.lastDeliveredMessageId);
-        }
-        cursor = boxCursor.get(c.mid);
+    let cursor = boxCursor.get(chat.mid);
+    if (!cursor) {
+      const boxes = await currentClient.base.talk.getMessageBoxes({
+        messageBoxListRequest: {},
+      });
+      if (!active()) return [];
+      for (const box of boxes.messageBoxes ?? []) {
+        storeBoxCursor(String(box.id ?? ""), box.lastDeliveredMessageId);
       }
-      if (!cursor) return;
-
-      const messages = await client.base.talk.getPreviousMessagesV2WithRequest({
+      cursor = boxCursor.get(chat.mid);
+    }
+    if (!cursor) return [];
+    const messages = await currentClient.base.talk
+      .getPreviousMessagesV2WithRequest({
         request: {
-          messageBoxId: c.mid,
-          endMessageId: {
-            messageId: cursor.messageId,
-            deliveredTime: cursor.deliveredTime,
-          },
+          messageBoxId: chat.mid,
+          endMessageId: cursor,
           messagesCount: 1,
         },
       });
-      if (!client || workGen !== gen || !stdoutAlive) return;
-      const raw = messages?.[messages.length - 1] ?? messages?.[0];
-      if (!raw) return;
-      const summary = await summarizeRawMessage(raw, { withMedia: false });
-      if (workGen !== gen || !stdoutAlive) return;
-      const preview = previewLine(summary);
-      c.preview = preview;
-      if (chatCache) {
-        const row = chatCache.chats.find((x) => x.mid === c.mid);
-        if (row) row.preview = preview;
-      }
-      emitEvent("chat_preview", {
-        mid: c.mid,
-        preview,
-        lastActivity: c.lastActivity,
-      });
-    } catch (e) {
-      console.error("[hydratePreviews]", c.mid, e);
-      if (!c.preview) {
-        c.preview = previewLang().tap;
-        emitEvent("chat_preview", {
-          mid: c.mid,
-          preview: c.preview,
-          lastActivity: c.lastActivity,
-        });
-      }
-    }
-  });
-
-  if (chatCache) {
-    try {
-      await atomicWriteJson(chatCachePath, chatCache);
-    } catch (error) {
-      console.error("[chat-preview-cache]", error);
-    }
-  }
+    if (!active()) return [];
+    return await unsends.mask(
+      chat.mid,
+      await Promise.all(
+        messages.map((raw) => summarizeRawMessage(raw, { withMedia: false })),
+      ),
+    );
+  }, active);
 }
 
 async function buildFriendsList(): Promise<ChatRow[]> {
   const friends: ChatRow[] = [];
   for (const [mid, info] of contactIndex) {
     // Users / bots / OA use u… mids; skip groups (c…) and rooms (r…).
-    if (!mid.startsWith("u")) continue;
+    if (!mid.startsWith("u") || contactBlocks.isBlocked(mid)) continue;
     friends.push({
       mid,
       name: info.name || mid,
@@ -1347,7 +1587,7 @@ async function hydrateAvatars(chats: ChatRow[]) {
   });
   if (chatCache) {
     try {
-      await atomicWriteJson(chatCachePath, chatCache);
+      await saveChatCache();
     } catch (error) {
       console.error("[chat-avatar-cache]", error);
     }
@@ -1375,12 +1615,24 @@ async function resolveContactInfo(mid: string): Promise<{
     };
   }
   try {
+    if (mid.startsWith("c")) {
+      const raw = await client.base.talk.getChat({
+        chatMid: mid,
+        withMembers: false,
+        withInvitees: false,
+      });
+      const info = groupProfile(raw);
+      if (info) {
+        contactIndex.set(mid, info);
+        await saveDiskContacts();
+        return info;
+      }
+    }
     const c = await client.base.talk.getContact({ mid });
-    const type = String(c.type ?? "");
     const info = {
       name: c.displayName || mid,
       picturePath: c.picturePath ?? null,
-      kind: /BOT/i.test(type) ? "bot" : mid.startsWith("c") ? "group" : "dm",
+      kind: mid.startsWith("c") ? "group" : contactKind(c, cached?.kind),
       muted: !!(c as { notificationDisabled?: boolean }).notificationDisabled,
     };
     contactIndex.set(mid, info);
@@ -1397,8 +1649,11 @@ async function resolveContactInfo(mid: string): Promise<{
 }
 
 async function upsertChatFromMessage(message: Json) {
-  const peer = message.mine ? String(message.to) : String(message.from);
+  const peer = conversationMid(message);
   if (!peer) return;
+  const [visible] = await unsends.mask(peer, [message]);
+  if (!visible || visible.contentType === "UNSENT") return;
+  message = visible;
   const preview = previewLine(message);
   const activity = Number(message.createdTime ?? 0);
   if (!chatCache) chatCache = { at: Date.now(), chats: [] };
@@ -1432,7 +1687,7 @@ async function upsertChatFromMessage(message: Json) {
   chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== peer)];
   chatCache.at = Date.now();
   try {
-    await atomicWriteJson(chatCachePath, chatCache);
+    await saveChatCache();
   } catch (error) {
     console.error("[chat-message-cache]", peer, error);
   }
@@ -1469,7 +1724,7 @@ async function upsertChatFromContact(mid: string) {
   chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== mid)];
   chatCache.at = Date.now();
   try {
-    await atomicWriteJson(chatCachePath, chatCache);
+    await saveChatCache();
   } catch (error) {
     console.error("[chat-contact-cache]", mid, error);
   }
@@ -1638,25 +1893,129 @@ async function handle(req: Json) {
   const params = (req.params ?? {}) as Json;
 
   try {
+    if (
+      [
+        "send_message",
+        "send_audio",
+        "send_media",
+        "send_sticker",
+        "send_postback",
+        "call_start",
+      ].includes(method) &&
+      contactBlocks.isBlocked(String(
+        method === "call_start"
+          ? params.mid ?? params.chatMid ?? ""
+          : params.chatMid ?? "",
+      ))
+    ) {
+      throw new Error("contact_blocked_send");
+    }
     switch (method) {
+      case "unsend_message":
+        ok(
+          id,
+          await unsends.unsend(
+            String(params.chatMid ?? ""),
+            params.messageId,
+            Number(params.createdTime ?? 0),
+          ),
+        );
+        break;
+      case "get_blocked_contacts":
+        ok(id, await contactBlocks.refresh());
+        break;
+      case "set_contact_blocked":
+        if (typeof params.blocked !== "boolean") {
+          throw new Error("contact_blocks_invalid_user");
+        }
+        ok(
+          id,
+          await contactBlocks.set(String(params.mid ?? ""), params.blocked),
+        );
+        break;
       case "ping":
         ok(id, { pong: true, version: "0.2.0" });
         break;
+      case "set_language": {
+        const language = String(params.language ?? "");
+        if (!["en", "th", "ja"].includes(language)) {
+          throw new Error("表示言語が不正です");
+        }
+        Deno.env.set("LINE_GTK_LANG", language);
+        ok(id, { language });
+        break;
+      }
       case "login_qr":
         await commands.loginQr(id);
         break;
+      case "login_email": {
+        const email = typeof params.email === "string" ? params.email : "";
+        const password = typeof params.password === "string"
+          ? params.password
+          : "";
+        delete params.password;
+        try {
+          await commands.loginEmail(id, email, password);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          fail(
+            id,
+            [
+                "login_email_missing",
+                "login_invalid_email",
+                "login_invalid_password",
+                "login_email_failed",
+                "login_email_timeout",
+              ].includes(code)
+              ? code
+              : emailLoginError(error),
+          );
+        }
+        break;
+      }
       case "login_token":
         await commands.loginToken(id, params.token as string | undefined);
         break;
       case "list_chats":
-        await commands.listChats(id, !!params.force);
+        if (params.reconnect) {
+          await connectionRecovery.reconnect();
+          if (!client) throw new Error("not_logged_in");
+          await waitForReceiver(client);
+        }
+        await commands.listChats(id, !!params.force, !!params.quiet);
         break;
+      case "list_albums":
+      case "list_album_photos":
+      case "download_album_photo": {
+        try {
+          const chatMid = String(params.chatMid ?? "");
+          const albumId = String(params.albumId ?? "");
+          const result = method === "list_albums"
+            ? await albums.listAlbums(chatMid, params.cursor)
+            : method === "list_album_photos"
+            ? await albums.listPhotos(chatMid, albumId, params.cursor)
+            : await albums.downloadPhoto(
+              chatMid,
+              albumId,
+              String(params.photoId ?? ""),
+            );
+          ok(id, result);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          fail(
+            id,
+            /^album_[a-z_]+$/.test(code) ? code : "album_request_failed",
+          );
+        }
+        break;
+      }
       case "fetch_messages":
         await commands.fetchMessages(
           id,
           String(params.chatMid ?? ""),
           Number(params.limit ?? 50),
           !!params.force,
+          !!params.quiet,
         );
         break;
       case "send_message":
@@ -1664,6 +2023,7 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.text ?? ""),
+          params.replyToMessageId,
         );
         break;
       case "send_audio":
@@ -1688,6 +2048,7 @@ async function handle(req: Json) {
           id,
           String(params.chatMid ?? ""),
           String(params.messageId ?? ""),
+          String(params.contentType ?? ""),
         );
         break;
       case "send_sticker":
@@ -1704,6 +2065,13 @@ async function handle(req: Json) {
         break;
       case "mark_read":
         await commands.markRead(
+          id,
+          String(params.chatMid ?? ""),
+          String(params.lastMessageId ?? ""),
+        );
+        break;
+      case "mark_read_once":
+        await commands.markReadOnce(
           id,
           String(params.chatMid ?? ""),
           String(params.lastMessageId ?? ""),
@@ -1796,7 +2164,10 @@ async function handle(req: Json) {
         if (kind === "media" || kind === "all") await wipe(mediaDir);
         if (kind === "stickers" || kind === "all") await wipe(stickerDir);
         if (kind === "avatars" || kind === "all") await wipe(avatarDir);
-        if (kind === "messages" || kind === "all") await wipe(msgDiskDir);
+        if (kind === "messages" || kind === "all") {
+          await wipe(msgDiskDir);
+          chatEvents.reset();
+        }
         if (kind === "chats" || kind === "all") {
           try {
             await Deno.remove(chatCachePath);
@@ -1916,6 +2287,7 @@ async function handle(req: Json) {
         try {
           await clearAuth();
         } catch { /* ignore */ }
+        if (client) retireClient(client);
         client = null;
         listening = false;
         chatCache = null;
@@ -1933,42 +2305,27 @@ async function handle(req: Json) {
 await stickers.loadIndex();
 await loadDiskContacts();
 
-const bootAuth = await loadAuth();
+const bootAuth = Deno.env.get("LINE_GTK_SKIP_RESTORE") === "1"
+  ? null
+  : await loadAuth();
 const bootDevice = await loadAuthDevice();
-const needsAndroidRelogin = !!bootAuth && bootDevice === "DESKTOPWIN";
 
 emitEvent("ready", {
   dataDir,
   sidecar: fromFileUrl(import.meta.url),
-  hasAuth: !!bootAuth && !needsAndroidRelogin,
-  device: needsAndroidRelogin ? "" : bootDevice,
+  hasAuth: !!bootAuth,
+  device: bootDevice,
 });
 
-// Legacy DESKTOPWIN tokens cannot do reliable PLANET calls (docs require ANDROID*).
-if (needsAndroidRelogin) {
-  console.error(
-    "[auth] DESKTOPWIN session detected — clearing auth. Re-scan QR for ANDROIDSECONDARY (required for voice calls per linejs docs).",
-  );
-  await clearAuth();
-  emitEvent("session_failed", {
-    error: "relogin_android_required",
-  });
-} else if (bootAuth) {
+if (bootAuth) {
   try {
-    const storage = new FileStorage(storagePath);
-    const device = bootDevice === "ANDROID" || bootDevice === "ANDROIDSECONDARY"
-      ? bootDevice
-      : "ANDROIDSECONDARY";
-    client = await loginWithAuthToken(bootAuth, {
-      device,
-      version: LINE_VERSION,
-      storage,
-    });
+    const device = bootDevice;
+    client = await restoreSession(bootAuth, device, storagePath, LINE_VERSION);
     await saveAuth(client.authToken, device);
     const profile = await client.getMyProfile();
     patchE2eeGuards();
     listener.start();
-    emitEvent("session", await myProfilePayload(profile));
+    emitEvent("session", { ...(await myProfilePayload(profile)), device });
   } catch (e) {
     console.error("[boot restore]", e);
     emitEvent("session_failed", {
