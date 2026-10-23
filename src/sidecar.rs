@@ -284,9 +284,49 @@ impl Sidecar {
     }
 
     pub fn fetch_messages(&self, chat_mid: &str, limit: u32) -> Result<u64> {
+        self.fetch_messages_forced(chat_mid, limit, false)
+    }
+
+    pub fn fetch_messages_forced(&self, chat_mid: &str, limit: u32, force: bool) -> Result<u64> {
         self.request(
             "fetch_messages",
-            Some(json!({ "chatMid": chat_mid, "limit": limit, "force": false })),
+            Some(json!({ "chatMid": chat_mid, "limit": limit, "force": force })),
+        )
+    }
+
+    pub fn fetch_older_messages(
+        &self,
+        chat_mid: &str,
+        before_id: &str,
+        before_time: i64,
+        limit: u32,
+    ) -> Result<u64> {
+        self.request(
+            "fetch_older_messages",
+            Some(json!({
+                "chatMid": chat_mid,
+                "beforeId": before_id,
+                "beforeTime": before_time,
+                "limit": limit,
+            })),
+        )
+    }
+
+    pub fn fetch_newer_messages(
+        &self,
+        chat_mid: &str,
+        after_id: &str,
+        after_time: i64,
+        limit: u32,
+    ) -> Result<u64> {
+        self.request(
+            "fetch_newer_messages",
+            Some(json!({
+                "chatMid": chat_mid,
+                "afterId": after_id,
+                "afterTime": after_time,
+                "limit": limit,
+            })),
         )
     }
 

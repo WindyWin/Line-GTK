@@ -358,6 +358,10 @@ fn merged_messages(
 }
 
 fn apply_resumed_messages(state: &AppState, incoming: Vec<MessageInfo>) {
+    if history::is_detached(state) {
+        history::reload_latest(state);
+        return;
+    }
     invalidate_history(state);
     let messages = merged_messages(state.reply_messages.borrow().values().cloned(), incoming);
     let stick = *state.stick_bottom.borrow();
@@ -370,6 +374,7 @@ fn apply_resumed_messages(state: &AppState, incoming: Vec<MessageInfo>) {
     if state.message_list.first_child().is_some() {
         set_msg_state(state, "list", None);
     }
+    history::restore_sentinels(state);
     replies::refresh(state);
     // 復帰だけでは既読を送らず、読んでいる位置も維持する。
     if stick {

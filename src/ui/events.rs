@@ -31,11 +31,15 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 && state.self_mid.borrow().as_deref() == Some(account_mid.as_str())
                 && state.current_chat.borrow().as_deref() == Some(message.to.as_str())
             {
+                if history::is_detached(state) {
+                    return;
+                }
                 let stick = *state.stick_bottom.borrow();
                 set_msg_state(state, "list", None);
                 append_message(state, &message, true);
                 if stick {
                     pin_messages_to_latest(state);
+                    history::enforce_live_limit(state);
                 }
             }
         }
@@ -277,7 +281,16 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             let current = state.current_chat.borrow().clone();
             let viewing = current.as_deref() == Some(peer.as_str());
             let window_focused = state.window.is_active();
-            if viewing {
+            if viewing && history::is_detached(state) {
+                // The newest rows are not on screen; reaching them reloads the latest page.
+                if !msg.mine && !already_read {
+                    let n = state.pending_new_below.borrow().saturating_add(1);
+                    *state.pending_new_below.borrow_mut() = n;
+                    update_jump_banner(state);
+                    bump_unread(state, &peer);
+                    notify_incoming(state, &msg, &peer);
+                }
+            } else if viewing {
                 if state.msg_stack.visible_child_name().as_deref() != Some("list") {
                     set_msg_state(state, "list", None);
                 }
@@ -290,6 +303,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 append_message(state, &msg, true);
                 if was_stuck {
                     pin_messages_to_latest(state);
+                    history::enforce_live_limit(state);
                     if !msg.mine && !already_read {
                         // Only suppress alerts when this chat is open AND focused.
                         if window_focused {
@@ -665,6 +679,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 resume_sync::response(state, generation, account, chat_mid, ok, result);
                 return;
             }
+            if let Some(
+                older_or_newer @ (Pending::FetchOlder { .. } | Pending::FetchNewer { .. }),
+            ) = pending
+            {
+                history::response(state, id, older_or_newer, ok, &result);
+                return;
+            }
             if let Some(Pending::FetchMessages { generation, .. }) = pending.as_ref()
                 && *generation != *state.history_request_generation.borrow()
             {
@@ -792,13 +813,19 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     if let Ok(msg) = serde_json::from_value::<MessageInfo>(
                         result.get("message").cloned().unwrap_or_default(),
                     ) {
+                        if history::is_detached(state) {
+                            history::reload_latest(state);
+                            return;
+                        }
                         if state.msg_stack.visible_child_name().as_deref() != Some("list") {
                             set_msg_state(state, "list", None);
                         }
                         append_message(state, &msg, true);
                         pin_messages_to_latest(state);
+                        history::enforce_live_limit(state);
                     }
                 }
+                Some(Pending::FetchOlder { .. } | Pending::FetchNewer { .. }) => {}
                 Some(Pending::ListStickers) => {
                     fill_sticker_popover(state, &result);
                 }

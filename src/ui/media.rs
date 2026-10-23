@@ -30,9 +30,10 @@ pub(super) fn image_looks_low_res(path: &str) -> bool {
     if is_thumb_media_path(path) {
         return true;
     }
-    match gdk_pixbuf::Pixbuf::from_file(path) {
-        Ok(pb) => pb.width() <= 512 && pb.height() <= 512,
-        Err(_) => false,
+    // Only the header is read; decoding a full photo just to size it is costly.
+    match gdk_pixbuf::Pixbuf::file_info(path) {
+        Some((_, width, height)) => width <= 512 && height <= 512,
+        None => false,
     }
 }
 

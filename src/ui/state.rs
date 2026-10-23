@@ -163,6 +163,7 @@ pub(super) struct AppState {
     pub msg_list_fp: Rc<RefCell<Option<MessageListFingerprint>>>,
     pub message_render_generation: Rc<RefCell<u64>>,
     pub history_request_generation: Rc<RefCell<u64>>,
+    pub history: Rc<RefCell<super::history::HistoryWindow>>,
     pub resume_sync: Rc<RefCell<super::resume_sync::ResumeSync>>,
     pub notif_pending: Rc<RefCell<HashMap<String, PendingNotif>>>,
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
@@ -216,6 +217,14 @@ pub(super) enum Pending {
     ListChats,
     ListFriends,
     FetchMessages {
+        chat_mid: String,
+        generation: u64,
+    },
+    FetchOlder {
+        chat_mid: String,
+        generation: u64,
+    },
+    FetchNewer {
         chat_mid: String,
         generation: u64,
     },

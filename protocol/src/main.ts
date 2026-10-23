@@ -11,6 +11,7 @@ import { emailLoginError } from "./email_login.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { contactKind, picturePathOf, profileUrl } from "./contacts.ts";
 import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
+import { mergeMessages } from "./message_history.ts";
 import { replyToOf } from "./replies.ts";
 import { groupProfile } from "./groups.ts";
 import {
@@ -849,12 +850,24 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
   return null;
 }
 
-async function saveDiskMessages(chatMid: string, messages: Json[]) {
+async function saveDiskMessages(
+  chatMid: string,
+  messages: Json[],
+  opts: { contiguous?: boolean } = {},
+) {
   try {
-    await atomicWriteJson(join(msgDiskDir, `${chatMid}.json`), {
-      at: Date.now(),
-      messages: await unsends.mask(chatMid, messages),
-    });
+    const file = join(msgDiskDir, `${chatMid}.json`);
+    let stored: Json[] = [];
+    try {
+      const raw = JSON.parse(await Deno.readTextFile(file));
+      if (Array.isArray(raw.messages)) stored = raw.messages as Json[];
+    } catch { /* first write */ }
+    const merged = mergeMessages(
+      stored,
+      await unsends.mask(chatMid, messages),
+      opts,
+    );
+    await atomicWriteJson(file, { at: Date.now(), messages: merged });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
   }
@@ -2018,6 +2031,24 @@ async function handle(req: Json) {
         }
         break;
       }
+      case "fetch_older_messages":
+        await commands.fetchOlderMessages(
+          id,
+          String(params.chatMid ?? ""),
+          String(params.beforeId ?? ""),
+          Number(params.beforeTime ?? 0),
+          params.limit,
+        );
+        break;
+      case "fetch_newer_messages":
+        await commands.fetchNewerCachedMessages(
+          id,
+          String(params.chatMid ?? ""),
+          String(params.afterId ?? ""),
+          Number(params.afterTime ?? 0),
+          params.limit,
+        );
+        break;
       case "fetch_messages":
         await commands.fetchMessages(
           id,

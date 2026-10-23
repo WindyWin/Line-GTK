@@ -25,15 +25,21 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         .map(|message| unsend::masked(state, message))
         .collect();
     // 取得中に届いたイベントを、先に開始した履歴の応答で消さない。
+    let oldest_fetched = messages.iter().map(|m| m.created_time).min().unwrap_or(0);
     let existing_events: Vec<_> = state
         .reply_messages
         .borrow()
         .values()
-        .filter(|m| m.chat_event.is_some() && !messages.iter().any(|item| item.id == m.id))
+        .filter(|m| {
+            m.chat_event.is_some()
+                && m.created_time >= oldest_fetched
+                && !messages.iter().any(|item| item.id == m.id)
+        })
         .cloned()
         .collect();
     messages.extend(existing_events);
     clear_messages(state);
+    history::reset_for_latest(state, !messages.is_empty());
     state
         .reply_messages
         .borrow_mut()
@@ -85,6 +91,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         let take = left.len().min(14);
         if take == 0 {
             pin_messages_to_latest(&state_c);
+            history::arm(&state_c);
             if let Some(mid) = chat_mid.as_deref() {
                 mark_chat_read(&state_c, mid);
                 clear_unread_badge(&state_c, mid);
@@ -103,6 +110,31 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
+    state
+        .message_list
+        .set_owner(Some(super::virtual_list::Owner {
+            id: msg.id.clone(),
+            created: msg.created_time,
+        }));
+    append_message_rows(state, msg, live);
+    state.message_list.set_owner(None);
+}
+
+pub(super) fn day_separator_row(created_time: i64) -> gtk::Box {
+    let sep_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .css_classes(["line-message-row", "line-day-sep-row"])
+        .build();
+    let sep = gtk::Label::builder()
+        .label(format_day_separator(created_time))
+        .halign(gtk::Align::Center)
+        .css_classes(["line-day-sep"])
+        .build();
+    sep_row.append(&sep);
+    sep_row
+}
+
+fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     let masked = unsend::masked(state, msg);
     let msg = &masked;
     if !msg.id.is_empty() && !state.seen_msg_ids.borrow_mut().insert(msg.id.clone()) {
@@ -151,17 +183,7 @@ pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
         let need_sep = state.last_msg_day.borrow().as_deref() != Some(day.as_str());
         if need_sep {
             *state.last_msg_day.borrow_mut() = Some(day);
-            let sep_row = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .css_classes(["line-message-row", "line-day-sep-row"])
-                .build();
-            let sep = gtk::Label::builder()
-                .label(format_day_separator(msg.created_time))
-                .halign(gtk::Align::Center)
-                .css_classes(["line-day-sep"])
-                .build();
-            sep_row.append(&sep);
-            list.append(&sep_row);
+            list.append(&day_separator_row(msg.created_time));
         }
     }
 
@@ -1631,6 +1653,10 @@ pub(super) fn update_jump_banner(state: &AppState) {
 pub(super) fn jump_to_latest(state: &AppState) {
     *state.pending_new_below.borrow_mut() = 0;
     update_jump_banner(state);
+    if history::is_detached(state) {
+        history::reload_latest(state);
+        return;
+    }
     pin_messages_to_latest(state);
     if let Some(mid) = state.current_chat.borrow().clone() {
         mark_chat_read(state, &mid);

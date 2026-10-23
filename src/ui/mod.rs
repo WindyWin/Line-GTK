@@ -14,6 +14,7 @@ mod emojis;
 mod events;
 mod friends;
 mod hidden_chats;
+mod history;
 mod login;
 mod media;
 mod message_senders;
@@ -282,6 +283,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_list_fp: Rc::new(RefCell::new(None)),
         message_render_generation: Rc::new(RefCell::new(0)),
         history_request_generation: Rc::new(RefCell::new(0)),
+        history: Rc::new(RefCell::new(history::HistoryWindow::default())),
         resume_sync: Rc::new(RefCell::new(resume_sync::ResumeSync::default())),
         notif_pending: Rc::new(RefCell::new(HashMap::new())),
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
@@ -303,6 +305,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     replies::wire(&state);
     unsend::wire(&state);
     wire_scroll_pin(&state);
+    history::wire(&state);
     wire_notification_actions(&state);
     resume_sync::wire(&state);
     sync_tray(&state);
@@ -1093,10 +1096,15 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         msg.created_time = now_ms();
     }
     if state.current_chat.borrow().as_deref() == Some(chat_mid) {
-        if state.msg_stack.visible_child_name().as_deref() != Some("list") {
-            set_msg_state(state, "list", None);
+        if history::is_detached(state) {
+            // The sent message shows up once the latest page is loaded.
+            history::reload_latest(state);
+        } else {
+            if state.msg_stack.visible_child_name().as_deref() != Some("list") {
+                set_msg_state(state, "list", None);
+            }
+            append_message(state, &msg, true);
         }
-        append_message(state, &msg, true);
     }
     state.pending.borrow_mut().insert(
         req_id,
@@ -1724,6 +1732,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     *state.msg_list_fp.borrow_mut() = None;
     let generation = state.history_request_generation.borrow().wrapping_add(1);
     *state.history_request_generation.borrow_mut() = generation;
+    history::reset(state);
     match state.sidecar.fetch_messages(&chat.mid, 40) {
         Ok(id) => {
             state.pending.borrow_mut().insert(

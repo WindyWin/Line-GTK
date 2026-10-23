@@ -11,6 +11,14 @@ import { fetchGroupProfiles } from "./groups.ts";
 import type { ReadPermission } from "./read_policy.ts";
 import { replyMessageId, replySnapshot } from "./replies.ts";
 import { createLineFetch } from "./connection.ts";
+import { coerceI64 } from "./messages.ts";
+import {
+  clampPageSize,
+  mergeMessages,
+  newerThan,
+  olderThan,
+  sortMessages,
+} from "./message_history.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -69,9 +77,17 @@ export type CommandRuntime = {
   recordOwnRead?: (chatMid: string, through: string) => void;
   bumpMediaEpoch: (chatMid: string) => number;
   loadDiskMessages: (chatMid: string) => Promise<Json[] | null>;
-  saveDiskMessages: (chatMid: string, messages: Json[]) => Promise<void>;
+  saveDiskMessages: (
+    chatMid: string,
+    messages: Json[],
+    opts?: { contiguous?: boolean },
+  ) => Promise<void>;
   forUiMessages: (messages: Json[], chatMid?: string) => Promise<Json[]>;
-  hydrateMedia: (messages: Json[], chatMid: string) => Promise<void>;
+  hydrateMedia: (
+    messages: Json[],
+    chatMid: string,
+    opts?: { isolated?: boolean },
+  ) => Promise<void>;
   summarizeTalkMessage: (
     message: TalkMessage,
     opts?: { withMedia?: boolean },
@@ -611,7 +627,7 @@ export function createCommandService(runtime: CommandRuntime) {
 
       // Warm from disk immediately
       if (!force) {
-        const disk = await loadDiskMessages(chatMid);
+        const disk = (await loadDiskMessages(chatMid))?.slice(-limit);
         if (disk?.length) {
           msgCache.set(chatMid, { at: Date.now(), messages: disk });
           await updateChatPreview(chatMid, disk);
@@ -769,6 +785,127 @@ export function createCommandService(runtime: CommandRuntime) {
     });
   }
 
+  async function doFetchOlder(
+    id: number | string | null,
+    chatMid: string,
+    beforeId: string,
+    beforeTime: number,
+    rawLimit: unknown,
+  ) {
+    const client = runtime.getClient();
+    if (!client) {
+      fail(id, "not_logged_in");
+      return;
+    }
+    if (!chatMid || (!beforeId && !beforeTime)) {
+      fail(id, "missing_chat");
+      return;
+    }
+    const limit = clampPageSize(rawLimit);
+    await dedupe(`older:${chatMid}:${beforeId}`, async () => {
+      try {
+        const stored = sortMessages(
+          (await loadDiskMessages(chatMid)) ?? [],
+        );
+        let page = olderThan(stored, beforeId, beforeTime, limit);
+        let hasMore = true;
+        if (page.length < limit) {
+          const oldest = page[0] ??
+            stored.find((m) => String(m.id) === beforeId);
+          const anchorId = String(oldest?.id ?? beforeId);
+          const anchorTime = Number(oldest?.createdTime ?? beforeTime);
+          if (!anchorId) {
+            hasMore = false;
+          } else {
+            const raw = await client.base.talk.getPreviousMessagesV2WithRequest(
+              {
+                request: {
+                  messageBoxId: chatMid,
+                  endMessageId: {
+                    messageId: coerceI64(anchorId),
+                    deliveredTime: coerceI64(anchorTime > 0 ? anchorTime : 0),
+                  },
+                  messagesCount: limit,
+                },
+              },
+            );
+            const have = new Set(page.map((m) => String(m.id)));
+            have.add(beforeId);
+            have.add(anchorId);
+            const fetched: Json[] = [];
+            for (const item of raw) {
+              try {
+                const summary = await summarizeRawMessage(item, {
+                  withMedia: false,
+                });
+                if (!have.has(String(summary.id))) fetched.push(summary);
+              } catch (e) {
+                console.error("[fetch older skip]", e);
+              }
+            }
+            // A page served partly from disk may still have older history on
+            // the server; only an empty result from both means the end.
+            hasMore = fetched.length > 0 || page.length > 0;
+            console.error(
+              `[history] server returned ${raw.length}, new ${fetched.length}, anchor=${anchorId}`,
+            );
+            if (fetched.length) {
+              await saveDiskMessages(chatMid, fetched, { contiguous: true });
+              page = mergeMessages(page, fetched, { contiguous: true })
+                .slice(-limit);
+            }
+          }
+        }
+        console.error(
+          `[history] older chat=${chatMid} before=${beforeId} page=${page.length} hasMore=${hasMore}`,
+        );
+        const cutoff = page.length
+          ? Number(page[page.length - 1].createdTime)
+          : 0;
+        const ui = (await forUiMessages(page, chatMid)).filter((m) =>
+          Number(m.createdTime) <= cutoff
+        );
+        ok(id, { messages: ui, hasMore, chatMid });
+        hydrateMedia(page, chatMid, { isolated: true });
+      } catch (e) {
+        fail(id, e instanceof Error ? e.message : String(e));
+      }
+    });
+  }
+
+  async function doFetchNewerCached(
+    id: number | string | null,
+    chatMid: string,
+    afterId: string,
+    afterTime: number,
+    rawLimit: unknown,
+  ) {
+    if (!chatMid || (!afterId && !afterTime)) {
+      fail(id, "missing_chat");
+      return;
+    }
+    const limit = clampPageSize(rawLimit);
+    try {
+      const stored = sortMessages((await loadDiskMessages(chatMid)) ?? []);
+      const { messages, hasMore } = newerThan(
+        stored,
+        afterId,
+        afterTime,
+        limit,
+      );
+      const cutoff = hasMore && messages.length
+        ? Number(messages[messages.length - 1].createdTime)
+        : Infinity;
+      const ui = (await forUiMessages(messages, chatMid)).filter((m) =>
+        Number(m.createdTime) <= cutoff
+      );
+      ok(id, { messages: ui, hasMore, chatMid });
+      hydrateMedia(messages, chatMid, { isolated: true });
+    } catch (e) {
+      fail(id, e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function doSend(
     id: number | string | null,
     chatMid: string,
@@ -873,6 +1010,8 @@ export function createCommandService(runtime: CommandRuntime) {
       withLogin(id, () => doLoginToken(id, token)),
     listChats: doListChats,
     fetchMessages: doFetchMessages,
+    fetchOlderMessages: doFetchOlder,
+    fetchNewerCachedMessages: doFetchNewerCached,
     sendMessage: doSend,
   };
 }

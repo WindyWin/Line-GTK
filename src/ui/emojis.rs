@@ -8,6 +8,12 @@ pub(super) struct EmojiText {
     emojis: Vec<LineEmoji>,
 }
 
+impl EmojiText {
+    pub(super) fn is_inside(&self, ancestor: &gtk::Widget) -> bool {
+        self.view.is_ancestor(ancestor)
+    }
+}
+
 fn ranges(text: &str, emojis: &[LineEmoji]) -> Vec<(usize, usize, String)> {
     let mut boundaries: Vec<usize> = text.char_indices().map(|(index, _)| index).collect();
     boundaries.push(text.len());
