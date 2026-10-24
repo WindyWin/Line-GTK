@@ -30,6 +30,8 @@ pub struct ShellWidgets {
     pub profile_avatar: gtk::Picture,
     pub brand_label: gtk::Label,
     pub brand_icon: gtk::Image,
+    pub chat_header: gtk::Box,
+    pub chat_avatar_frame: gtk::Box,
     pub chat_title: gtk::Label,
     pub chat_subtitle: gtk::Label,
     pub side_stack: gtk::Stack,
@@ -324,7 +326,6 @@ pub fn build_shell_page() -> ShellWidgets {
     let title_col = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(2)
-        .hexpand(true)
         .build();
     let chat_title = gtk::Label::builder()
         .label(crate::i18n::t("select_chat"))
@@ -339,6 +340,19 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     title_col.append(&chat_title);
     title_col.append(&chat_subtitle);
+    let chat_avatar_frame = gtk::Box::builder()
+        .valign(gtk::Align::Center)
+        .visible(false)
+        .css_classes(["line-avatar-frame", "line-avatar-xs"])
+        .build();
+    let chat_header = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .css_classes(["line-chat-header"])
+        .build();
+    chat_header.append(&chat_avatar_frame);
+    chat_header.append(&title_col);
+    let chat_bar_spacer = gtk::Box::builder().hexpand(true).build();
     let call_btn = gtk::Button::builder()
         .icon_name("call-start-symbolic")
         .tooltip_text("Voice call")
@@ -352,7 +366,8 @@ pub fn build_shell_page() -> ShellWidgets {
         .css_classes(["flat", "circular"])
         .sensitive(false)
         .build();
-    chat_bar.append(&title_col);
+    chat_bar.append(&chat_header);
+    chat_bar.append(&chat_bar_spacer);
     let read_once_btn = gtk::Button::builder()
         .label(crate::i18n::t("mark_read_once"))
         .tooltip_text(crate::i18n::t("mark_read_once_tooltip"))
@@ -681,6 +696,8 @@ pub fn build_shell_page() -> ShellWidgets {
         profile_avatar,
         brand_label,
         brand_icon,
+        chat_header,
+        chat_avatar_frame,
         chat_title,
         chat_subtitle,
         side_stack,
@@ -729,6 +746,13 @@ pub fn load_css() {
 .line-reply-button { min-width: 28px; min-height: 28px; padding: 0; color: @accent_color; }
 .line-album-photo { border-radius: 12px; padding: 4px; }
 .line-emoji-text, .line-emoji-text text { background: transparent; color: inherit; padding: 0; }
+.line-reaction-strip { margin: 0 6px; }
+.line-reaction-chip { min-height: 22px; padding: 1px 7px; border-radius: 999px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); font-size: 0.85em; }
+.line-reaction-chip.line-reaction-mine { background: alpha(@accent_bg_color, 0.18); border-color: alpha(@accent_bg_color, 0.65); }
+.line-reaction-tab { min-width: 32px; min-height: 32px; padding: 2px; border-radius: 8px; }
+.line-reaction-tab.line-reaction-selected { background: alpha(@accent_bg_color, 0.24); }
+.line-reaction-option { min-width: 36px; min-height: 36px; padding: 2px; border-radius: 10px; }
+.line-reaction-option.line-reaction-selected { background: alpha(@accent_bg_color, 0.24); }
 
         .line-shell {
             background: @window_bg_color;
@@ -797,6 +821,11 @@ pub fn load_css() {
             background: transparent;
             border-bottom: 1px solid alpha(@borders, 0.35);
         }
+        .line-chat-header-link {
+            border-radius: 12px;
+            padding: 2px 8px 2px 4px;
+        }
+        .line-chat-header-link:hover { background: alpha(@window_fg_color, 0.07); }
         .line-chat-list { background: transparent; }
         .line-chat-list row {
             margin: 2px 8px;
@@ -1184,6 +1213,13 @@ pub fn load_css() {
             font-weight: 600;
             color: alpha(@window_fg_color, 0.72);
         }
+        .line-message-sender-link:hover { text-decoration: underline; }
+        .line-avatar-xs,
+        .line-avatar-xs.line-avatar,
+        .line-avatar-frame.line-avatar-xs {
+            min-width: 32px;
+            min-height: 32px;
+        }
         .line-msg-time {
             font-size: 0.70em;
             opacity: 0.55;
@@ -1259,6 +1295,10 @@ pub fn load_css() {
             background: alpha(@card_bg_color, 0.45);
             border-top: 1px solid alpha(@borders, 0.35);
             padding-top: 4px;
+        }
+        .line-reply-target {
+            background-color: alpha(@accent_bg_color, 0.18);
+            border-radius: 12px;
         }
         .line-composer {
             background: alpha(@window_bg_color, 0.94);

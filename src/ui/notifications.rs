@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &str) {
-    if !notifications_allowed(state) || chat_muted(state, peer_mid) {
+    let viewing =
+        state.current_chat.borrow().as_deref() == Some(peer_mid) && state.window.is_active();
+    if viewing || !notifications_allowed(state) || chat_muted(state, peer_mid) {
+        return;
+    }
+    if !msg.id.is_empty() && state.notif_pending.borrow().contains_key(&msg.id) {
         return;
     }
     let (name, avatar_path) = state
@@ -25,6 +30,7 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         .map(str::to_string)
         .or_else(|| state.media_ready_paths.borrow().get(&msg.id).cloned());
     let meta = PendingNotif {
+        mentioned: super::mentions::mentions_account(msg, state.self_mid.borrow().as_deref()),
         chat_mid: peer_mid.to_string(),
         sender_mid: message_senders::is_group_chat(state, peer_mid).then(|| msg.from.clone()),
         displayed_sender: None,
@@ -170,7 +176,11 @@ fn deliver(state: &AppState, message_id: &str, meta: PendingNotif) {
         .map(|mid| message_senders::name(state, mid));
     let title = if let Some(sender) = sender_name.as_deref() {
         crate::i18n::tf(
-            "notification_group_sender",
+            if meta.mentioned {
+                "notification_group_mention"
+            } else {
+                "notification_group_sender"
+            },
             &[("sender", sender), ("group", &meta.title)],
         )
     } else {

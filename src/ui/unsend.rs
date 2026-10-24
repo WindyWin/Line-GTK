@@ -24,6 +24,8 @@ pub(super) fn masked(state: &AppState, message: &MessageInfo) -> MessageInfo {
             reply_to: None,
             chat_event: None,
             emojis: Vec::new(),
+            mentions: Vec::new(),
+            reactions: Vec::new(),
             decryption_failed: false,
             duration_ms: None,
             ..message.clone()
@@ -94,6 +96,7 @@ pub(super) fn apply(state: &AppState, account: &str, chat_mid: &str, id: &str) {
     state.media_ready_paths.borrow_mut().remove(id);
     state.receipt_slots.borrow_mut().remove(id);
     state.msg_created.borrow_mut().remove(id);
+    reactions::forget(state, id);
     let incoming = state
         .reply_messages
         .borrow()

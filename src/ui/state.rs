@@ -56,6 +56,8 @@ pub(super) struct AppState {
     pub profile_avatar: gtk::Picture,
     pub brand_label: gtk::Label,
     pub brand_icon: gtk::Image,
+    pub chat_header: gtk::Box,
+    pub chat_avatar_frame: gtk::Box,
     pub chat_title: gtk::Label,
     pub chat_subtitle: gtk::Label,
     pub side_stack: gtk::Stack,
@@ -68,6 +70,7 @@ pub(super) struct AppState {
     pub msg_load_label: gtk::Label,
     pub msg_idle: gtk::Label,
     pub current_chat: Rc<RefCell<Option<String>>>,
+    pub mentions: Rc<RefCell<super::mentions::MentionState>>,
     pub reply_target: Rc<RefCell<Option<super::replies::ReplyTarget>>>,
     pub reply_messages: Rc<RefCell<HashMap<String, MessageInfo>>>,
     pub message_rows: Rc<RefCell<HashMap<String, gtk::Box>>>,
@@ -169,10 +172,12 @@ pub(super) struct AppState {
     pub media_ready_paths: Rc<RefCell<HashMap<String, String>>>,
     pub emoji_views: Rc<RefCell<Vec<super::emojis::EmojiText>>>,
     pub emoji_textures: Rc<RefCell<HashMap<String, gtk::gdk::Texture>>>,
+    pub reactions: Rc<RefCell<super::reactions::ReactionUi>>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct PendingNotif {
+    pub mentioned: bool,
     pub chat_mid: String,
     pub sender_mid: Option<String>,
     pub displayed_sender: Option<String>,
@@ -189,6 +194,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    MentionMembers {
+        account: String,
+        chat_mid: String,
+        generation: u64,
+    },
     Unsend {
         account: String,
         chat_mid: String,
@@ -197,6 +207,25 @@ pub(super) enum Pending {
     ContactBlocks {
         account: String,
         change: Option<(String, bool)>,
+    },
+    UserProfile {
+        account: String,
+        mid: String,
+        generation: u64,
+    },
+    React {
+        account: String,
+        message_id: String,
+    },
+    ReactionEmojis {
+        account: String,
+    },
+    ReactionPacks {
+        account: String,
+    },
+    ReactionPack {
+        account: String,
+        product: String,
     },
     MarkReadOnce {
         account: String,
@@ -232,6 +261,7 @@ pub(super) enum Pending {
         chat_mid: String,
         placeholder_id: String,
         reply_draft: Option<super::replies::ReplyDraft>,
+        mention_draft: Option<super::mentions::MentionDraft>,
     },
     ListStickers,
     DownloadMedia {

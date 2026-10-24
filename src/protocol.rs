@@ -61,6 +61,19 @@ pub struct BlockedContact {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserProfile {
+    pub mid: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "statusMessage", default)]
+    pub status_message: String,
+    #[serde(rename = "avatarPath", default)]
+    pub avatar_path: Option<String>,
+    #[serde(rename = "isSelf", default)]
+    pub is_self: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct FlexAction {
     #[serde(default)]
@@ -129,12 +142,42 @@ pub struct LineEmoji {
     pub key: String,
 }
 
+/// One person's reaction: `kind` is a LINE reaction name such as `NICE`, or
+/// `EMOJI` with the LINE emoji key in `emoji`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct MessageReaction {
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub at: i64,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(rename = "resourceType", default)]
+    pub resource_type: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Mention {
+    pub start: usize,
+    pub end: usize,
+    #[serde(default)]
+    pub mid: String,
+    #[serde(default)]
+    pub all: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct MessageInfo {
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
     #[serde(rename = "chatEvent", default)]
     pub chat_event: Option<ChatEventInfo>,
     #[serde(default)]
     pub emojis: Vec<LineEmoji>,
+    #[serde(default)]
+    pub reactions: Vec<MessageReaction>,
     #[serde(rename = "replyTo", default)]
     pub reply_to: Option<ReplyInfo>,
     #[serde(default)]
@@ -215,6 +258,13 @@ pub enum ProtocolEvent {
         account_mid: String,
         chat_mid: String,
         message_id: String,
+    },
+    MessageReaction {
+        account_mid: String,
+        chat_mid: String,
+        message_id: String,
+        from: String,
+        reaction: Option<MessageReaction>,
     },
     Message(Box<MessageInfo>),
     Chats {

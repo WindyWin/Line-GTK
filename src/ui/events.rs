@@ -23,6 +23,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             chat_mid,
             message_id,
         } => unsend::apply(state, &account_mid, &chat_mid, &message_id),
+        ProtocolEvent::MessageReaction {
+            account_mid,
+            chat_mid,
+            message_id,
+            from,
+            reaction,
+        } => reactions::apply(state, &account_mid, &chat_mid, &message_id, &from, reaction),
         ProtocolEvent::ChatEvent {
             account_mid,
             message,
@@ -390,6 +397,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
         ProtocolEvent::EmojiReady { key, path } => emojis::ready(state, key, path),
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
+            mentions::avatar_ready(state, &mid, &avatar_path);
+            user_profile::avatar_ready(&mid, &avatar_path);
+            user_profile::header_avatar_ready(state, &mid, &avatar_path);
             if state.self_mid.borrow().as_deref() == Some(mid.as_str()) {
                 *state.self_avatar_path.borrow_mut() = Some(avatar_path.clone());
                 if std::path::Path::new(&avatar_path).exists() {
@@ -628,6 +638,15 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::MentionMembers {
+                account,
+                chat_mid,
+                generation,
+            }) = pending
+            {
+                mentions::response(state, &account, &chat_mid, generation, ok, &result);
+                return;
+            }
             if let Some(Pending::Unsend {
                 account,
                 chat_mid,
@@ -641,6 +660,31 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     &message_id,
                     ok && result.get("unsent").and_then(|v| v.as_bool()) == Some(true),
                 );
+                return;
+            }
+            if let Some(Pending::UserProfile {
+                account,
+                mid,
+                generation,
+            }) = pending
+            {
+                user_profile::response(state, &account, &mid, generation, ok, &result);
+                return;
+            }
+            if let Some(Pending::React { account, .. }) = pending {
+                reactions::response(state, &account, ok, error.as_deref());
+                return;
+            }
+            if let Some(Pending::ReactionEmojis { account }) = pending {
+                reactions::recent_response(state, &account, ok, &result);
+                return;
+            }
+            if let Some(Pending::ReactionPacks { account }) = pending {
+                reactions::packs_response(state, &account, ok, &result);
+                return;
+            }
+            if let Some(Pending::ReactionPack { account, product }) = pending {
+                reactions::pack_response(state, &account, &product, ok, &result);
                 return;
             }
             if let Some(Pending::ContactBlocks { account, change }) = pending {
@@ -746,6 +790,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 if let Some(Pending::Send {
                     placeholder_id,
                     reply_draft,
+                    mention_draft,
                     ..
                 }) = pending.as_ref()
                 {
@@ -753,6 +798,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     remove_pending_placeholder(state, placeholder_id);
                     if let Some(draft) = reply_draft {
                         replies::restore_failed(state, draft);
+                    } else if let Some(draft) = mention_draft {
+                        mentions::restore_failed(state, draft);
                     }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
@@ -851,8 +898,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 Some(
-                    Pending::Album { .. }
+                    Pending::MentionMembers { .. }
+                    | Pending::Album { .. }
                     | Pending::Unsend { .. }
+                    | Pending::UserProfile { .. }
+                    | Pending::React { .. }
+                    | Pending::ReactionEmojis { .. }
+                    | Pending::ReactionPacks { .. }
+                    | Pending::ReactionPack { .. }
                     | Pending::ResumeSync { .. }
                     | Pending::MarkReadOnce { .. }
                     | Pending::ContactBlocks { .. },
@@ -865,6 +918,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             resume_sync::cancel(state);
             albums::close(state);
             hidden_chats::close(state);
+            user_profile::close();
+            user_profile::update_header(state, None);
             if !*state.restarting.borrow() {
                 tracing::warn!(code, "protocol engine exited unexpectedly");
                 schedule_sidecar_recovery(state);
@@ -924,8 +979,11 @@ pub(super) fn recover_sidecar(state: &AppState) {
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     contact_blocks::reset(state);
+    user_profile::close();
+    user_profile::update_header(state, None);
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
+    mentions::reset(state);
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
@@ -1007,6 +1065,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 pub(super) fn show_login(state: &AppState, hint: &str) {
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
+    mentions::reset(state);
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);

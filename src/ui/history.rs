@@ -12,11 +12,31 @@ const LIVE_TRIM_AT: usize = 300;
 const COOLDOWN: Duration = Duration::from_millis(400);
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 const MAX_FAILURES: u8 = 3;
+/// Keep a missing or very old quote from walking the entire account history.
+const MAX_JUMP_PAGES: u32 = 100;
+
+struct Navigation {
+    message_id: String,
+    chat_mid: String,
+    account: Option<String>,
+    generation: u64,
+    pages: u32,
+    settling_until: Option<Instant>,
+}
+
+impl Navigation {
+    fn matches(&self, chat_mid: Option<&str>, account: Option<&str>, generation: u64) -> bool {
+        chat_mid == Some(self.chat_mid.as_str())
+            && account == self.account.as_deref()
+            && generation == self.generation
+    }
+}
 
 #[derive(Default)]
 pub(super) struct HistoryWindow {
     /// Sentinels only react once the first page of a chat finished rendering.
     armed: bool,
+    navigation: Option<Navigation>,
     has_more_older: bool,
     /// The list ends before the newest message because newer rows were dropped.
     has_more_newer: bool,
@@ -34,6 +54,126 @@ impl HistoryWindow {
             Edge::Top => &mut self.older_request,
             Edge::Bottom => &mut self.newer_request,
         }
+    }
+}
+
+/// Find an original reply in the bounded message window, paging backwards when
+/// needed. The existing request generation prevents replies from another chat
+/// or a previous account from steering this view.
+pub(super) fn jump_to_message(state: &AppState, message_id: &str) {
+    if message_id.parse::<u128>().is_err() {
+        toast(state, &crate::i18n::t("reply_original_unavailable"));
+        return;
+    }
+    let Some(chat_mid) = state.current_chat.borrow().clone() else {
+        return;
+    };
+    *state.stick_bottom.borrow_mut() = false;
+    *state.scroll_pin_gen.borrow_mut() += 1;
+    *state.scroll_pinning.borrow_mut() = false;
+    state.history.borrow_mut().navigation = Some(Navigation {
+        message_id: message_id.into(),
+        chat_mid,
+        account: state.self_mid.borrow().clone(),
+        generation: *state.history_request_generation.borrow(),
+        pages: 0,
+        settling_until: None,
+    });
+    if advance_navigation(state) {
+        let s = state.clone();
+        glib::timeout_add_local(Duration::from_millis(150), move || {
+            if advance_navigation(&s) {
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
+            }
+        });
+    }
+}
+
+/// True while a search still needs another page or allocation.
+fn advance_navigation(state: &AppState) -> bool {
+    let target = {
+        let history = state.history.borrow();
+        let Some(nav) = history.navigation.as_ref() else {
+            return false;
+        };
+        if !nav.matches(
+            state.current_chat.borrow().as_deref(),
+            state.self_mid.borrow().as_deref(),
+            *state.history_request_generation.borrow(),
+        ) {
+            drop(history);
+            state.history.borrow_mut().navigation = None;
+            return false;
+        }
+        nav.message_id.clone()
+    };
+    // Do not jump through a response still changing the window, or through
+    // the initial chunked render which would pin the view back to the newest.
+    {
+        let history = state.history.borrow();
+        if !history.armed
+            || history.older_request.is_some()
+            || history.newer_request.is_some()
+            || *state.scroll_pinning.borrow()
+        {
+            return true;
+        }
+    }
+    let settling_until = state
+        .history
+        .borrow()
+        .navigation
+        .as_ref()
+        .and_then(|nav| nav.settling_until);
+    if settling_until.is_some_and(|until| Instant::now() >= until) {
+        state.history.borrow_mut().navigation = None;
+        return false;
+    }
+    *state.stick_bottom.borrow_mut() = false;
+    if state.message_list.scroll_to_message(&target) {
+        if settling_until.is_none() {
+            if let Some(nav) = state.history.borrow_mut().navigation.as_mut() {
+                nav.settling_until = Some(Instant::now() + Duration::from_millis(600));
+            }
+            if let Some(row) = state.message_rows.borrow().get(&target).cloned() {
+                row.add_css_class("line-reply-target");
+                glib::timeout_add_local_once(Duration::from_secs(2), move || {
+                    row.remove_css_class("line-reply-target");
+                });
+            }
+        }
+        // Keep sentinel callbacks suppressed while GTK allocates and moves the
+        // virtual rows. Repeating also handles an offscreen row's first bind.
+        return true;
+    }
+    let oldest = state.message_list.edge_owner(true, |_| true);
+    let cannot_continue = {
+        let history = state.history.borrow();
+        let Some(nav) = history.navigation.as_ref() else {
+            return false;
+        };
+        !history.has_more_older
+            || nav.pages >= MAX_JUMP_PAGES
+            || history.older_failures >= MAX_FAILURES
+            || oldest
+                .as_ref()
+                .is_none_or(|oldest| passed_target(&oldest.id, &target))
+    };
+    if cannot_continue {
+        state.history.borrow_mut().navigation = None;
+        toast(state, &crate::i18n::t("reply_original_unavailable"));
+        return false;
+    }
+    request(state, Edge::Top);
+    true
+}
+
+fn passed_target(oldest: &str, target: &str) -> bool {
+    match (oldest.parse::<u128>(), target.parse::<u128>()) {
+        (Ok(oldest), Ok(target)) => oldest <= target,
+        _ => false,
     }
 }
 
@@ -170,6 +310,7 @@ fn on_edge(state: &AppState, edge: Edge) {
     let ready = {
         let history = state.history.borrow();
         history.armed
+            && history.navigation.is_none()
             && match edge {
                 Edge::Top => history.has_more_older,
                 Edge::Bottom => history.has_more_newer,
@@ -231,11 +372,24 @@ fn request(state: &AppState, edge: Edge) {
                 },
             };
             state.pending.borrow_mut().insert(id, pending);
-            *state.history.borrow_mut().request(edge) = Some(id);
+            {
+                let mut history = state.history.borrow_mut();
+                *history.request(edge) = Some(id);
+                if edge == Edge::Top
+                    && let Some(nav) = history.navigation.as_mut()
+                {
+                    nav.pages += 1;
+                }
+            }
             state.message_list.set_sentinel_loading(edge, true);
             tracing::info!(?edge, anchor = %anchor.id, "[history] requested a page");
         }
-        Err(e) => eprintln!("[history] request failed: {e}"),
+        Err(e) => {
+            eprintln!("[history] request failed: {e}");
+            if state.history.borrow_mut().navigation.take().is_some() {
+                toast(state, &crate::i18n::t("reply_original_unavailable"));
+            }
+        }
     }
 }
 
@@ -294,7 +448,13 @@ pub(super) fn response(
                 Edge::Bottom => &mut history.newer_failures,
             };
             *failures = failures.saturating_add(1);
-            *failures < MAX_FAILURES
+            let retry = *failures < MAX_FAILURES;
+            let ready_at = Some(Instant::now() + RETRY_DELAY);
+            match edge {
+                Edge::Top => history.older_ready_at = ready_at,
+                Edge::Bottom => history.newer_ready_at = ready_at,
+            }
+            retry
         };
         if retry {
             recheck_after(state, edge, RETRY_DELAY);
@@ -478,6 +638,7 @@ fn cleanup(state: &AppState, trimmed: &Trimmed) {
     for id in &trimmed.ids {
         state.reply_messages.borrow_mut().remove(id);
         state.message_rows.borrow_mut().remove(id);
+        reactions::forget(state, id);
         state.seen_msg_ids.borrow_mut().remove(id);
         state.media_slots.borrow_mut().remove(id);
         state.media_msgs.borrow_mut().remove(id);
@@ -539,11 +700,22 @@ fn capture_anchor(state: &AppState, oldest: bool) -> Anchor {
 }
 
 fn restore_anchor(state: &AppState, anchor: Anchor) {
+    if state.history.borrow().navigation.is_some() {
+        return;
+    }
+    let generation = {
+        let mut generation = state.scroll_pin_gen.borrow_mut();
+        *generation += 1;
+        *generation
+    };
     *state.scroll_pinning.borrow_mut() = true;
     let s = state.clone();
     let frames = Cell::new(0_u32);
     let steady = Cell::new(0_u32);
     state.message_scroll.add_tick_callback(move |_, _| {
+        if *s.scroll_pin_gen.borrow() != generation {
+            return glib::ControlFlow::Break;
+        }
         frames.set(frames.get() + 1);
         let adj = s.message_scroll.vadjustment();
         let measured = anchor
@@ -579,4 +751,35 @@ fn restore_anchor(state: &AppState, anchor: Anchor) {
         }
         glib::ControlFlow::Continue
     });
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
+
+    #[test]
+    fn navigation_is_scoped_to_chat_account_and_request_generation() {
+        let nav = Navigation {
+            message_id: "42".into(),
+            chat_mid: "group".into(),
+            account: Some("alice".into()),
+            generation: 4,
+            pages: 0,
+            settling_until: None,
+        };
+        assert!(nav.matches(Some("group"), Some("alice"), 4));
+        assert!(!nav.matches(Some("other"), Some("alice"), 4));
+        assert!(!nav.matches(Some("group"), Some("bob"), 4));
+        assert!(!nav.matches(Some("group"), None, 4));
+        assert!(!nav.matches(Some("group"), Some("alice"), 5));
+        assert!(!nav.matches(None, Some("alice"), 4));
+    }
+
+    #[test]
+    fn navigation_compares_large_message_ids_numerically() {
+        assert!(passed_target("9007199254740993", "9007199254740994"));
+        assert!(passed_target("42", "42"));
+        assert!(!passed_target("100", "99"));
+        assert!(!passed_target("pending-1", "42"));
+    }
 }

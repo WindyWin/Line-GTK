@@ -8,6 +8,7 @@ url='https://github.com/MidnightTale/Line-GTK'
 license=('GPL-3.0-or-later')
 depends=('gtk4' 'libadwaita' 'ffmpeg' 'hicolor-icon-theme')
 optdepends=(
+  'noto-fonts: Vietnamese and multilingual text rendering'
   'libsecret: save automatic login credentials in the system keyring'
   'poppler: PDF preview in media viewer'
   'gst-plugins-good: extra video playback codecs'

@@ -258,6 +258,17 @@ impl VirtualMessageList {
         }
     }
 
+    /// Scroll to the content row, skipping a message's date separator if present.
+    pub fn scroll_to_message(&self, id: &str) -> bool {
+        let owners = self.owners.borrow();
+        let Some(index) = message_row_index(&owners, id) else {
+            return false;
+        };
+        self.view
+            .scroll_to(index as u32, gtk::ListScrollFlags::FOCUS, None);
+        true
+    }
+
     pub fn set_sentinel(&self, edge: Edge, on: bool) {
         let (flag, row) = match edge {
             Edge::Top => (&self.edges.top_on, &self.edges.top),
@@ -381,6 +392,13 @@ impl VirtualMessageList {
     }
 }
 
+fn message_row_index(owners: &[Option<Owner>], id: &str) -> Option<usize> {
+    // Message rows follow their optional separator; use the last matching row.
+    owners
+        .iter()
+        .rposition(|owner| owner.as_ref().is_some_and(|owner| owner.id == id))
+}
+
 fn count_messages(owners: &[Option<Owner>]) -> usize {
     let mut count = 0;
     let mut previous: Option<&str> = None;
@@ -458,6 +476,16 @@ mod tests {
             None,
             None,
         ]
+    }
+
+    #[test]
+    fn navigation_skips_separators_and_missing_messages() {
+        let rows = items();
+        assert_eq!(message_row_index(&rows, "a"), Some(2));
+        assert_eq!(message_row_index(&rows, "b"), Some(3));
+        assert_eq!(message_row_index(&rows, "c"), Some(5));
+        assert_eq!(message_row_index(&rows, "missing"), None);
+        assert_eq!(message_row_index(&[], "a"), None);
     }
 
     #[test]

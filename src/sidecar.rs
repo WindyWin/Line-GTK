@@ -335,7 +335,17 @@ impl Sidecar {
     }
 
     pub fn send_reply(&self, chat_mid: &str, text: &str, reply_to: Option<&str>) -> Result<u64> {
-        let mut params = json!({ "chatMid": chat_mid, "text": text });
+        self.send_mentions(chat_mid, text, reply_to, &[])
+    }
+
+    pub fn send_mentions(
+        &self,
+        chat_mid: &str,
+        text: &str,
+        reply_to: Option<&str>,
+        mentions: &[crate::protocol::Mention],
+    ) -> Result<u64> {
+        let mut params = json!({ "chatMid": chat_mid, "text": text, "mentions": mentions });
         if let Some(message_id) = reply_to {
             params["replyToMessageId"] = json!(message_id);
         }
@@ -420,6 +430,13 @@ impl Sidecar {
 
     pub fn blocked_contacts(&self) -> Result<u64> {
         self.request("get_blocked_contacts", None)
+    }
+
+    pub fn user_profile(&self, mid: &str, force: bool) -> Result<u64> {
+        self.request(
+            "get_user_profile",
+            Some(json!({ "mid": mid, "force": force })),
+        )
     }
 
     pub fn set_contact_blocked(&self, mid: &str, blocked: bool) -> Result<u64> {
@@ -710,6 +727,26 @@ fn read_loop<R: std::io::Read>(
                                 account_mid: field("accountMid"),
                                 chat_mid: field("chatMid"),
                                 message_id: field("messageId"),
+                            }
+                        }
+                        "message_reaction" => {
+                            let field = |key| {
+                                resp.extra
+                                    .get(key)
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string()
+                            };
+                            ProtocolEvent::MessageReaction {
+                                account_mid: field("accountMid"),
+                                chat_mid: field("chatMid"),
+                                message_id: field("messageId"),
+                                from: field("from"),
+                                reaction: resp
+                                    .extra
+                                    .get("reaction")
+                                    .filter(|value| !value.is_null())
+                                    .and_then(|value| serde_json::from_value(value.clone()).ok()),
                             }
                         }
                         "chat_event" => {
@@ -1213,6 +1250,40 @@ mod authentication_tests {
             matches!(rx.try_recv().unwrap(), ProtocolEvent::EmojiReady { key, path }
             if key == "5ac1bfd5040ab15980c9b435_001" && path == "/cache/emoji.png")
         );
+    }
+
+    #[test]
+    fn reaction_events_keep_the_reaction_or_its_removal() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let events = concat!(
+            "{\"event\":\"message_reaction\",\"accountMid\":\"u-self\",\"chatMid\":\"c-group\",\"messageId\":\"9007199254740993\",\"from\":\"u-one\",\"reaction\":{\"from\":\"u-one\",\"at\":5,\"kind\":\"EMOJI\",\"emoji\":\"5ac1bfd5040ab15980c9b435_001\",\"resourceType\":2}}\n",
+            "{\"event\":\"message_reaction\",\"accountMid\":\"u-self\",\"chatMid\":\"c-group\",\"messageId\":\"9007199254740993\",\"from\":\"u-one\",\"reaction\":null}\n"
+        );
+        read_loop(events.as_bytes(), tx, pending, &generation, 1);
+        match rx.try_recv().unwrap() {
+            ProtocolEvent::MessageReaction {
+                message_id,
+                from,
+                reaction: Some(reaction),
+                ..
+            } => {
+                assert_eq!(message_id, "9007199254740993");
+                assert_eq!(from, "u-one");
+                assert_eq!(reaction.kind, "EMOJI");
+                assert_eq!(
+                    reaction.emoji.as_deref(),
+                    Some("5ac1bfd5040ab15980c9b435_001")
+                );
+                assert_eq!(reaction.resource_type, Some(2));
+            }
+            _ => panic!("リアクションのイベントではありません"),
+        }
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ProtocolEvent::MessageReaction { reaction: None, .. }
+        ));
     }
 
     #[test]

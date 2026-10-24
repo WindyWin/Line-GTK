@@ -22,6 +22,7 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [x] スマホ等の別端末で読んだトークの未読バッジを自動で同期
 - [x] メッセージ横の矢印ボタン・右クリックから引用付きのテキスト返信（リプライ）
 - [x] 自分が送ったメッセージの送信取消と、別端末での取消の反映
+- [x] メッセージへのリアクション（標準6種・LINE絵文字）と、リアクションした人の一覧
 - [x] トークを「全部・友だち・グループ・公式アカウント」で絞り込み、カテゴリ内を検索
 - [x] トークを右クリックで非表示にし、設定から再表示
 - [x] トークを右クリックでピン留めし、一覧の上段へ固定
@@ -39,6 +40,8 @@ Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protoc
 - [ ] Account switcher
 
 メッセージ横の矢印ボタンを押すと引用元が選ばれ、そのまま入力欄で返信を書けます。右クリックの「リプライ」からも選べます。×ボタンまたはEscで取り消せます。別のトークへ移ると引用元を解除します。
+
+相手のメッセージ横の笑顔ボタン、または右クリックの「リアクション」から、標準の6種類か、所有しているLINE絵文字セット（タブで切り替え）や最近見たLINE絵文字を選んでリアクションできます。吹き出しの下のリアクションを押すと同じものを付け外しでき、右クリック・長押しでリアクションした人の一覧を表示します。ほかの人や別端末でのリアクションも受信して反映し、アカウント別に保存して再起動後も履歴と合わせて表示します。標準リアクションの6種はLINE公式のアイコン（assets/reactions）で表示し、LINE絵文字とは別の種類として扱います。LINE絵文字のリアクションは公式PC版でも受信表示のみのため、送信はLINE側の条件（絵文字の所有など）により拒否される場合があります。
 
 トークを右クリックして「ブロック」を選び、確認するとLINE側で相手をブロックします。同じメニューの「ブロックを解除」、または設定 → 機能 → ブロック中のユーザーから解除できます。履歴は残し、一覧にブロック中のマークを表示します。ブロック中の個別トークは入力を無効にし、送信要求も拒否します。グループ内の同じ相手の発言は引き続き表示します。起動・復帰・他端末の変更通知でサーバーの一覧を取得し、取得や変更が失敗した場合は確認済みの状態を維持します。ブロック操作から既読を送ったり、既読停止の設定を変更したりしません。グループの扱いは[LINE公式ヘルプ](https://help2.line.me/line/smartphone?contentId=200002013&lang=ja)に合わせています。
 
@@ -125,6 +128,12 @@ flatpak run dev.linegtk.LineGtk
 ```
 
 ## Build and run
+
+Vietnamese and English use `Noto Sans` by default, with a `Noto Sans` fallback
+for custom fonts in the chat UI and message composer. Install `noto-fonts` on
+Arch Linux to provide this font. Existing Vietnamese settings using the old
+`Noto Sans Thai` default migrate automatically; other custom fonts and the
+empty system-font setting are preserved.
 
 設定の表示言語で「日本語」を選択できます。標準フォントを使用している場合は
 「Noto Sans CJK JP」に切り替え、指定済みの独自フォントは維持します。

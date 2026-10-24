@@ -9,9 +9,11 @@ pub(super) struct ReplyTarget {
 
 #[derive(Debug, Clone)]
 pub(super) struct ReplyDraft {
+    pub account: Option<String>,
     pub chat_mid: String,
     pub text: String,
     pub quote: ReplyInfo,
+    pub mentions: Vec<crate::protocol::Mention>,
 }
 
 fn eligible(message: &MessageInfo) -> bool {
@@ -135,13 +137,15 @@ pub(super) fn refresh(state: &AppState) {
 
 pub(super) fn restore_failed(state: &AppState, draft: &ReplyDraft) {
     // 別のトークや、その後に書いた下書きへ失敗した返信を混ぜない。
-    if state.current_chat.borrow().as_deref() != Some(&draft.chat_mid)
+    if *state.self_mid.borrow() != draft.account
+        || state.current_chat.borrow().as_deref() != Some(&draft.chat_mid)
         || !state.composer.text().is_empty()
         || state.reply_target.borrow().is_some()
     {
         return;
     }
     state.composer.set_text(&draft.text);
+    super::mentions::restore(state, &draft.mentions);
     let account = state.self_mid.borrow().clone().unwrap_or_default();
     if state
         .unsent_ids
@@ -191,7 +195,19 @@ pub(super) fn append_quote(state: &AppState, bubble: &gtk::Box, quote: &ReplyInf
             .max_width_chars(38)
             .build(),
     );
-    bubble.append(&card);
+    let button = gtk::Button::builder()
+        .child(&card)
+        .css_classes(["flat"])
+        .halign(gtk::Align::Fill)
+        .build();
+    button.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
+        "reply_open_original",
+    ))]);
+    button.set_tooltip_text(Some(&crate::i18n::t("reply_open_original")));
+    let message_id = quote.message_id.clone();
+    let s = state.clone();
+    button.connect_clicked(move |_| history::jump_to_message(&s, &message_id));
+    bubble.append(&button);
 }
 
 pub(super) fn menu(message: &MessageInfo) -> gio::Menu {
@@ -199,6 +215,9 @@ pub(super) fn menu(message: &MessageInfo) -> gio::Menu {
     if eligible(message) {
         let item = gio::MenuItem::new(Some(&crate::i18n::t("reply")), None);
         item.set_action_and_target_value(Some("win.reply-message"), Some(&message.id.to_variant()));
+        menu.append_item(&item);
+    }
+    for item in reactions::menu_items(message) {
         menu.append_item(&item);
     }
     if unsend::eligible(message) {
@@ -246,7 +265,7 @@ fn popup(bubble: &gtk::Box, menu: &gio::Menu, x: f64, y: f64) {
 }
 
 pub(super) fn wire_context(bubble: &gtk::Box, message: &MessageInfo) {
-    if !eligible(message) && !unsend::eligible(message) {
+    if !eligible(message) && !unsend::eligible(message) && !reactions::eligible(message) {
         return;
     }
     // 仮想リストから行が外れたら、開いているメニューも片付ける。

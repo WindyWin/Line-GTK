@@ -308,7 +308,13 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
                 .max_width_chars(42)
                 .css_classes(["line-bubble-text"])
                 .build();
+            label.set_attributes(Some(&mentions::attributes(
+                &label,
+                &msg.text,
+                &msg.mentions,
+            )));
             label.set_extra_menu(Some(&replies::menu(msg)));
+            mentions::wire_label_click(state, &label, &msg.text, &msg.mentions);
             bubble.append(&label);
             append_link_chips(state, &bubble, &msg.text);
         } else if !has_image && !waiting_visual {
@@ -388,6 +394,15 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     }
 
     let time_txt = format_msg_time(msg.created_time);
+    // リアクションは吹き出しの外に置く。画像の差し替えで子要素が入れ替わるため。
+    let bubble_column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .halign(bubble.halign())
+        .build();
+    bubble_column.append(&bubble);
+    bubble_column.append(&reactions::strip(state, msg, &bubble));
+    let bubble = bubble_column;
 
     if msg.mine {
         let col = gtk::Box::builder()
@@ -453,6 +468,11 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
                 .css_classes(["line-message-sender"])
                 .build();
             message_senders::register(state, &msg.from, &sender);
+            if mentions::is_user_mid(&msg.from) {
+                user_profile::wire_link(state, &sender, &msg.from);
+                sender.add_css_class("line-message-sender-link");
+                outer.append(&user_profile::row_avatar(state, &msg.from));
+            }
             column.append(&sender);
             let content = gtk::Box::builder().spacing(8).hexpand(true).build();
             column.append(&content);
@@ -469,6 +489,9 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
         incoming.append(&bubble);
         if let Some(reply) = replies::button(msg) {
             incoming.append(&reply);
+        }
+        if let Some(react) = reactions::button(msg) {
+            incoming.append(&react);
         }
         incoming.append(&time);
         incoming.append(&gtk::Box::builder().hexpand(true).build());
@@ -1102,6 +1125,8 @@ pub(super) fn attach_audio_to_slot(state: &AppState, message_id: &str, path: &st
     let msg = MessageInfo {
         chat_event: None,
         emojis: Vec::new(),
+        mentions: Vec::new(),
+        reactions: Vec::new(),
         id: message_id.to_string(),
         text: "Voice message".into(),
         from: String::new(),
@@ -1351,6 +1376,7 @@ pub(super) fn clear_messages(state: &AppState) {
     }
     state.reply_messages.borrow_mut().clear();
     state.message_rows.borrow_mut().clear();
+    reactions::clear(state);
     stop_voice_playback(state);
     state.message_list.clear();
     state.media_slots.borrow_mut().clear();

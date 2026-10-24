@@ -61,6 +61,7 @@ fn hide(state: &AppState, mid: &str) {
         hide_upload_progress(state);
         state.chat_list.unselect_all();
         state.chat_title.set_text(&crate::i18n::t("select_chat"));
+        user_profile::update_header(state, None);
         state.chat_subtitle.set_text(&crate::i18n::t("pick_chat"));
         state.status.set_text(&crate::i18n::t("hidden_chat_done"));
         state.mute_btn.set_sensitive(false);

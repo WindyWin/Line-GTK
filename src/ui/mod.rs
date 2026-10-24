@@ -17,10 +17,12 @@ mod hidden_chats;
 mod history;
 mod login;
 mod media;
+mod mentions;
 mod message_senders;
 mod messages;
 mod notifications;
 mod pinned_chats;
+mod reactions;
 mod read_pause;
 mod replies;
 mod resume_sync;
@@ -30,6 +32,7 @@ mod state;
 mod sticker_preview;
 mod unread_sync;
 mod unsend;
+mod user_profile;
 mod video;
 mod virtual_list;
 
@@ -175,6 +178,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         profile_avatar: shell.profile_avatar,
         brand_label: shell.brand_label,
         brand_icon: shell.brand_icon,
+        chat_header: shell.chat_header,
+        chat_avatar_frame: shell.chat_avatar_frame,
         chat_title: shell.chat_title,
         chat_subtitle: shell.chat_subtitle,
         side_stack: shell.side_stack,
@@ -187,6 +192,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         msg_load_label: shell.msg_load_label,
         msg_idle: shell.msg_idle,
         current_chat: Rc::new(RefCell::new(None)),
+        mentions: Rc::new(RefCell::new(mentions::MentionState::default())),
         reply_target: Rc::new(RefCell::new(None)),
         reply_messages: Rc::new(RefCell::new(HashMap::new())),
         message_rows: Rc::new(RefCell::new(HashMap::new())),
@@ -289,6 +295,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         media_ready_paths: Rc::new(RefCell::new(HashMap::new())),
         emoji_views: Rc::new(RefCell::new(Vec::new())),
         emoji_textures: Rc::new(RefCell::new(HashMap::new())),
+        reactions: Rc::new(RefCell::new(reactions::ReactionUi::default())),
     };
 
     read_pause::wire(&state);
@@ -300,10 +307,13 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
+    user_profile::wire_header(&state, &state.chat_header);
     wire_composer_narrow(&state);
     wire_actions(&state);
     replies::wire(&state);
+    mentions::wire(&state);
     unsend::wire(&state);
+    reactions::wire(&state);
     wire_scroll_pin(&state);
     history::wire(&state);
     wire_notification_actions(&state);
@@ -1011,7 +1021,7 @@ fn wire_scroll_pin(state: &AppState) {
 }
 
 fn send_current(state: &AppState) {
-    let text = state.composer.text().trim().to_string();
+    let (text, mentions) = mentions::outgoing(state);
     if text.is_empty() {
         return;
     }
@@ -1025,10 +1035,11 @@ fn send_current(state: &AppState) {
         .as_ref()
         .filter(|target| target.chat_mid == chat_mid)
         .map(|target| target.quote.clone());
-    match state.sidecar.send_reply(
+    match state.sidecar.send_mentions(
         &chat_mid,
         &text,
         reply_to.as_ref().map(|quote| quote.message_id.as_str()),
+        &mentions,
     ) {
         Ok(id) => {
             begin_optimistic_send(
@@ -1038,6 +1049,8 @@ fn send_current(state: &AppState) {
                 MessageInfo {
                     chat_event: None,
                     emojis: Vec::new(),
+                    mentions,
+                    reactions: Vec::new(),
                     id: String::new(),
                     text,
                     from: String::new(),
@@ -1111,9 +1124,17 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
         Pending::Send {
             chat_mid: chat_mid.into(),
             placeholder_id,
-            reply_draft: msg.reply_to.clone().map(|quote| replies::ReplyDraft {
+            mention_draft: (!msg.mentions.is_empty()).then(|| mentions::MentionDraft {
+                account: state.self_mid.borrow().clone(),
                 chat_mid: chat_mid.into(),
                 text: msg.text.clone(),
+                mentions: msg.mentions.clone(),
+            }),
+            reply_draft: msg.reply_to.clone().map(|quote| replies::ReplyDraft {
+                account: state.self_mid.borrow().clone(),
+                chat_mid: chat_mid.into(),
+                text: msg.text.clone(),
+                mentions: msg.mentions.clone(),
                 quote,
             }),
         },
@@ -1700,6 +1721,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    mentions::reset(state);
     read_pause::refresh_once_button(state);
     hide_upload_progress(state);
     {
@@ -1711,6 +1733,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     }
     *state.stick_bottom.borrow_mut() = true;
     state.chat_title.set_text(&chat.name);
+    user_profile::update_header(state, Some(chat));
     let subtitle = if chat.unread > 0 {
         crate::i18n::tf("unread", &[("n", &chat.unread.to_string())])
     } else {
@@ -1809,6 +1832,8 @@ fn restart_qr_login(state: &AppState) {
 fn restart_login(state: &AppState) {
     auto_login::manual_restart(state);
     contact_blocks::reset(state);
+    user_profile::close();
+    user_profile::update_header(state, None);
     resume_sync::cancel(state);
     albums::close(state);
     hidden_chats::close(state);

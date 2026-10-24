@@ -1,3 +1,4 @@
+import { fetchMentionMembers, mentionMetadata } from "./mentions.ts";
 import { type Client, loginWithQR, type TalkMessage } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { join } from "@std/path";
@@ -69,6 +70,10 @@ export type CommandRuntime = {
   saveDiskContacts: () => Promise<void>;
   refreshContactIndex: (force?: boolean) => Promise<void>;
   hydrateAvatars: (chats: ChatRow[]) => Promise<void>;
+  avatarPathFor?: (
+    mid: string,
+    picturePath?: string | null,
+  ) => Promise<string | null>;
   hydratePreviews: (chats: ChatRow[]) => Promise<void>;
   updateChatPreview: (chatMid: string, messages: Json[]) => Promise<void>;
   refreshReadReceipts: (chatMid: string) => Promise<void>;
@@ -911,6 +916,7 @@ export function createCommandService(runtime: CommandRuntime) {
     chatMid: string,
     text: string,
     replyToMessageId?: unknown,
+    rawMentions?: unknown,
   ) {
     const client = runtime.getClient();
     if (!client) {
@@ -919,6 +925,12 @@ export function createCommandService(runtime: CommandRuntime) {
     }
     if (!text.trim()) {
       fail(id, "empty_message");
+      return;
+    }
+
+    const { mentions, contentMetadata } = mentionMetadata(text, rawMentions);
+    if (mentions.length && !chatMid.startsWith("c")) {
+      fail(id, "invalid_group");
       return;
     }
 
@@ -945,6 +957,7 @@ export function createCommandService(runtime: CommandRuntime) {
       sent = await client.base.talk.sendMessage({
         to: chatMid,
         text,
+        contentMetadata,
         relatedMessageId,
         e2ee: false,
       }) as unknown as typeof sent;
@@ -953,13 +966,18 @@ export function createCommandService(runtime: CommandRuntime) {
         sent = await client.base.talk.sendMessage({
           to: chatMid,
           text,
+          contentMetadata,
           relatedMessageId,
           e2ee: true,
         }) as unknown as typeof sent;
       } catch (e2) {
         try {
           const chat = await client.getChat(chatMid);
-          const m = await chat.sendMessage({ text, relatedMessageId });
+          const m = await chat.sendMessage({
+            text,
+            contentMetadata,
+            relatedMessageId,
+          });
           const message = await summarizeTalkMessage(m, { withMedia: false })
             .catch(() =>
               sentMessagePayload(
@@ -972,6 +990,7 @@ export function createCommandService(runtime: CommandRuntime) {
               )
             );
           message.replyTo = replyTo;
+          message.mentions = mentions;
           msgCache.delete(chatMid);
           runtime.setChatCache(null);
           touchChatPreviewFromMessage(message);
@@ -995,7 +1014,11 @@ export function createCommandService(runtime: CommandRuntime) {
 
     msgCache.delete(chatMid);
     runtime.setChatCache(null);
-    const message = { ...sentMessagePayload(sent, chatMid, text), replyTo };
+    const message = {
+      ...sentMessagePayload(sent, chatMid, text),
+      replyTo,
+      mentions,
+    };
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }
@@ -1013,5 +1036,47 @@ export function createCommandService(runtime: CommandRuntime) {
     fetchOlderMessages: doFetchOlder,
     fetchNewerCachedMessages: doFetchNewerCached,
     sendMessage: doSend,
+    async mentionMembers(id: number | string | null, chatMid: string) {
+      const client = runtime.getClient();
+      if (!client) {
+        fail(id, "not_logged_in");
+        return;
+      }
+      const members = await fetchMentionMembers(client, chatMid);
+      if (runtime.getClient() !== client) {
+        fail(id, "session_changed");
+        return;
+      }
+      const withAvatars = await Promise.all(
+        members.map(async ({ mid, name }) => ({
+          mid,
+          name,
+          avatarPath: await existingFile(join(avatarDir, `${mid}.jpg`)),
+        })),
+      );
+      ok(id, { chatMid, members: withAvatars });
+      const missing = members.filter((m, i) =>
+        m.picturePath && !withAvatars[i].avatarPath
+      );
+      const download = runtime.avatarPathFor;
+      if (download && missing.length) {
+        void (async () => {
+          for (let i = 0; i < missing.length; i += 6) {
+            await Promise.all(
+              missing.slice(i, i + 6).map(async (m) => {
+                try {
+                  const path = await download(m.mid, m.picturePath);
+                  if (path && runtime.getClient() === client) {
+                    emitEvent("avatar_ready", { mid: m.mid, avatarPath: path });
+                  }
+                } catch (e) {
+                  console.error("[mentionAvatar]", e);
+                }
+              }),
+            );
+          }
+        })();
+      }
+    },
   };
 }

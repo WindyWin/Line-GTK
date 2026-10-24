@@ -319,6 +319,8 @@ pub(super) fn send_sticker_now(
                 MessageInfo {
                     chat_event: None,
                     emojis: Vec::new(),
+                    mentions: Vec::new(),
+                    reactions: Vec::new(),
                     id: String::new(),
                     text: "[Sticker]".into(),
                     from: String::new(),
@@ -666,6 +668,8 @@ pub(super) fn send_local_media_path(state: &AppState, path: PathBuf) {
                 MessageInfo {
                     chat_event: None,
                     emojis: Vec::new(),
+                    mentions: Vec::new(),
+                    reactions: Vec::new(),
                     id: String::new(),
                     text,
                     from: String::new(),
@@ -885,6 +889,8 @@ pub(super) fn finish_voice_record(state: &AppState, send: bool) {
                 MessageInfo {
                     chat_event: None,
                     emojis: Vec::new(),
+                    mentions: Vec::new(),
+                    reactions: Vec::new(),
                     id: String::new(),
                     text: "Voice message".into(),
                     from: String::new(),

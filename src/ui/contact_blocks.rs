@@ -145,7 +145,7 @@ fn submit(state: &AppState, account: &str, mid: &str, next: bool) {
     }
 }
 
-fn change(state: &AppState, mid: &str, next: bool) {
+pub(super) fn change(state: &AppState, mid: &str, next: bool) {
     let Some(account) = state.self_mid.borrow().clone() else {
         return;
     };
@@ -262,6 +262,7 @@ pub(super) fn refresh_controls(state: &AppState) {
         .borrow()
         .as_deref()
         .is_some_and(|mid| blocked(state, mid) == Some(true));
+    user_profile::refresh_block(state);
     state.composer_row.set_sensitive(!blocked);
     state.reply_preview.set_sensitive(!blocked);
 }

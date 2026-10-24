@@ -1202,6 +1202,8 @@ pub(super) fn send_local_image_file(state: &AppState, path: &std::path::Path) ->
                 MessageInfo {
                     chat_event: None,
                     emojis: Vec::new(),
+                    mentions: Vec::new(),
+                    reactions: Vec::new(),
                     id: String::new(),
                     text: "[Image]".into(),
                     from: String::new(),

@@ -526,3 +526,68 @@ for (const saveFails of [false, true]) {
     );
   });
 }
+
+for (const route of ["plain", "encrypted", "chat"] as const) {
+  Deno.test(`mentions and reply metadata survive ${route} send and fallback paths`, async () => {
+    const fixture = commandFixture("メモリ");
+    const client = fixture.runtime.getClient()!;
+    const calls: Record<string, unknown>[] = [];
+    client.base.talk.sendMessage = (options) => {
+      calls.push(options as Record<string, unknown>);
+      if (route === "chat" || (route === "encrypted" && !options.e2ee)) {
+        return Promise.reject(new Error("fallback"));
+      }
+      return Promise.resolve({ id: "99" } as never);
+    };
+    client.getChat = (() =>
+      Promise.resolve({
+        sendMessage: (options: Record<string, unknown>) => {
+          calls.push(options);
+          return Promise.resolve({ raw: { id: "99" } });
+        },
+      })) as unknown as typeof client.getChat;
+    const mentions = [{ start: 2, end: 5, mid: "u-me" }];
+    await fixture.commands.sendMessage(1, "c-group", "😀 @Me", "42", mentions);
+    assertEquals(
+      calls.length,
+      route === "plain" ? 1 : route === "encrypted" ? 2 : 3,
+    );
+    for (const call of calls) {
+      assertEquals(call.relatedMessageId, "42");
+      assertEquals(
+        JSON.parse((call.contentMetadata as Record<string, string>).MENTION),
+        { MENTIONEES: [{ S: "3", E: "6", M: "u-me" }] },
+      );
+    }
+    assertEquals(
+      (fixture.okResults[0] as { message: { mentions: unknown } }).message
+        .mentions,
+      mentions,
+    );
+  });
+}
+
+Deno.test("late member results after account replacement are discarded", async () => {
+  const fixture = commandFixture("メモリ");
+  const client = fixture.runtime.getClient()!;
+  client.base.talk.getChats = () =>
+    Promise.resolve(
+      {
+        chats: [{
+          chatMid: "c-group",
+          extra: { groupExtra: { memberMids: {} } },
+        }],
+      } as never,
+    );
+  const failures: string[] = [];
+  fixture.runtime.fail = (_id, error) => {
+    failures.push(error);
+  };
+  const commands = createCommandService(fixture.runtime);
+  client.base.talk.getContacts = () => Promise.resolve([]);
+  const request = commands.mentionMembers(1, "c-group");
+  fixture.runtime.getClient = () => null;
+  await request;
+  assertEquals(fixture.okResults, []);
+  assertEquals(failures, ["session_changed"]);
+});

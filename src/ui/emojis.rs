@@ -6,6 +6,7 @@ pub(super) struct EmojiText {
     view: gtk::TextView,
     text: String,
     emojis: Vec<LineEmoji>,
+    mentions: Vec<crate::protocol::Mention>,
 }
 
 impl EmojiText {
@@ -32,6 +33,102 @@ fn ranges(text: &str, emojis: &[LineEmoji]) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
+fn shifts(
+    textures: &HashMap<String, gdk::Texture>,
+    text: &str,
+    emojis: &[LineEmoji],
+) -> Vec<(usize, usize)> {
+    ranges(text, emojis)
+        .into_iter()
+        .filter(|(_, _, key)| textures.contains_key(key))
+        .map(|(start, end, _)| {
+            (
+                text[..end].chars().count(),
+                text[start..end].chars().count() - 1,
+            )
+        })
+        .collect()
+}
+
+/// Maps a buffer offset (emoji images count as one char) back to a message text offset.
+fn original_offset(buffer_offset: usize, shifts: &[(usize, usize)]) -> usize {
+    let mut shifted = 0;
+    for (end, n) in shifts {
+        if buffer_offset >= end.saturating_sub(shifted + n) {
+            shifted += n;
+        } else {
+            break;
+        }
+    }
+    buffer_offset + shifted
+}
+
+fn mention_in_view(
+    view: &gtk::TextView,
+    textures: &HashMap<String, gdk::Texture>,
+    content: &EmojiText,
+    x: f64,
+    y: f64,
+) -> Option<String> {
+    let (bx, by) = view.window_to_buffer_coords(gtk::TextWindowType::Widget, x as i32, y as i32);
+    let iter = view.iter_at_location(bx, by)?;
+    let offset = original_offset(
+        iter.offset().max(0) as usize,
+        &shifts(textures, &content.text, &content.emojis),
+    );
+    mentions::mention_at(&content.mentions, offset).map(str::to_string)
+}
+
+fn wire_click(state: &AppState, content: &EmojiText) {
+    if !content
+        .mentions
+        .iter()
+        .any(|m| !m.all && mentions::is_user_mid(&m.mid))
+    {
+        return;
+    }
+    let click = gtk::GestureClick::builder()
+        .button(1)
+        .propagation_phase(gtk::PropagationPhase::Capture)
+        .build();
+    let press = Rc::new(std::cell::Cell::new((0.0, 0.0)));
+    {
+        let press = press.clone();
+        click.connect_pressed(move |_, _, x, y| press.set((x, y)));
+    }
+    {
+        let (state, content) = (state.clone(), content.clone());
+        click.connect_released(move |gesture, n, x, y| {
+            let (px, py) = press.get();
+            if n != 1
+                || (x - px).abs() > 4.0
+                || (y - py).abs() > 4.0
+                || content.view.buffer().has_selection()
+            {
+                return;
+            }
+            let textures = state.emoji_textures.borrow();
+            if let Some(mid) = mention_in_view(&content.view, &textures, &content, x, y) {
+                drop(textures);
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                user_profile::open(&state, &mid);
+            }
+        });
+    }
+    content.view.add_controller(click);
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let (textures, content) = (state.emoji_textures.clone(), content.clone());
+        motion.connect_motion(move |_, x, y| {
+            let over = mention_in_view(&content.view, &textures.borrow(), &content, x, y).is_some();
+            content
+                .view
+                .set_cursor_from_name(Some(if over { "pointer" } else { "text" }));
+        });
+    }
+    content.view.add_controller(motion);
+}
+
 fn render(textures: &HashMap<String, gdk::Texture>, content: &EmojiText) {
     let buffer = content.view.buffer();
     buffer.set_text("");
@@ -39,11 +136,16 @@ fn render(textures: &HashMap<String, gdk::Texture>, content: &EmojiText) {
     let mut previous = 0;
     let mut measured = String::new();
     let mut images = 0;
+    let mut shifts: Vec<(usize, usize)> = Vec::new();
     for (start, end, key) in ranges(&content.text, &content.emojis) {
         buffer.insert(&mut iter, &content.text[previous..start]);
         measured.push_str(&content.text[previous..start]);
         if let Some(texture) = textures.get(&key) {
             buffer.insert_paintable(&mut iter, texture);
+            shifts.push((
+                content.text[..end].chars().count(),
+                content.text[start..end].chars().count() - 1,
+            ));
             measured.push('　');
             images += 1;
         } else {
@@ -55,6 +157,34 @@ fn render(textures: &HashMap<String, gdk::Texture>, content: &EmojiText) {
     }
     buffer.insert(&mut iter, &content.text[previous..]);
     measured.push_str(&content.text[previous..]);
+    let tag = buffer.tag_table().lookup("mention").unwrap_or_else(|| {
+        let tag = gtk::TextTag::builder()
+            .name("mention")
+            .weight(700)
+            .underline(gtk::pango::Underline::Single)
+            .build();
+        buffer.tag_table().add(&tag);
+        tag
+    });
+    tag.set_foreground_rgba(Some(&mentions::color(&content.view)));
+    for mention in &content.mentions {
+        let adjust = |offset: usize| {
+            offset.saturating_sub(
+                shifts
+                    .iter()
+                    .filter(|(end, _)| *end <= offset)
+                    .map(|(_, n)| *n)
+                    .sum::<usize>(),
+            )
+        };
+        if mention.start < mention.end && mention.end <= content.text.chars().count() {
+            buffer.apply_tag(
+                &tag,
+                &buffer.iter_at_offset(adjust(mention.start) as i32),
+                &buffer.iter_at_offset(adjust(mention.end) as i32),
+            );
+        }
+    }
     let layout = content.view.create_pango_layout(Some(&measured));
     let width = (layout.pixel_size().0 + images * 14).clamp(28, 340);
     content.view.set_width_request(width);
@@ -74,6 +204,7 @@ pub(super) fn append(state: &AppState, bubble: &gtk::Box, message: &MessageInfo)
         view: view.clone(),
         text: message.text.clone(),
         emojis: message.emojis.clone(),
+        mentions: message.mentions.clone(),
     };
     render(&state.emoji_textures.borrow(), &content);
     // 親の日本語フォントが適用された後に幅を測り直す。
@@ -81,6 +212,7 @@ pub(super) fn append(state: &AppState, bubble: &gtk::Box, message: &MessageInfo)
     let weak = view.downgrade();
     let text = message.text.clone();
     let emojis = message.emojis.clone();
+    let mentions = message.mentions.clone();
     view.connect_map(move |_| {
         if let Some(view) = weak.upgrade() {
             render(
@@ -89,10 +221,12 @@ pub(super) fn append(state: &AppState, bubble: &gtk::Box, message: &MessageInfo)
                     view,
                     text: text.clone(),
                     emojis: emojis.clone(),
+                    mentions: mentions.clone(),
                 },
             );
         }
     });
+    wire_click(state, &content);
     state.emoji_views.borrow_mut().push(content);
     bubble.append(&view);
 }
@@ -113,11 +247,21 @@ pub(super) fn ready(state: &AppState, key: String, path: String) {
             render(&state.emoji_textures.borrow(), content);
         }
     }
+    reactions::emoji_ready(state, &key);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn buffer_offsets_map_back_past_emoji_images() {
+        // "a(smile)b@c": emoji occupies chars 1..8 and renders as one image char.
+        let shifts = vec![(8, 6)];
+        assert_eq!(original_offset(0, &shifts), 0);
+        assert_eq!(original_offset(1, &shifts), 1);
+        assert_eq!(original_offset(2, &shifts), 8);
+        assert_eq!(original_offset(4, &shifts), 10);
+    }
     #[test]
     fn emoji_ranges_keep_unicode_and_reject_overlapping_or_invalid_offsets() {
         let text = "😀前(顔)後";

@@ -1,3 +1,4 @@
+import { lineMentions } from "./mentions.ts";
 /**
  * LINE protocol sidecar for line-gtk.
  * NDJSON over stdin/stdout. Heavy I/O is cached + async so GTK stays snappy.
@@ -29,6 +30,12 @@ import { createCommandService } from "./commands.ts";
 import { createContactBlocks } from "./contact_blocks.ts";
 import { createListener } from "./listener.ts";
 import { createUnsendService } from "./unsend.ts";
+import { createReactionEmojiPacks } from "./reaction_emojis.ts";
+import {
+  createReactionService,
+  normalizeReactions,
+  reactionCarriers,
+} from "./reactions.ts";
 import {
   createConnectionRecovery,
   retireClient,
@@ -49,6 +56,7 @@ import { createEmojiService, lineEmojis } from "./emojis.ts";
 import { createChatPreviews } from "./chat_previews.ts";
 import { createAlbumService } from "./albums.ts";
 import { createMessageSenders } from "./message_senders.ts";
+import { createUserProfiles } from "./user_profiles.ts";
 
 type Json = Record<string, unknown>;
 
@@ -250,6 +258,13 @@ const { previewLang, previewLine, extractFlex } = messageView;
 async function forUiMessages(messages: Json[], chatMid?: string) {
   if (chatMid) messages = await unsends.mask(chatMid, messages);
   if (chatMid) messages = await chatEvents.merge(chatMid, messages);
+  if (chatMid) {
+    messages = await reactions.merge(chatMid, messages);
+    const carriers = reactionCarriers(chatMid, messages);
+    messageSenders.observe(carriers.profiles);
+    emojiService.observe(carriers.emojis);
+  }
+  reactions.observe(messages);
   messageSenders.observe(messages);
   emojiService.observe(messages);
   return messageView.forUiMessages(messages);
@@ -384,6 +399,18 @@ const contactBlocks = createContactBlocks({
   emit: emitEvent,
 });
 
+const userProfiles = createUserProfiles({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
+  avatarPathFor,
+  kindOf: (contact) =>
+    contactKind(
+      contact as Parameters<typeof contactKind>[0],
+      undefined,
+    ),
+  emit: emitEvent,
+});
+
 const unsends = createUnsendService({
   getClient: () => authDead ? null : client,
   dataDir,
@@ -437,6 +464,33 @@ const unsends = createUnsendService({
   },
 });
 
+const reactions = createReactionService({
+  dataDir,
+  getClient: () => authDead ? null : client,
+  emit: emitEvent,
+});
+
+const reactionEmojiPacks = createReactionEmojiPacks({
+  accountMid: myMid,
+  directory: mediaDir,
+  observe: (messages) => emojiService.observe(messages),
+  ownedProducts: async () => {
+    const current = client;
+    if (!current) throw new Error("not_logged_in");
+    const { ShopService } = await import("@linegtk/shop");
+    const language = Deno.env.get("LINE_GTK_LANG") === "ja"
+      ? { language: "ja", country: "JP" }
+      : { language: "en", country: "TH" };
+    return await new ShopService(current.base as never)
+      .getOwnedProductSummaries({
+        shopId: "sticonshop",
+        offset: 0,
+        limit: 80,
+        locale: language,
+      } as never);
+  },
+});
+
 const listener = createListener({
   prepareMessage: async (message) => {
     const [prepared] = await unsends.mask(conversationMid(message), [message]);
@@ -450,6 +504,7 @@ const listener = createListener({
     unreadSync.observeMessage(message);
     messageSenders.observe([message]);
     emojiService.observe([message]);
+    reactions.observe([message]);
   },
   refreshMessageSender: messageSenders.refresh,
   isListening: () => listening,
@@ -464,6 +519,7 @@ const listener = createListener({
   upsertChatFromContact,
   handleReadReceipt: (operation) =>
     unsends.handleOperation(operation) ||
+    reactions.handleOperation(operation) ||
     contactBlocks.handleOperation(operation) ||
     unreadSync.handleOperation(operation) ||
     readReceipts.handleOperation(operation) ||
@@ -525,6 +581,7 @@ const commands = createCommandService({
   saveDiskContacts,
   refreshContactIndex,
   hydrateAvatars,
+  avatarPathFor,
   hydratePreviews,
   updateChatPreview: async (chatMid, messages) =>
     await chatPreviews.updateFromMessages(
@@ -951,8 +1008,14 @@ async function summarizeTalkMessage(
     relatedMessageId?: unknown;
     messageRelationType?: unknown;
     relatedMessageServiceCode?: unknown;
+    reactions?: unknown;
   };
   const replyTo = replyToOf(raw);
+  // 操作で届いた後のリアクションと比べるため、取得した時刻を残す。
+  const reactionState = {
+    reactions: normalizeReactions(raw.reactions, reactions.learnLayout),
+    reactionsAt: Date.now(),
+  };
   const contentType = normType(raw.contentType);
   const meta = raw.contentMetadata ?? {};
   if (meta[DECRYPTION_FAILED] === "1") {
@@ -1046,6 +1109,7 @@ async function summarizeTalkMessage(
     }
     const flex = null;
     return {
+      ...reactionState,
       replyTo,
       id,
       text: duration
@@ -1163,10 +1227,12 @@ async function summarizeTalkMessage(
   const flex = contentType === "FLEX" ? extractFlex(meta) : null;
 
   return {
+    ...reactionState,
     replyTo,
     id,
     text,
     emojis: contentType === "NONE" ? lineEmojis(text, meta) : [],
+    mentions: contentType === "NONE" ? lineMentions(text, meta) : [],
     from: raw.from ?? "",
     to: raw.to ?? "",
     mine: isMineFrom(raw.from),
@@ -1218,7 +1284,12 @@ async function summarizeRawMessage(
       else if (contentType !== "NONE") text = `[${contentType}]`;
     }
     return {
+      reactions: normalizeReactions(r.reactions, reactions.learnLayout),
+      reactionsAt: Date.now(),
       replyTo: replyToOf(r),
+      mentions: !callHistory && contentType === "NONE"
+        ? lineMentions(text, meta)
+        : [],
       id: String(r.id ?? ""),
       text: callHistory ? "" : text,
       emojis: !callHistory && contentType === "NONE"
@@ -1919,6 +1990,7 @@ async function handle(req: Json) {
         "send_media",
         "send_sticker",
         "send_postback",
+        "react_message",
         "call_start",
       ].includes(method) &&
       contactBlocks.isBlocked(String(
@@ -1940,8 +2012,42 @@ async function handle(req: Json) {
           ),
         );
         break;
+      case "react_message":
+        ok(
+          id,
+          await reactions.react(
+            String(params.chatMid ?? ""),
+            params.messageId,
+            params.reaction,
+          ),
+        );
+        break;
+      case "cancel_reaction":
+        ok(
+          id,
+          await reactions.cancel(
+            String(params.chatMid ?? ""),
+            params.messageId,
+          ),
+        );
+        break;
+      case "reaction_emoji_packs":
+        ok(id, await reactionEmojiPacks.packs());
+        break;
+      case "reaction_emoji_pack":
+        ok(id, await reactionEmojiPacks.pack(params.productId));
+        break;
+      case "reaction_emojis": {
+        const emojis = await reactions.recentEmojis();
+        emojiService.observe([{ emojis }]);
+        ok(id, { emojis });
+        break;
+      }
       case "get_blocked_contacts":
         ok(id, await contactBlocks.refresh());
+        break;
+      case "get_user_profile":
+        ok(id, await userProfiles.get(params.mid, params.force === true));
         break;
       case "set_contact_blocked":
         if (typeof params.blocked !== "boolean") {
@@ -2058,12 +2164,16 @@ async function handle(req: Json) {
           !!params.quiet,
         );
         break;
+      case "get_chat_members":
+        await commands.mentionMembers(id, String(params.chatMid ?? ""));
+        break;
       case "send_message":
         await commands.sendMessage(
           id,
           String(params.chatMid ?? ""),
           String(params.text ?? ""),
           params.replyToMessageId,
+          params.mentions,
         );
         break;
       case "send_audio":

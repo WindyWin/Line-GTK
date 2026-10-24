@@ -6,6 +6,20 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+fn default_font_family(language: &str) -> &'static str {
+    match language {
+        "ja" => "Noto Sans CJK JP",
+        "th" => "Noto Sans Thai",
+        _ => "Noto Sans",
+    }
+}
+
+// Missing fields in existing settings must retain the old default until normalization
+// can choose a font using the saved language (rather than the new Vietnamese default).
+fn legacy_font_family() -> String {
+    "Noto Sans Thai".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -14,7 +28,8 @@ pub struct AppConfig {
     pub theme: String,    // system | dark | light
     pub language: String, // vi | en | th | ja
     pub font_scale: f64,  // UI scale 0.60 .. 1.40 (1.0 = 100%)
-    /// Any installed font family name, e.g. "Noto Sans Thai", "Inter", "Sarasa Gothic"
+    /// Any installed font family name, e.g. "Noto Sans", "Inter", "Sarasa Gothic"
+    #[serde(default = "legacy_font_family")]
     pub font_family: String,
     /// UI motion: page crossfades, message enter, hover easing. Off = instant.
     pub animations: bool,
@@ -80,7 +95,7 @@ impl Default for AppConfig {
             theme: "system".into(),
             language: "vi".into(),
             font_scale: 1.0,
-            font_family: "Noto Sans Thai".into(),
+            font_family: default_font_family("vi").into(),
             animations: true,
             cache_retention: "smart".into(),
             notifications: true,
@@ -262,18 +277,9 @@ impl AppConfig {
 
     pub fn set_language(&mut self, language: &str) {
         // 標準フォントだけを言語に合わせる。利用者が指定したフォントは維持する。
-        let previous_default = if self.language == "ja" {
-            "Noto Sans CJK JP"
-        } else {
-            "Noto Sans Thai"
-        };
+        let previous_default = default_font_family(&self.language);
         if self.font_family == previous_default {
-            self.font_family = if language == "ja" {
-                "Noto Sans CJK JP"
-            } else {
-                "Noto Sans Thai"
-            }
-            .into();
+            self.font_family = default_font_family(language).into();
         }
         self.language = language.into();
     }
@@ -335,8 +341,9 @@ impl AppConfig {
         if !matches!(self.language.as_str(), "vi" | "en" | "th" | "ja") {
             self.language = "vi".into();
         }
-        if self.language == "ja" && self.font_family == "Noto Sans Thai" {
-            self.font_family = "Noto Sans CJK JP".into();
+        // Older versions used the Thai default for Vietnamese and English too.
+        if self.font_family == legacy_font_family() {
+            self.font_family = default_font_family(&self.language).into();
         }
         if !matches!(
             self.cache_retention.as_str(),
@@ -463,10 +470,47 @@ mod tests {
         }
         let mut old = AppConfig {
             language: "ja".into(),
+            font_family: legacy_font_family(),
             ..AppConfig::default()
         };
         old.normalize();
         assert_eq!(old.font_family, "Noto Sans CJK JP");
+    }
+
+    #[test]
+    fn vietnamese_font_follows_language_and_migrates_legacy_settings() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.font_family, "Noto Sans");
+        for (language, family) in [
+            ("th", "Noto Sans Thai"),
+            ("vi", "Noto Sans"),
+            ("ja", "Noto Sans CJK JP"),
+            ("en", "Noto Sans"),
+        ] {
+            cfg.set_language(language);
+            assert_eq!(cfg.font_family, family);
+
+            for saved_font in [None, Some("Noto Sans Thai"), Some("Inter"), Some("")] {
+                let mut saved = serde_json::json!({ "language": language });
+                if let Some(font) = saved_font {
+                    saved["font_family"] = font.into();
+                }
+                let mut restored: AppConfig = serde_json::from_value(saved).unwrap();
+                restored.normalize();
+                let expected = match saved_font {
+                    Some("Inter") => "Inter",
+                    Some("") => "",
+                    _ => family,
+                };
+                assert_eq!(restored.font_family, expected, "{language}: {saved_font:?}");
+            }
+        }
+        for font in ["Inter", ""] {
+            cfg.font_family = font.into();
+            cfg.set_language("vi");
+            cfg.normalize();
+            assert_eq!(cfg.font_family, font);
+        }
     }
 
     #[test]
@@ -730,11 +774,13 @@ pub fn apply_font(family: &str, scale: f64) {
     let family = family.trim();
     let size = 11.0 * scale;
     let css = if family.is_empty() {
-        format!(".line-shell, .line-shell label, .line-shell entry {{ font-size: {size}pt; }}")
+        format!(
+            ".line-shell, .line-shell label, .line-shell entry, .line-shell textview, .line-shell textview text {{ font-size: {size}pt; }}"
+        )
     } else {
         let escaped = family.replace('\\', "\\\\").replace('"', "\\\"");
         format!(
-            ".line-shell, .line-shell label, .line-shell entry {{ font-family: \"{escaped}\", sans-serif; font-size: {size}pt; }}"
+            ".line-shell, .line-shell label, .line-shell entry, .line-shell textview, .line-shell textview text {{ font-family: \"{escaped}\", \"Noto Sans\", sans-serif; font-size: {size}pt; }}"
         )
     };
     FONT_PROVIDER.with(|cell| {
