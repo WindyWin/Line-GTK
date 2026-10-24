@@ -38,6 +38,10 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         .cloned()
         .collect();
     messages.extend(existing_events);
+    messages.sort_by_key(|m| m.created_time);
+    if apply_in_place(state, &messages) {
+        return;
+    }
     clear_messages(state);
     history::reset_for_latest(state, !messages.is_empty());
     state
@@ -46,7 +50,6 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         .extend(messages.iter().map(|m| (m.id.clone(), m.clone())));
     state.media_queue.borrow_mut().clear();
     *state.stick_bottom.borrow_mut() = true;
-    messages.sort_by_key(|m| m.created_time);
     if let Some(mid) = state.current_chat.borrow().clone() {
         // 同じIDの行でも、再取得で復号された本文を画面へ反映する。
         *state.msg_list_fp.borrow_mut() = Some((mid, messages.clone()));
@@ -80,6 +83,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
     let generation = *state.message_render_generation.borrow();
     let state_c = state.clone();
     let batch = Rc::new(RefCell::new(messages));
+    *state.render_batch.borrow_mut() = Some(batch.clone());
     glib::idle_add_local(move || {
         // トーク変更後に、前の履歴や引用候補を挿入しない。
         if *state_c.current_chat.borrow() != chat_mid
@@ -90,6 +94,7 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         let mut left = batch.borrow_mut();
         let take = left.len().min(14);
         if take == 0 {
+            *state_c.render_batch.borrow_mut() = None;
             pin_messages_to_latest(&state_c);
             history::arm(&state_c);
             if let Some(mid) = chat_mid.as_deref() {
@@ -107,6 +112,214 @@ pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
         scroll_messages_to_end(&state_c);
         glib::ControlFlow::Continue
     });
+}
+
+/// Show a reloaded list without rebuilding rows that are already on screen.
+/// Returns false when the list has to be rebuilt.
+fn apply_in_place(state: &AppState, messages: &[MessageInfo]) -> bool {
+    let Some(chat) = state.current_chat.borrow().clone() else {
+        return false;
+    };
+    let drawing = state.render_batch.borrow().is_some();
+    if (state.message_list.first_child().is_none() && !drawing) || history::is_detached(state) {
+        return false;
+    }
+    let shown = match state.msg_list_fp.borrow().as_ref() {
+        Some((mid, list)) if *mid == chat => list.clone(),
+        _ => return false,
+    };
+    match chat_snapshots::diff_messages(&shown, messages) {
+        chat_snapshots::MessageDiff::Unchanged => {
+            if state.msg_stack.visible_child_name().as_deref() != Some("list") {
+                set_msg_state(state, "list", None);
+            }
+            true
+        }
+        chat_snapshots::MessageDiff::Patch(patch) => {
+            apply_patch(state, &chat, messages, patch);
+            true
+        }
+        chat_snapshots::MessageDiff::Rebuild => false,
+    }
+}
+
+/// Update a message that is still waiting to be drawn.
+fn update_pending(batch: &RenderBatch, msg: &MessageInfo) -> bool {
+    let mut left = batch.borrow_mut();
+    match left.iter_mut().find(|m| m.id == msg.id) {
+        Some(slot) => {
+            *slot = msg.clone();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Swap the rows of a shown message for ones built from `msg`.
+fn replace_shown_message(state: &AppState, msg: &MessageInfo) -> bool {
+    let last_day = state.last_msg_day.borrow().clone();
+    let last_incoming = state.last_incoming_id.borrow().clone();
+    let ready_path = state.media_ready_paths.borrow().get(&msg.id).cloned();
+    let replaced = state.message_list.replace_message(
+        &msg.id,
+        |old| {
+            let gone = super::virtual_list::Trimmed {
+                ids: vec![msg.id.clone()],
+                widgets: old.to_vec(),
+            };
+            history::cleanup(state, &gone);
+        },
+        || {
+            // The day separator in front of the message stays where it is.
+            if msg.created_time > 0 {
+                *state.last_msg_day.borrow_mut() = Some(day_key(msg.created_time));
+            }
+            append_message_rows(state, msg, false);
+        },
+    );
+    *state.last_msg_day.borrow_mut() = last_day;
+    *state.last_incoming_id.borrow_mut() = last_incoming;
+    if let Some(path) = ready_path {
+        state
+            .media_ready_paths
+            .borrow_mut()
+            .insert(msg.id.clone(), path);
+    }
+    replaced
+}
+
+/// Bring the shown rows in line with a reload by changing only what differs.
+fn apply_patch(
+    state: &AppState,
+    chat: &str,
+    messages: &[MessageInfo],
+    patch: chat_snapshots::Patch,
+) {
+    let was_stuck = *state.stick_bottom.borrow();
+    let batch = state.render_batch.borrow().clone();
+
+    for msg in &patch.replaced {
+        if batch.as_ref().is_some_and(|b| update_pending(b, msg)) {
+            continue;
+        }
+        replace_shown_message(state, msg);
+    }
+    for msg in &patch.reacted {
+        if batch.as_ref().is_some_and(|b| update_pending(b, msg)) {
+            continue;
+        }
+        state
+            .reply_messages
+            .borrow_mut()
+            .insert(msg.id.clone(), msg.clone());
+        reactions::refresh(state, msg);
+    }
+    let account = state.self_mid.borrow().clone().unwrap_or_default();
+    for id in &patch.unsent {
+        let Some(msg) = messages.iter().find(|m| m.id == *id) else {
+            continue;
+        };
+        if batch.as_ref().is_some_and(|b| update_pending(b, msg)) {
+            continue;
+        }
+        unsend::apply(state, &account, chat, id);
+    }
+
+    // Rows that arrived live while the list was loading are already shown.
+    let appended: Vec<_> = {
+        let known = state.reply_messages.borrow();
+        patch
+            .appended
+            .into_iter()
+            .filter(|m| !known.contains_key(&m.id))
+            .collect()
+    };
+    // Unsending resets the remembered list, so set it after the changes above.
+    *state.msg_list_fp.borrow_mut() = Some((chat.to_string(), messages.to_vec()));
+    state.chat_subtitle.set_text(&crate::i18n::tf(
+        "messages_count",
+        &[("n", &messages.len().to_string())],
+    ));
+    let incoming = appended
+        .iter()
+        .rev()
+        .find(|m| !m.mine && m.chat_event.is_none() && m.content_type != "UNSENT")
+        .map(|m| m.id.clone());
+    if !was_stuck && incoming.is_some() {
+        ensure_new_message_separator(state);
+    }
+    for msg in &appended {
+        match &batch {
+            // Drawn after the rows that are still waiting, so the order holds.
+            Some(b) => b.borrow_mut().push(msg.clone()),
+            None => append_message(state, msg, false),
+        }
+    }
+    if let Some(id) = incoming {
+        *state.last_incoming_id.borrow_mut() = Some(id);
+        if was_stuck && batch.is_none() {
+            mark_chat_read(state, chat);
+            clear_unread_badge(state, chat);
+        }
+    }
+    if was_stuck && batch.is_none() {
+        pin_messages_to_latest(state);
+        history::enforce_live_limit(state);
+    }
+    if state.msg_stack.visible_child_name().as_deref() != Some("list") {
+        set_msg_state(state, "list", None);
+    }
+}
+
+/// The open chat has something to read, drawn or about to be drawn.
+pub(super) fn has_message_content(state: &AppState) -> bool {
+    if state.render_batch.borrow().is_some() || state.message_list.first_child().is_some() {
+        return true;
+    }
+    let current = state.current_chat.borrow();
+    state
+        .msg_list_fp
+        .borrow()
+        .as_ref()
+        .is_some_and(|(mid, list)| Some(mid.as_str()) == current.as_deref() && !list.is_empty())
+}
+
+/// Show or hide the small refresh indicator next to the chat subtitle.
+pub(super) fn set_syncing(state: &AppState, on: bool) {
+    state.sync_spinner.set_spinning(on);
+    state.sync_spinner.set_visible(on);
+}
+
+/// Keep the remembered list in step with a row added after the load.
+pub(super) fn note_appended(state: &AppState, msg: &MessageInfo) {
+    if let Some((_, list)) = state.msg_list_fp.borrow_mut().as_mut()
+        && !list.iter().any(|m| m.id == msg.id)
+    {
+        list.push(msg.clone());
+    }
+}
+
+/// Keep the remembered list in step with media that finished downloading.
+pub(super) fn note_media(
+    state: &AppState,
+    id: &str,
+    image: Option<&str>,
+    audio: Option<&str>,
+    file: Option<&str>,
+) {
+    if let Some((_, list)) = state.msg_list_fp.borrow_mut().as_mut()
+        && let Some(msg) = list.iter_mut().find(|m| m.id == id)
+    {
+        if let Some(path) = image.filter(|p| !p.is_empty()) {
+            msg.image_path = Some(path.to_string());
+        }
+        if let Some(path) = audio {
+            msg.audio_path = Some(path.to_string());
+        }
+        if let Some(path) = file {
+            msg.file_path = Some(path.to_string());
+        }
+    }
 }
 
 pub(super) fn append_message(state: &AppState, msg: &MessageInfo, live: bool) {
@@ -1374,6 +1587,7 @@ pub(super) fn clear_messages(state: &AppState) {
     if changed_chat {
         replies::cancel(state);
     }
+    *state.render_batch.borrow_mut() = None;
     state.reply_messages.borrow_mut().clear();
     state.message_rows.borrow_mut().clear();
     reactions::clear(state);

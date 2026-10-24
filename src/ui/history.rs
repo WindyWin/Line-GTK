@@ -634,7 +634,7 @@ fn ensure_top_separator(state: &AppState) {
 }
 
 /// Release everything the dropped rows were holding on to.
-fn cleanup(state: &AppState, trimmed: &Trimmed) {
+pub(super) fn cleanup(state: &AppState, trimmed: &Trimmed) {
     for id in &trimmed.ids {
         state.reply_messages.borrow_mut().remove(id);
         state.message_rows.borrow_mut().remove(id);

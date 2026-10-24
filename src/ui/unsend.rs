@@ -107,6 +107,9 @@ pub(super) fn apply(state: &AppState, account: &str, chat_mid: &str, id: &str) {
     *state.last_incoming_id.borrow_mut() = incoming;
     replies::redact(state, id);
     *state.msg_list_fp.borrow_mut() = None;
+    if let Some(chat) = state.current_chat.borrow().as_deref() {
+        chat_snapshots::forget(state, chat);
+    }
     state.message_list.queue_allocate();
 }
 

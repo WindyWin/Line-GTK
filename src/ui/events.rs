@@ -44,6 +44,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 let stick = *state.stick_bottom.borrow();
                 set_msg_state(state, "list", None);
                 append_message(state, &message, true);
+                note_appended(state, &message);
                 if stick {
                     pin_messages_to_latest(state);
                     history::enforce_live_limit(state);
@@ -287,6 +288,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
 
             let current = state.current_chat.borrow().clone();
             let viewing = current.as_deref() == Some(peer.as_str());
+            if !viewing {
+                chat_snapshots::push_live(state, &peer, &msg);
+            }
             let window_focused = state.window.is_active();
             if viewing && history::is_detached(state) {
                 // The newest rows are not on screen; reaching them reloads the latest page.
@@ -308,6 +312,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     ensure_new_message_separator(state);
                 }
                 append_message(state, &msg, true);
+                note_appended(state, &msg);
                 if was_stuck {
                     pin_messages_to_latest(state);
                     history::enforce_live_limit(state);
@@ -392,6 +397,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 && !resume_sync::stale_history_event(state, &chat_mid)
             {
                 apply_messages(state, messages);
+                let refreshing = state.pending.borrow().values().any(|p| {
+                    matches!(p, Pending::FetchMessages { chat_mid: mid, .. } if *mid == chat_mid)
+                });
+                set_syncing(state, refreshing);
             }
         }
         ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
@@ -483,6 +492,13 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             if state.current_chat.borrow().as_deref() != Some(chat_mid.as_str()) {
                 return;
             }
+            note_media(
+                state,
+                &message_id,
+                Some(image_path.as_str()),
+                audio_path.as_deref(),
+                file_path.as_deref(),
+            );
             if let Some(meta) = state.media_msgs.borrow_mut().get_mut(&message_id) {
                 if !image_path.is_empty() {
                     meta.image_path = Some(image_path.clone());
@@ -570,27 +586,30 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                     match prog.as_str() {
                         "loading" => {
-                            if state.message_list.first_child().is_none() {
-                                set_msg_state(state, "loading", None);
+                            if has_message_content(state) {
+                                set_syncing(state, true);
                             } else {
-                                state.chat_subtitle.set_text(&crate::i18n::t("refreshing"));
+                                set_msg_state(state, "loading", None);
                             }
                         }
                         "ready" => {
-                            if state.message_list.first_child().is_some() {
+                            if has_message_content(state) {
                                 set_msg_state(state, "list", None);
                             }
                         }
                         "empty" => {
                             // Don't clobber a thread that already has rows (e.g. optimistic send).
-                            if state.message_list.first_child().is_none() {
+                            if !has_message_content(state) {
                                 set_msg_state(state, "empty", Some(&crate::i18n::t("no_messages")));
                                 state.chat_subtitle.set_text(&crate::i18n::t("empty"));
                             }
                         }
                         "error" => {
                             let msg = error.unwrap_or_else(|| "Failed to load messages".into());
-                            set_msg_state(state, "empty", Some(&msg));
+                            set_syncing(state, false);
+                            if !has_message_content(state) {
+                                set_msg_state(state, "empty", Some(&msg));
+                            }
                             toast(state, &msg);
                         }
                         _ => {}
@@ -735,6 +754,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             {
                 return;
             }
+            if matches!(pending, Some(Pending::FetchMessages { .. })) {
+                set_syncing(state, false);
+            }
             if !ok {
                 if matches!(pending, Some(Pending::Login | Pending::LoginEmail))
                     && *state.restarting.borrow()
@@ -770,7 +792,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         Some(error.as_deref().unwrap_or("Failed to load chats")),
                     );
                 }
-                if matches!(pending, Some(Pending::FetchMessages { .. })) {
+                if matches!(pending, Some(Pending::FetchMessages { .. }))
+                    && !has_message_content(state)
+                {
                     set_msg_state(
                         state,
                         "empty",
@@ -868,6 +892,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             set_msg_state(state, "list", None);
                         }
                         append_message(state, &msg, true);
+                        note_appended(state, &msg);
                         pin_messages_to_latest(state);
                         history::enforce_live_limit(state);
                     }
@@ -978,6 +1003,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    chat_snapshots::clear();
     contact_blocks::reset(state);
     user_profile::close();
     user_profile::update_header(state, None);
@@ -1063,6 +1089,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    chat_snapshots::clear();
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
     mentions::reset(state);

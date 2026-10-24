@@ -164,7 +164,7 @@ for (const source of ["通信", "メモリ", "ディスク"] as const) {
     );
     assertEquals(fixture.okResults.length, 1);
     assertEquals(fixture.receiptsRefreshed(), 1);
-    assertEquals(fixture.networkCalls(), source === "メモリ" ? 0 : 1);
+    assertEquals(fixture.networkCalls(), source === "通信" ? 1 : 0);
   });
 }
 
@@ -590,4 +590,78 @@ Deno.test("late member results after account replacement are discarded", async (
   await request;
   assertEquals(fixture.okResults, []);
   assertEquals(failures, ["session_changed"]);
+});
+
+Deno.test("ディスクの履歴が古いときは最新位置までの差分だけを取得して結合する", async () => {
+  const fixture = commandFixture("ディスク");
+  const older = { id: "1", createdTime: 10, text: "古い本文" };
+  const newest = { id: "2", createdTime: 20, text: "読み込んだ最新の本文" };
+  fixture.runtime.loadDiskMessages = () => Promise.resolve([older]);
+  const requests: unknown[] = [];
+  const client = fixture.runtime.getClient()!;
+  client.base.talk.getPreviousMessagesV2WithRequest = (params) => {
+    requests.push(params);
+    return Promise.resolve([older, newest] as never);
+  };
+  await createCommandService(fixture.runtime).fetchMessages(
+    1,
+    fixture.chat.mid,
+    40,
+  );
+  assertEquals(requests.length, 1);
+  assertEquals(
+    (requests[0] as { request: { messagesCount: number } }).request
+      .messagesCount,
+    20,
+  );
+  const last = fixture.okResults.at(-1) as { messages: Json[] };
+  assertEquals(last.messages.map((m) => m.id), ["1", "2"]);
+});
+
+Deno.test("差分が保存済みの履歴とつながらないときは通常の取得に戻る", async () => {
+  const fixture = commandFixture("ディスク");
+  const older = { id: "1", createdTime: 10, text: "古い本文" };
+  const newest = { id: "2", createdTime: 20, text: "読み込んだ最新の本文" };
+  const other = { id: "9", createdTime: 15, text: "別の本文" };
+  fixture.runtime.loadDiskMessages = () => Promise.resolve([older]);
+  let calls = 0;
+  const client = fixture.runtime.getClient()!;
+  client.base.talk.getPreviousMessagesV2WithRequest = () => {
+    calls++;
+    return Promise.resolve((calls === 1 ? [other] : [older, newest]) as never);
+  };
+  await createCommandService(fixture.runtime).fetchMessages(
+    1,
+    fixture.chat.mid,
+    40,
+  );
+  assertEquals(calls, 2);
+  const last = fixture.okResults.at(-1) as { messages: Json[] };
+  assertEquals(last.messages.map((m) => m.id), ["1", "2"]);
+});
+
+Deno.test("保存済みの本文を送った後は読み込み中の表示を出さない", async () => {
+  const fixture = commandFixture("ディスク");
+  const older = { id: "1", createdTime: 10, text: "古い本文" };
+  const newest = { id: "2", createdTime: 20, text: "読み込んだ最新の本文" };
+  fixture.runtime.loadDiskMessages = () => Promise.resolve([older]);
+  fixture.runtime.getClient()!.base.talk.getPreviousMessagesV2WithRequest =
+    () => Promise.resolve([older, newest] as never);
+  await createCommandService(fixture.runtime).fetchMessages(
+    1,
+    fixture.chat.mid,
+    40,
+  );
+  const progress = fixture.events.filter((e) => e.event === "progress");
+  assertEquals(
+    progress.map((e) => e.state),
+    ["ready", "ready"],
+  );
+});
+
+Deno.test("保存済みの本文がないときだけ読み込み中を知らせる", async () => {
+  const fixture = commandFixture("通信");
+  await fixture.commands.fetchMessages(1, fixture.chat.mid, 40);
+  const progress = fixture.events.filter((e) => e.event === "progress");
+  assertEquals(progress.map((e) => e.state), ["loading", "ready"]);
 });

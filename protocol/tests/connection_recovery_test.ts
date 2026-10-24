@@ -203,7 +203,7 @@ Deno.test("交換直前の本文を取りこぼさず、交換後の重複と古
     setListening: (next) => {
       listening = next;
     },
-    invalidateMessages: () => {},
+    appendMessage: () => {},
     summarizeTalkMessage: (message) =>
       message === delayedMessage
         ? new Promise((resolve) => release = resolve)

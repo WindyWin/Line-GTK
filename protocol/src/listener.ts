@@ -15,7 +15,7 @@ export type ListenerRuntime = {
   refreshMessageSender?: (mid: string) => void;
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
-  invalidateMessages: (chatMid: string) => void;
+  appendMessage: (chatMid: string, message: Json) => void;
   summarizeTalkMessage: (
     message: TalkMessage,
     opts?: { withMedia?: boolean },
@@ -81,7 +81,7 @@ export function createListener(runtime: ListenerRuntime) {
           }
         }
         runtime.observeMessage?.(message);
-        runtime.invalidateMessages(peer);
+        runtime.appendMessage(peer, message);
         // Advance box cursor so later refetch can see this message.
         storeBoxCursor(peer, {
           messageId: message.id,

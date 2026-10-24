@@ -13,6 +13,7 @@ import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { contactKind, picturePathOf, profileUrl } from "./contacts.ts";
 import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
 import { mergeMessages } from "./message_history.ts";
+import { appendLive } from "./message_delta.ts";
 import { replyToOf } from "./replies.ts";
 import { groupProfile } from "./groups.ts";
 import {
@@ -279,7 +280,7 @@ const stickers = createStickerService({
   cacheUrl,
   existingImage,
   sentMessagePayload,
-  invalidateMessages: (chatMid) => msgCache.delete(chatMid),
+  invalidateMessages,
   invalidateChats: () => {
     chatCache = null;
   },
@@ -306,7 +307,7 @@ const outgoingMedia = createOutgoingMedia({
   isMineFrom,
   normType,
   getCachedMessages: (chatMid) => msgCache.get(chatMid)?.messages,
-  invalidateMessages: (chatMid) => msgCache.delete(chatMid),
+  invalidateMessages,
   invalidateChats: () => {
     chatCache = null;
   },
@@ -329,6 +330,23 @@ function saveChatCache(): Promise<void> {
 }
 
 const msgCache = new Map<string, { at: number; messages: Json[] }>();
+
+/** Forget a chat's stored messages and the marker that says they are current. */
+function invalidateMessages(chatMid: string) {
+  msgCache.delete(chatMid);
+  boxCursor.delete(chatMid);
+}
+
+/** Add a live message to history that was already checked this session. */
+function appendCachedMessage(chatMid: string, message: Json) {
+  const cached = msgCache.get(chatMid);
+  if (!cached) return;
+  msgCache.set(chatMid, {
+    at: cached.at,
+    messages: appendLive(cached.messages, message),
+  });
+  void saveDiskMessages(chatMid, [message], { contiguous: true });
+}
 const inFlight = new Map<string, Promise<unknown>>();
 const contactIndex = new Map<
   string,
@@ -511,7 +529,7 @@ const listener = createListener({
   setListening: (next) => {
     listening = next;
   },
-  invalidateMessages: (chatMid) => msgCache.delete(chatMid),
+  appendMessage: appendCachedMessage,
   summarizeTalkMessage,
   storeBoxCursor,
   upsertChatFromMessage,

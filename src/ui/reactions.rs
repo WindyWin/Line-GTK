@@ -278,7 +278,7 @@ fn render(state: &AppState, strip: &gtk::Box, message: &MessageInfo) {
     }
 }
 
-fn refresh(state: &AppState, message: &MessageInfo) {
+pub(super) fn refresh(state: &AppState, message: &MessageInfo) {
     let strip = state
         .reactions
         .borrow()

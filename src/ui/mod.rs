@@ -5,6 +5,7 @@ mod call_window;
 mod calls;
 mod chat_events;
 mod chat_filter;
+mod chat_snapshots;
 mod chats;
 mod composer_media;
 mod contact_blocks;
@@ -182,6 +183,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         chat_avatar_frame: shell.chat_avatar_frame,
         chat_title: shell.chat_title,
         chat_subtitle: shell.chat_subtitle,
+        sync_spinner: shell.sync_spinner,
         side_stack: shell.side_stack,
         side_spinner: shell.side_spinner,
         side_empty: shell.side_empty,
@@ -288,6 +290,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         self_picture_url: Rc::new(RefCell::new(None)),
         msg_list_fp: Rc::new(RefCell::new(None)),
         message_render_generation: Rc::new(RefCell::new(0)),
+        render_batch: Rc::new(RefCell::new(None)),
         history_request_generation: Rc::new(RefCell::new(0)),
         history: Rc::new(RefCell::new(history::HistoryWindow::default())),
         resume_sync: Rc::new(RefCell::new(resume_sync::ResumeSync::default())),
@@ -1718,6 +1721,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         return;
     }
 
+    chat_snapshots::leave(state);
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
@@ -1750,14 +1754,27 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     state.mute_btn.set_sensitive(can_mute);
     update_mute_btn(state, chat.muted);
     state.media_queue.borrow_mut().clear();
-    set_msg_state(state, "loading", None);
+    let snapshot = chat_snapshots::take(state, &chat.mid);
+    if snapshot.is_none() {
+        set_msg_state(state, "loading", None);
+    }
     clear_messages(state);
     *state.msg_list_fp.borrow_mut() = None;
     let generation = state.history_request_generation.borrow().wrapping_add(1);
     *state.history_request_generation.borrow_mut() = generation;
     history::reset(state);
-    match state.sidecar.fetch_messages(&chat.mid, 40) {
+    // What the chat showed last time appears at once; the fetch only adds what is new.
+    let refreshing = snapshot.is_some();
+    set_syncing(state, false);
+    let fetch = if let Some(messages) = snapshot {
+        apply_messages(state, messages);
+        state.sidecar.fetch_messages_quiet(&chat.mid, 40)
+    } else {
+        state.sidecar.fetch_messages(&chat.mid, 40)
+    };
+    match fetch {
         Ok(id) => {
+            set_syncing(state, refreshing);
             state.pending.borrow_mut().insert(
                 id,
                 Pending::FetchMessages {

@@ -34,6 +34,7 @@ pub struct ShellWidgets {
     pub chat_avatar_frame: gtk::Box,
     pub chat_title: gtk::Label,
     pub chat_subtitle: gtk::Label,
+    pub sync_spinner: gtk::Spinner,
     pub side_stack: gtk::Stack,
     pub side_spinner: gtk::Spinner,
     pub side_empty: gtk::Label,
@@ -338,8 +339,20 @@ pub fn build_shell_page() -> ShellWidgets {
         .xalign(0.0)
         .css_classes(["dim-label", "caption"])
         .build();
+    // Small sign that the chat is refreshing; the conversation stays usable.
+    let sync_spinner = gtk::Spinner::builder()
+        .visible(false)
+        .valign(gtk::Align::Center)
+        .build();
+    sync_spinner.set_size_request(10, 10);
+    let subtitle_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    subtitle_row.append(&chat_subtitle);
+    subtitle_row.append(&sync_spinner);
     title_col.append(&chat_title);
-    title_col.append(&chat_subtitle);
+    title_col.append(&subtitle_row);
     let chat_avatar_frame = gtk::Box::builder()
         .valign(gtk::Align::Center)
         .visible(false)
@@ -700,6 +713,7 @@ pub fn build_shell_page() -> ShellWidgets {
         chat_avatar_frame,
         chat_title,
         chat_subtitle,
+        sync_spinner,
         side_stack,
         side_spinner,
         side_empty,

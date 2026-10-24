@@ -917,10 +917,15 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
         let kind = kind.to_string();
         let title_key = title_key.to_string();
         btn.connect_clicked(move |_| match sidecar.clear_cache(&kind) {
-            Ok(_) => toast(&i18n::tf(
-                "cleared_cache",
-                &[("kind", &i18n::t(&title_key))],
-            )),
+            Ok(_) => {
+                if kind == "messages" {
+                    super::chat_snapshots::clear();
+                }
+                toast(&i18n::tf(
+                    "cleared_cache",
+                    &[("kind", &i18n::t(&title_key))],
+                ));
+            }
             Err(e) => toast(&i18n::tf("clear_failed", &[("error", &e.to_string())])),
         });
         row.add_suffix(&btn);

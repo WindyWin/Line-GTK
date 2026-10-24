@@ -24,6 +24,8 @@ pub(super) struct VoicePlayback {
 }
 
 pub(super) type MessageListFingerprint = (String, Vec<MessageInfo>);
+/// Messages loaded for the open chat that are not drawn yet.
+pub(super) type RenderBatch = Rc<RefCell<Vec<MessageInfo>>>;
 
 #[derive(Clone)]
 pub(super) struct AppState {
@@ -60,6 +62,7 @@ pub(super) struct AppState {
     pub chat_avatar_frame: gtk::Box,
     pub chat_title: gtk::Label,
     pub chat_subtitle: gtk::Label,
+    pub sync_spinner: gtk::Spinner,
     pub side_stack: gtk::Stack,
     pub side_spinner: gtk::Spinner,
     pub side_empty: gtk::Label,
@@ -165,6 +168,7 @@ pub(super) struct AppState {
     pub self_picture_url: Rc<RefCell<Option<String>>>,
     pub msg_list_fp: Rc<RefCell<Option<MessageListFingerprint>>>,
     pub message_render_generation: Rc<RefCell<u64>>,
+    pub render_batch: Rc<RefCell<Option<RenderBatch>>>,
     pub history_request_generation: Rc<RefCell<u64>>,
     pub history: Rc<RefCell<super::history::HistoryWindow>>,
     pub resume_sync: Rc<RefCell<super::resume_sync::ResumeSync>>,

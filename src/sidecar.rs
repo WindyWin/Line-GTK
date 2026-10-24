@@ -294,6 +294,14 @@ impl Sidecar {
         )
     }
 
+    /// Refresh a chat that is already on screen without status events.
+    pub fn fetch_messages_quiet(&self, chat_mid: &str, limit: u32) -> Result<u64> {
+        self.request(
+            "fetch_messages",
+            Some(json!({ "chatMid": chat_mid, "limit": limit, "force": false, "quiet": true })),
+        )
+    }
+
     pub fn fetch_older_messages(
         &self,
         chat_mid: &str,

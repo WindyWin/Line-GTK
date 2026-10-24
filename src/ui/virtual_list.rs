@@ -226,6 +226,56 @@ impl VirtualMessageList {
         }
     }
 
+    /// Swap the rows of one message for freshly built ones. A day separator in
+    /// front of the message stays. `before` sees the rows that are going away,
+    /// `build` appends the new rows. Returns false when the message is not shown.
+    pub fn replace_message(
+        &self,
+        id: &str,
+        before: impl FnOnce(&[gtk::Widget]),
+        build: impl FnOnce(),
+    ) -> bool {
+        if self.staging.borrow().is_some() {
+            return false;
+        }
+        let (first, end) = (self.first_real(), self.end_real());
+        let range = {
+            let owners = self.owners.borrow();
+            body_range(&owners, first, end, id, |index| {
+                self.item_at(index as u32)
+                    .is_some_and(|row| row.has_css_class("line-day-sep-row"))
+            })
+        };
+        let Some(range) = range else {
+            return false;
+        };
+        let Some(owner) = self.owners.borrow()[range.start].clone() else {
+            return false;
+        };
+        let old: Vec<_> = range
+            .clone()
+            .filter_map(|index| self.item_at(index as u32))
+            .collect();
+        before(&old);
+
+        *self.staging.borrow_mut() = Some(Vec::new());
+        let previous = self.current_owner.replace(Some(owner.clone()));
+        build();
+        *self.current_owner.borrow_mut() = previous;
+        let staged = self.staging.borrow_mut().take().unwrap_or_default();
+
+        let objects: Vec<_> = staged.iter().map(|(w, _)| Self::object(w)).collect();
+        self.store
+            .splice(range.start as u32, range.len() as u32, &objects);
+        self.owners.borrow_mut().splice(
+            range,
+            staged
+                .into_iter()
+                .map(|(_, row_owner)| row_owner.or_else(|| Some(owner.clone()))),
+        );
+        true
+    }
+
     pub fn clear(&self) {
         self.store.remove_all();
         self.owners.borrow_mut().clear();
@@ -392,6 +442,26 @@ impl VirtualMessageList {
     }
 }
 
+/// Item range of a message's own rows, without a day separator in front.
+fn body_range(
+    owners: &[Option<Owner>],
+    first: usize,
+    end: usize,
+    id: &str,
+    is_separator: impl Fn(usize) -> bool,
+) -> Option<std::ops::Range<usize>> {
+    let matches = |index: usize| owners[index].as_ref().is_some_and(|owner| owner.id == id);
+    let mut start = (first..end).find(|&index| matches(index))?;
+    let mut stop = start;
+    while stop < end && matches(stop) {
+        stop += 1;
+    }
+    while start < stop && is_separator(start) {
+        start += 1;
+    }
+    (start < stop).then_some(start..stop)
+}
+
 fn message_row_index(owners: &[Option<Owner>], id: &str) -> Option<usize> {
     // Message rows follow their optional separator; use the last matching row.
     owners
@@ -520,6 +590,16 @@ mod tests {
         let items = items();
         assert_eq!(trim_range(&items, 1, 7, 0, true), Some(1..7));
         assert_eq!(trim_range(&items, 1, 7, 0, false), Some(1..7));
+    }
+
+    #[test]
+    fn replacing_a_message_keeps_its_day_separator() {
+        let items = items();
+        // "a" starts with a separator at index 1, "c" at index 4.
+        assert_eq!(body_range(&items, 1, 7, "a", |i| i == 1), Some(2..3));
+        assert_eq!(body_range(&items, 1, 7, "c", |i| i == 4), Some(5..6));
+        assert_eq!(body_range(&items, 1, 7, "b", |_| false), Some(3..4));
+        assert_eq!(body_range(&items, 1, 7, "missing", |_| false), None);
     }
 
     #[test]

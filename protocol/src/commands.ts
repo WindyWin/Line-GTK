@@ -20,6 +20,12 @@ import {
   olderThan,
   sortMessages,
 } from "./message_history.ts";
+import {
+  appendLive,
+  DELTA_PAGE,
+  mergeDelta,
+  reachesCursor,
+} from "./message_delta.ts";
 
 type Json = Record<string, unknown>;
 type ChatRow = {
@@ -630,10 +636,17 @@ export function createCommandService(runtime: CommandRuntime) {
         return;
       }
 
+      // Stored history the refresh below can extend instead of replacing.
+      let stored: Json[] | undefined;
+      let servedCached = false;
+
       // Warm from disk immediately
       if (!force) {
-        const disk = (await loadDiskMessages(chatMid))?.slice(-limit);
+        const diskAll = await loadDiskMessages(chatMid);
+        const disk = diskAll?.slice(-limit);
+        if (diskAll?.length) stored = diskAll;
         if (disk?.length) {
+          servedCached = true;
           msgCache.set(chatMid, { at: Date.now(), messages: disk });
           await updateChatPreview(chatMid, disk);
           emitEvent("messages", {
@@ -652,6 +665,8 @@ export function createCommandService(runtime: CommandRuntime) {
       }
 
       if (!force && cached?.messages?.length) {
+        servedCached = true;
+        stored ??= cached.messages;
         await updateChatPreview(chatMid, cached.messages);
         emitEvent("messages", {
           chatMid,
@@ -665,10 +680,74 @@ export function createCommandService(runtime: CommandRuntime) {
         });
       }
 
-      emitEvent("progress", { scope: "messages", chatMid, state: "loading" });
+      const canExtend = !force && !!stored?.length &&
+        !stored.some(needsDecryptionRefresh);
+      const cursorId = boxCursor.get(chatMid)?.messageId;
+      if (canExtend && reachesCursor(stored!, cursorId)) {
+        // Nothing newer exists on the server, so skip the network round trip.
+        const current = stored!.slice(-limit);
+        msgCache.set(chatMid, { at: Date.now(), messages: current });
+        ok(id, {
+          messages: await forUiMessages(current, chatMid),
+          cached: true,
+        });
+        emitEvent("progress", { scope: "messages", chatMid, state: "ready" });
+        return;
+      }
+
+      // Messages already on screen are refreshed silently.
+      if (!servedCached) {
+        emitEvent("progress", { scope: "messages", chatMid, state: "loading" });
+      }
 
       try {
         let out: Json[] = [];
+
+        const cursor = boxCursor.get(chatMid);
+        if (canExtend && cursor) {
+          try {
+            const raw = await client!.base.talk
+              .getPreviousMessagesV2WithRequest({
+                request: {
+                  messageBoxId: chatMid,
+                  endMessageId: {
+                    messageId: cursor.messageId,
+                    deliveredTime: cursor.deliveredTime,
+                  },
+                  messagesCount: Math.min(DELTA_PAGE, limit),
+                },
+              });
+            const batch: Json[] = [];
+            for (const item of raw) {
+              try {
+                batch.push(
+                  await summarizeRawMessage(item, { withMedia: false }),
+                );
+              } catch (e) {
+                console.error("[fetch delta skip]", e);
+              }
+            }
+            const merged = mergeDelta(stored!, batch, limit);
+            if (merged) {
+              msgCache.set(chatMid, { at: Date.now(), messages: merged });
+              await saveDiskMessages(chatMid, batch, { contiguous: true });
+              await updateChatPreview(chatMid, merged);
+              ok(id, {
+                messages: await forUiMessages(merged, chatMid),
+                cached: false,
+              });
+              emitEvent("progress", {
+                scope: "messages",
+                chatMid,
+                state: "ready",
+              });
+              hydrateMedia(merged, chatMid);
+              return;
+            }
+          } catch (e) {
+            console.error("[fetch delta]", e);
+          }
+        }
 
         // Prefer message boxes for DMs/bots (fast + works). Groups try Chat helper first.
         let usedBoxes = false;
@@ -787,6 +866,24 @@ export function createCommandService(runtime: CommandRuntime) {
           error: String(e),
         });
       }
+    });
+  }
+
+  /** Keep the stored history and the newest-message marker in step with a send. */
+  function recordSent(chatMid: string, message: Json) {
+    const cached = msgCache.get(chatMid);
+    if (cached) {
+      msgCache.set(chatMid, {
+        at: cached.at,
+        messages: appendLive(cached.messages, message),
+      });
+      void saveDiskMessages(chatMid, [message], { contiguous: true });
+    }
+    // Without a usable id the old marker would hide this message.
+    boxCursor.delete(chatMid);
+    runtime.storeBoxCursor(chatMid, {
+      messageId: message.id || null,
+      deliveredTime: message.createdTime,
     });
   }
 
@@ -991,7 +1088,7 @@ export function createCommandService(runtime: CommandRuntime) {
             );
           message.replyTo = replyTo;
           message.mentions = mentions;
-          msgCache.delete(chatMid);
+          recordSent(chatMid, message);
           runtime.setChatCache(null);
           touchChatPreviewFromMessage(message);
           ok(id, { message });
@@ -1012,13 +1109,13 @@ export function createCommandService(runtime: CommandRuntime) {
       }
     }
 
-    msgCache.delete(chatMid);
     runtime.setChatCache(null);
     const message = {
       ...sentMessagePayload(sent, chatMid, text),
       replyTo,
       mentions,
     };
+    recordSent(chatMid, message);
     touchChatPreviewFromMessage(message);
     ok(id, { message });
   }
