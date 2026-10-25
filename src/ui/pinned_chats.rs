@@ -1,6 +1,6 @@
 use super::*;
 
-fn sort(chats: &mut [ChatInfo], config: &AppConfig, account: &str) {
+pub(super) fn sort(chats: &mut [ChatInfo], config: &AppConfig, account: &str) {
     chats.sort_by(|a, b| {
         config
             .is_chat_pinned(account, &b.mid)

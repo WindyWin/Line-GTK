@@ -11,7 +11,13 @@ pub(super) fn same_message_list(
     )
 }
 
-pub(super) fn apply_messages(state: &AppState, mut messages: Vec<MessageInfo>) {
+pub(super) fn apply_messages(state: &AppState, messages: Vec<MessageInfo>) {
+    apply_messages_inner(state, messages);
+    // Messages waiting for the connection stay below whatever was just loaded.
+    cache_boot::settle(state);
+}
+
+fn apply_messages_inner(state: &AppState, mut messages: Vec<MessageInfo>) {
     if let Some(account) = state.self_mid.borrow().clone() {
         state.unsent_ids.borrow_mut().extend(
             messages
@@ -1878,9 +1884,12 @@ pub(super) fn dismiss_new_marker(state: &AppState) {
 
 pub(super) fn update_jump_banner(state: &AppState) {
     let n = *state.pending_new_below.borrow();
-    let show = n > 0 && !*state.stick_bottom.borrow();
+    let detached = history::is_detached(state);
+    let show = detached || (n > 0 && !*state.stick_bottom.borrow());
     if show {
-        let label = if n == 1 {
+        let label = if detached && n == 0 {
+            crate::i18n::t("shared_media_back_to_latest")
+        } else if n == 1 {
             crate::i18n::t("jump_new_one")
         } else {
             crate::i18n::tf("jump_new_n", &[("n", &n.to_string())])

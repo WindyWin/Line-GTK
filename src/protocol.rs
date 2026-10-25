@@ -212,6 +212,61 @@ pub struct MessageInfo {
     pub flex: Option<FlexInfo>,
 }
 
+/// A persisted attachment or URL discovered in one conversation.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMediaItem {
+    pub key: String,
+    pub message_id: String,
+    pub chat_mid: String,
+    pub created_time: i64,
+    pub sender_mid: String,
+    pub kind: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub thumbnail_path: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub cache_state: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMediaPage {
+    pub chat_mid: String,
+    pub category: String,
+    pub items: Vec<SharedMediaItem>,
+    #[serde(default)]
+    pub next_cursor: String,
+    pub scan_state: String,
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub cached_count: usize,
+    #[serde(default)]
+    pub pending_count: usize,
+    #[serde(default)]
+    pub failed_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedMediaDownload {
+    pub path: String,
+    pub file_name: String,
+    pub content_type: String,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ChatEventInfo {
     pub kind: String,
@@ -238,6 +293,16 @@ pub enum ProtocolEvent {
         picture_path: Option<String>,
         avatar_path: Option<String>,
         picture_url: Option<String>,
+    },
+    /// Chats and profile saved by an earlier run, sent before login finishes.
+    CachedBoot {
+        mid: String,
+        display_name: String,
+        status_message: String,
+        picture_path: Option<String>,
+        avatar_path: Option<String>,
+        picture_url: Option<String>,
+        chats: Vec<ChatInfo>,
     },
     SessionFailed {
         error: String,
@@ -282,6 +347,10 @@ pub enum ProtocolEvent {
     SenderProfile {
         mid: String,
         name: String,
+    },
+    SharedMediaChanged {
+        account_mid: String,
+        chat_mid: String,
     },
     EmojiReady {
         key: String,

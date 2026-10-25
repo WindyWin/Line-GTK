@@ -33,6 +33,7 @@ pub(super) fn read_on_interaction(state: &AppState) {
             || *s.self_mid.borrow() != account
             || *s.message_render_generation.borrow() != generation
             || !*s.session_ready.borrow()
+            || history::is_detached(&s)
             || !s.window.is_active()
             || s.msg_stack.visible_child_name().as_deref() != Some("list")
             || !*s.stick_bottom.borrow()

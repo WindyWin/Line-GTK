@@ -1,117 +1,82 @@
-Unofficial native LINE client for Linux. GTK4 / Libadwaita UI with a Deno protocol sidecar ([linejs](https://github.com/evex-dev/linejs)).
+# Line-GTK
 
-> この `personal/features` ブランチは自分用の機能を開発するためのものです。上流へのPR用の `main` とは分離しています。
-> 画面上部の「既読をつけない」をオンにすると、このアプリからの既読通知を停止します。設定は再起動後も維持され、オンの間は未読バッジも残ります。オフに戻しただけではまとめて既読にせず、次にトークを開くなどの通常操作から通知を再開します。すでに開いているトークも、最新部分が表示された状態で本文・入力欄のクリック、キー操作、スクロールをすると既読を通知し、未読件数を消します。古い履歴を読んでいる間や、全体・友だち別の停止が有効な間は、この操作では既読を送りません。すでに付いた既読や、別の端末で付く既読には影響しません。
-> 友だちごとに止める場合は、トーク一覧で右クリックして「この友だちは既読をつけない」を選びます。指定した相手のアイコンに目を隠したマークが付き、本文を開いても新着を受信しても既読を送らず、未読バッジも残します。もう一度右クリックして「この友だちの既読停止を解除」を選ぶと、次の通常操作から再開します。解除しただけでは既読を送信しません。相手別の設定はアカウントごとに保存し、再起動後も維持します。全体の停止スイッチがオン、または自動既読がオフの場合は、相手別の停止を解除しても既読を送りません。
-> 既読停止中でも、その時点までのメッセージだけ既読にしたい場合は、トーク上部の「ここまで既読にする」を押します。友だちのトークを右クリックしたメニューからも操作できます。全体・相手別の停止設定は変更せず、その後の新着は引き続き未読のままです。送信に成功した範囲だけを未読同期へ反映し、送信中の新着や通信失敗で未読件数を誤って消さないようにします。
->
-> 元の開発ブランチは `main` です。日本語UI・フォント、メッセージ復号・グループ名、メールログインの変更を統合して開発しています。
-> トーク一覧のプレビューは本文の取得時にも更新し、背景取得は同時2件で一覧全体を処理します。最新の本文を取得できない場合は「タップして開く」に戻し、読み込み中の表示を残しません。
+Unofficial native LINE client for Linux, with a GTK4/Libadwaita interface and a Deno protocol sidecar powered by [linejs](https://github.com/evex-dev/linejs).
 
-![main](./assets/761546283_1013837091419784_4898538377611644175_n.jpg)
+**README:** English · [Tiếng Việt](README.vi.md) · [日本語](README.ja.md)
 
----
+> The `personal/features` branch is for personal feature development and is separate from `main`, which is used for upstream pull requests. It integrates Japanese UI and font support, message decryption, group information, and email login changes.
 
-## Implementation
+![Line-GTK main window](assets/761546283_1013837091419784_4898538377611644175_n.jpg)
 
-- [x] QR login (additional device)
-- [x] メールアドレス・パスワードでログイン（スマホでの認証番号入力に対応）
-- [x] Chats, messages, stickers, friends
-- [x] スタンプのデスクトップ通知に画像プレビューを表示
-- [x] スリープ復帰・ネットワーク復旧時に一覧と開いているトークを再取得
-- [x] スマホ等の別端末で読んだトークの未読バッジを自動で同期
-- [x] メッセージ横の矢印ボタン・右クリックから引用付きのテキスト返信（リプライ）
-- [x] 自分が送ったメッセージの送信取消と、別端末での取消の反映
-- [x] メッセージへのリアクション（標準6種・LINE絵文字）と、リアクションした人の一覧
-- [x] トークを「全部・友だち・グループ・公式アカウント」で絞り込み、カテゴリ内を検索
-- [x] トークを右クリックで非表示にし、設定から再表示
-- [x] トークを右クリックでピン留めし、一覧の上段へ固定
-- [x] LINE側のブロック・解除と、ブロック中のユーザー一覧
-- [x] グループの招待・参加・退出・メンバー削除を名前付きの案内行で表示
-- [x] グループの吹き出しに送信者名を表示し、引用元の名前も更新
-- [x] アルバム一覧・写真の閲覧、拡大表示、原本の保存
-- [x] Photos, video, voice messages, files
-- [x] 通常の絵文字の選択・入力・送信と、LINE独自の絵文字の受信表示
+## Features
+
+- [x] QR login as an additional device; email and password login with phone verification when needed
+- [x] Chats, messages, stickers, friends, photos, videos, voice messages, and files
+- [x] Replies, unsend, reactions, Unicode emoji, and received LINE emoji
+- [x] Chat filters and search; hide, pin, and block contacts
+- [x] Group event notices and sender names
+- [x] Albums, original photo downloads, and in-app image, video, PDF, and text viewers
 - [x] Paste and drag-and-drop attachments
-- [x] In-app viewers (image, video, PDF, text)
-- [x] Downloads, tray, Vietnamese (default) / Thai / English / Japanese, themes
-- [x] Discord RPC
-- [ ] Voice call (WIP)
+- [x] Sticker notification previews, unread sync, and recovery after sleep or network loss
+- [x] Downloads, tray, themes, Discord RPC, and Vietnamese (app default), Thai, English, and Japanese UI
+- [ ] Voice calls (work in progress)
 - [ ] Account switcher
 
-メッセージ横の矢印ボタンを押すと引用元が選ばれ、そのまま入力欄で返信を書けます。右クリックの「リプライ」からも選べます。×ボタンまたはEscで取り消せます。別のトークへ移ると引用元を解除します。
+### Read receipts and unread state
 
-相手のメッセージ横の笑顔ボタン、または右クリックの「リアクション」から、標準の6種類か、所有しているLINE絵文字セット（タブで切り替え）や最近見たLINE絵文字を選んでリアクションできます。吹き出しの下のリアクションを押すと同じものを付け外しでき、右クリック・長押しでリアクションした人の一覧を表示します。ほかの人や別端末でのリアクションも受信して反映し、アカウント別に保存して再起動後も履歴と合わせて表示します。標準リアクションの6種はLINE公式のアイコン（assets/reactions）で表示し、LINE絵文字とは別の種類として扱います。LINE絵文字のリアクションは公式PC版でも受信表示のみのため、送信はLINE側の条件（絵文字の所有など）により拒否される場合があります。
+Turn on **Do not mark as read** at the top of the window to stop read receipts from this app. The setting survives restarts, and unread badges remain. Turning it off does not mark everything read at once: receipts resume through normal activity, such as opening a chat. In an already open chat at the latest messages, clicking the conversation or composer, typing, or scrolling may send a receipt. Reading older history, the global pause, or a per-contact pause prevents this. Receipts already sent or sent by other devices are unaffected.
 
-トークを右クリックして「ブロック」を選び、確認するとLINE側で相手をブロックします。同じメニューの「ブロックを解除」、または設定 → 機能 → ブロック中のユーザーから解除できます。履歴は残し、一覧にブロック中のマークを表示します。ブロック中の個別トークは入力を無効にし、送信要求も拒否します。グループ内の同じ相手の発言は引き続き表示します。起動・復帰・他端末の変更通知でサーバーの一覧を取得し、取得や変更が失敗した場合は確認済みの状態を維持します。ブロック操作から既読を送ったり、既読停止の設定を変更したりしません。グループの扱いは[LINE公式ヘルプ](https://help2.line.me/line/smartphone?contentId=200002013&lang=ja)に合わせています。
+To pause one contact, right-click their chat and choose **Do not mark this friend as read**. Their avatar gains an eye-off mark. Opening the chat or receiving messages leaves them unread. Use the same menu to resume; resuming alone sends nothing. Per-contact settings are stored per account. Resuming a contact has no effect while the global pause is on or automatic read receipts are off.
 
-友だちのトークを右クリックして「ピン留め」を選ぶと、一覧の上段に固定します。同じメニューから解除できます。ピン留めしたトーク同士、そのほかのトーク同士は新しい順に並び、検索・カテゴリ・非表示の条件を維持します。このPCのアカウントごとに保存し、再起動後も引き継ぎます。留め外しだけではトークを開いたり、既読を送ったりしません。
+Use **Mark read up to here** at the top of a chat or in its context menu to mark only messages received so far. Pause settings stay on, so later messages remain unread. Only a successfully sent range updates the unread count; new messages arriving during the request or a failed request cannot incorrectly clear it. Read notifications from another device update the chat, open conversation, and tray even while local receipts are paused. This synchronization never sends a receipt and checks the server when needed to avoid clearing newer unread messages.
 
-グループの操作通知を受信すると「アリスがボブをグループに招待しました」「ボブがグループに参加しました」などの案内行をトーク内に表示します。招待・参加・退出・メンバー削除を区別し、複数人の対象にも対応します。名前は背景で取得し、取得後に表示を更新します。このPCが受信したイベントをアカウント別に保存し、トークを開き直した場合や再起動後も通常の本文と時刻順で表示します。保存は1トーク500件・アカウント全体5000件までで、通常のメッセージキャッシュと一緒に削除できます。案内行にはリプライを付けず、イベントIDを使って既読を送信しません。
+### Messages and chat controls
 
-過去のグループ操作はメッセージ履歴APIから取得できないため、イベント表示は対応後にこのPCで受信・保存できた分が対象です。アプリの終了中や通知の接続が切れている間の操作は、LINEが再配信した場合のみ記録されます。
+Click the arrow beside a message or choose **Reply** from its context menu to quote it. Cancel with × or Esc; switching chats clears the quote. Use the smile button or **React** menu to pick one of six standard reactions, a recent LINE emoji, or an emoji from an owned set. Click a reaction under a bubble to toggle yours; right-click or long-press it to see who reacted. Reactions from other devices are stored per account. The six standard reactions use LINE icons in `assets/reactions`. LINE may reject sending an emoji reaction, depending on conditions such as ownership; the official desktop client only displays received LINE emoji reactions.
 
-スリープから戻ると、2秒後に保存済みのセッションで新着の受信接続を作り直し、サーバー側の最新位置からトーク一覧と開いているトークの直近80件を取り直します。休止前の応答しない取得を待たず、表示済みの履歴と重複なく統合し、その後の新着も受信し続けます。下書き・引用元・読んでいる位置を維持し、復帰処理だけでは既読を送りません。非表示・ピン留め・既読停止の設定も引き継ぎます。送信中の吹き出しがある場合は、送信の完了後に本文を統合します。
+Right-click a contact chat and confirm **Block** to block that person on LINE. Unblock from the same menu or **Settings → Features → Blocked users**. History remains, the list shows a blocked mark, and the one-to-one composer and send requests are disabled. Their group messages still appear. The server block list refreshes at startup, on resume, and after changes from another device. A failed request retains the last confirmed state. Blocking does not change read-pause settings or send a read receipt. Group behavior follows [LINE's help](https://help2.line.me/line/smartphone?contentId=200002013&lang=ja).
 
-グループ・複数人トークの通知タイトルは「送信者名（グループ名）」と表示します。本文・写真・スタンプのどれでも送信者を確認できます。名前の取得は最大1.2秒待ち、間に合わない場合はメンバーを区別できる仮表示で通知してから、取得後に同じ通知を無音で更新します。同じ名前の再取得で通知を繰り返さず、更新時もスタンプ画像を保持します。
+Right-click a friend chat to pin or unpin it. Pinned chats appear first; each group remains sorted by recency. Search, category, and hidden-chat filters still apply. Pins are stored per account on this computer, and pinning sends no read receipt. Right-click a chat to hide it from this computer's chat list, search results, and recent tray chats. Restore it under **Settings → Features → Hidden chats**. History is retained, and hiding or restoring sends no receipt. Hiding the open chat clears the selection. Hidden state persists through new messages and restarts per account, but does not sync to other devices; notification settings are independent.
 
-スタンプ受信の通知は、本文画像に対応した通知サーバーではスタンプの静止画を表示します。画像を最大1.2秒待ち、取得が遅い場合は文字の通知を先に出してから同じ通知を無音で更新します。閉じた通知は後着の画像で再表示しません。本文画像に対応しないサーバーでは画像ヒントとスタンプのアイコンを使い、取得できない場合は「スタンプ」の文字を残します。通知用画像は最大200×100ピクセルの透過PNGにし、通常のスタンプキャッシュと一緒に削除できます。通知クリックでトークを開く動作と、通知のミュート設定を維持します。
+Use **Unsend** on one of your messages and confirm to request removal on LINE. The app replaces its content only after LINE confirms success; a failure leaves the original. LINE decides eligibility and time limits and shows its standard notice to recipients. Unsend events from other devices are stored per account, so reloading history or restarting does not restore removed content. Already downloaded photos and files are not deleted.
 
-スマホ等の別端末で既読にした通知を受信すると、このPCの未読バッジ・開いているトークの未読表示・トレイの未読件数も更新します。全体または友だち別の既読停止がオンでも、他の端末で実際に読んだ結果は反映します。この同期から既読を送信することはありません。古い既読通知で後から届いた新着を消さず、読み残しがある場合はサーバーの未読件数を確認します。未読照会中の新着・アカウント変更・通信失敗でも、古い応答で未読を消さないようにします。
+The sticker picker shows a 160 px still preview on hover using cached assets. The composer emoji button inserts Unicode emoji as text at the cursor, using the system emoji font (`noto-fonts-emoji` on Arch). Received LINE emoji display as still images inline, with up to four background downloads into the media cache. If an image is unavailable, its alternative text remains; quotes and chat previews also show alternative text. Sending owned LINE emoji and animated LINE emoji playback are not supported.
 
-復帰直後に通信できない場合は既存の表示を残し、3秒・10秒・30秒後に再試行します。それでも完了できない場合は「再試行」を表示し、その後のネットワーク復旧時にも取り直します。logindの復帰通知を使い、通知が使えない環境では定期処理の時刻差でも検知します。
+### Groups, notifications, and recovery
 
-自分が送ったメッセージを右クリックして「送信を取り消す」を選ぶと、確認後にLINEへ取消を送信します。本文・写真・スタンプなどが対象です。LINE側の成功を確認してから取消の案内へ置き換え、引用されている本文も隠します。失敗した場合は元のメッセージを残します。取消期限や対象の条件はLINE側で判断し、相手には標準の取消通知が表示されます。
+Group invitation, join, leave, and removal events appear as named notices, including events involving multiple members. Names load in the background. Events received by this computer are stored per account and interleaved with messages by time after reopening or restarting. Limits are 500 events per chat and 5,000 per account; clearing the message cache removes them. Notices cannot be replied to and their IDs are never used for read receipts. Historical group events are unavailable from the message history API, so events missed while the app was closed or disconnected appear only if LINE redelivers them. Group and multi-person bubbles show sender names, including members who are not friends, and update names and quoted sender names after background lookup.
 
-別端末で取り消したメッセージも、取消イベントを受信すると表示に反映します。取消済みIDをこのPCにアカウント別で保存し、履歴を再取得したときや再起動したときに、受信済みの取消を元に戻さないようにします。端末へ保存済みの写真・ファイルの削除は行いません。
+Group notifications show **Sender (Group)** for text, photos, and stickers. Name lookup waits up to 1.2 seconds, then uses a distinct temporary member label if needed and silently updates the same notification later. Sticker notifications show a still image when the notification server supports body images. Image lookup also waits up to 1.2 seconds; a text notification may appear first and be silently updated. A dismissed notification does not reopen. Other servers use an image hint and sticker icon, with text as fallback. Notification images are transparent PNGs up to 200 × 100 pixels and are removed with the sticker cache. Clicking a notification opens the chat; mute settings still apply.
 
-スタンプ選択画面で各スタンプにカーソルを置くと、160pxの静止画プレビューを表示します。カーソルを離すと閉じ、スタンプをクリックすると送信します。画像はキャッシュ済みの素材を背景で読み込み、拡大表示のための通信は行いません。
+On resume from sleep, the app reconnects its receive stream after two seconds using the saved session, refreshes the chat list and latest 80 messages of the open chat, and merges them without duplicates. Drafts, quotes, scroll position, hidden and pinned chats, and read-pause settings remain. Refresh itself sends no receipt. Pending outgoing bubbles merge after sending finishes. If disconnected, the current view remains and retries occur after 3, 10, and 30 seconds. A **Retry** action appears if needed, and recovery also runs when the network returns. The app uses logind resume notifications, with periodic timing as fallback. Chat previews update when messages load; background loading processes two chats at a time and falls back to **Tap to open** when the latest message is unavailable.
 
-入力欄の右端の絵文字アイコンから通常の絵文字を選べます。選んだ絵文字はカーソル位置に挿入し、肌色・家族・国旗などのUnicodeの組み合わせも通常のテキストとして送信します。表示にはシステムの絵文字フォントを使います（Arch Linuxでは `noto-fonts-emoji`）。
+### Media and albums
 
-受信したLINE独自の絵文字は、本文内の指定位置に静止画として表示します。画像は同時4件まで背景で取得してメディアキャッシュへ保存し、取得できない場合は元の代替テキストを残します。本文と絵文字の混在・連続表示に対応します。購入済みLINE絵文字の一覧・送信と、LINE絵文字のアニメーション再生は今回の対応範囲に含みません。引用欄と一覧プレビューには代替テキストを表示します。
+Click a video thumbnail's play button for a viewer with playback, position, elapsed and total time, and volume controls. Replay after completion, save the video itself, or stop playback by closing the viewer. Playback requires a GTK media backend and suitable codecs. If it fails, use **Retry**, **Open in another app**, or download. If LINE no longer provides the original, the app shows an error instead of saving its thumbnail as a video. Album videos and animated sticker previews are outside the current feature set.
 
-グループ・複数人トークでは、相手の吹き出しの上に送信者名を表示します。友だち登録していないメンバーも名前を取得し、取得中はメンバーを区別できる仮表示を出します。本文の表示を待たせず、名前や引用元の表示を後から更新します。取得に失敗した場合は、次回の履歴表示や新着時に一定時間を置いて再確認します。
-
-トーク一覧を右クリックして「非表示」を選ぶと、このPCの一覧・検索結果・トレイの最近のトークから隠せます。設定 → 機能 → 非表示のトークで「再表示」を押すと戻せます。トーク履歴は削除せず、非表示・再表示だけでは既読を付けません。開いているトークを非表示にすると、別のトークを自動で開かずに選択を解除します。
-
-非表示の状態はアカウントごとに保存し、新着メッセージを受信しても、再起動しても維持します。スマホや他のPCの表示状態には同期しません。通知の設定は変えないため、必要に応じて通知を別途オフにしてください。
-
-トークの通常動画は、サムネイル中央の再生マークを押すと専用画面で再生します。再生・一時停止、再生位置、経過時間・総時間、音量を常に表示し、最後まで再生した後も再生ボタンでもう一度再生できます。ダウンロードボタンではサムネイル画像ではなく動画本体を保存します。閉じると再生を停止します。
-
-動画の再生にはGTKのメディアバックエンドと対応するコーデックが必要です。再生できない場合は「再試行」「別のアプリで開く」またはダウンロードを使えます。LINE側で期限切れなどにより原本を取得できない場合は、プレビュー画像を動画として保存せず取得エラーを表示します。アルバム内の動画や動くスタンプのプレビューは別の対応範囲です。
-
-トーク上部の「アルバム」から、そのトークのアルバムを開けます。「すべてのトーク」で全体の一覧へ切り替えられ、トークを選んでいないときは最初から全体を表示します。アルバム内の写真を押すと拡大でき、写真ごとの「保存」や画像ビューアーのダウンロードボタンから原本を保存できます。保存先と保存ダイアログの有無は既存の写真ダウンロード設定に従います。通常保存は同名ファイルを上書きしません。
-
-写真は12件ずつ原本を取得し、同時取得は3枚までに制限します。取得済みの原本はメディアキャッシュとして再利用し、キャッシュ削除の対象になります。JPEG・PNG・GIF・WebPに対応し、原本は1枚50MBまでです。動画は未対応の表示を出し、アルバムの作成・写真の追加・削除は行いません。取得失敗時は「再試行」、情報が古くなった場合は更新ボタンを使えます。
-
----
+Use **Album** at the top of a chat to open its albums, or **All chats** for the full list. With no chat selected, the full list appears by default. Open a photo for a larger view and save its original from the photo or image viewer. Existing download location and dialog settings apply; normal saving does not overwrite a same-named file. Originals load 12 at a time, with up to three concurrent downloads, and are reused from the media cache. JPEG, PNG, GIF, and WebP are supported up to 50 MB per original. Album videos are marked unsupported; creating albums or adding and deleting photos is unavailable. Use **Retry** after a failed download or refresh stale album information.
 
 ## Requirements
 
-メールログインはPCの追加デバイスとして認証します。スマホ側で認証番号の入力が必要になる場合があります。
-通常はPC用の認証情報でセッションを復元します。メールログイン画面で「ログイン情報を保存して起動時に自動ログイン」をオンにすると、ログイン成功後にメールアドレスとパスワードをOSキーストアへ保存します。ログイン済みの場合は設定 → アカウント → 起動時の自動ログイン → 設定から登録・変更・削除できます。
+Email login authenticates this client as an additional PC device and may require a phone verification code. Normally the app restores a session using PC credentials. Enable **Save login details and sign in automatically at startup** to save email and password in the OS keyring after successful login. You can add, change, or delete them under **Settings → Account → Automatic sign-in at startup**.
 
-自動ログインはアプリ起動時に一度だけ行います。保存セッションを優先し、認証情報がない・失効した場合だけメールログインを試します。一時的な通信失敗ではパスワードログインへ切り替えず、起動後の他PCからのログインによる切断時にも自動で入り直しません。追加認証が必要な場合はスマホ用の認証番号を表示し、誤パスワードなどの失敗時は手動ログイン画面で止まります。
-
-保存先にはSecret Service対応のOSキーストア（GNOME Keyringなど）を使い、メールアドレス・パスワードを設定ファイルやコマンド引数には保存しません。キーストアでの保存に失敗した場合は自動ログインを無効にし、取得に失敗した場合は手動ログインへ案内します。キーストアのロック解除を求められる場合があります。保存情報の削除や手動ログアウトでは自動ログインを無効にし、保存情報を削除します。
-音声通話の試験機能を使う場合はQRコードでログインしてください。
+Automatic sign-in runs once at startup. It prefers a saved session and tries email login only if that session is missing or invalid. Temporary network errors do not trigger password login, and a later disconnection caused by login from another PC does not trigger automatic re-login. Required phone verification is shown; incorrect credentials return to manual login. Credentials are stored in a Secret Service-compatible keyring, such as GNOME Keyring, never in config files or command arguments. A keyring failure disables automatic sign-in or returns to manual login. Unlocking the keyring may be required. Removing credentials or logging out disables automatic sign-in and deletes saved credentials. Use QR login for the experimental voice-call feature.
 
 | Dependency | Notes |
 | --- | --- |
-| Rust | stable toolchain |
-| GTK4 + Libadwaita | `pacman -S gtk4 libadwaita` |
-| Deno | Build-time protocol compiler; source-tree runs use `deno` or `DENO` |
+| Rust | Stable toolchain |
+| GTK4 + Libadwaita | GTK4 4.14+ and Libadwaita 1.5+; `pacman -S gtk4 libadwaita` on Arch |
+| Deno | Deno 2; build-time protocol compiler; source runs use `deno` or `DENO` |
 | Python 3 | Dependency verification and package smoke tests |
-| ffmpeg / ffprobe | voice record, video thumbs |
-| libsecret (`secret-tool`) + Secret Service | 起動時のメール自動ログインを使う場合に必要 |
-| Optional | `pdftoppm`, `pdftotext` for PDF preview |
+| ffmpeg / ffprobe | Voice recording and video thumbnails |
+| libsecret (`secret-tool`) + Secret Service | Required for automatic email sign-in |
+| Optional | `pdftoppm`, `pdftotext` for PDF previews |
 
-Wayland and X11 both work. Tested mainly on Arch-based desktops.
+Wayland and X11 both work. Testing has mainly been on Arch-based desktops.
 
----
+## Install
 
-## Install (Arch / AUR)
+### Arch / AUR
 
 ```bash
 # Development snapshot
@@ -121,7 +86,8 @@ yay -S line-gtk-git
 yay -S line-gtk
 ```
 
-## Install (Flatpak bundle)
+### Flatpak bundle
+
 ```bash
 flatpak install --user ./line-gtk-0.1.2-x86_64.flatpak
 flatpak run dev.linegtk.LineGtk
@@ -129,15 +95,7 @@ flatpak run dev.linegtk.LineGtk
 
 ## Build and run
 
-Vietnamese and English use `Noto Sans` by default, with a `Noto Sans` fallback
-for custom fonts in the chat UI and message composer. Install `noto-fonts` on
-Arch Linux to provide this font. Existing Vietnamese settings using the old
-`Noto Sans Thai` default migrate automatically; other custom fonts and the
-empty system-font setting are preserved.
-
-設定の表示言語で「日本語」を選択できます。標準フォントを使用している場合は
-「Noto Sans CJK JP」に切り替え、指定済みの独自フォントは維持します。
-Arch Linuxでは `noto-fonts-cjk` をインストールしてください。
+Vietnamese and English use `Noto Sans` by default, including as fallback for custom chat and composer fonts. Install `noto-fonts` on Arch Linux. Existing Vietnamese settings using the old `Noto Sans Thai` default migrate automatically; custom fonts and an empty system-font setting are preserved. Selecting Japanese uses `Noto Sans CJK JP` with the default font; custom fonts are retained. Install `noto-fonts-cjk` on Arch Linux for Japanese.
 
 ```bash
 git clone https://github.com/MidnightTale/Line-GTK.git
@@ -147,11 +105,7 @@ cargo build --release
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
 
-JSR libraries, including linejs, are pinned and stored in `protocol/vendor/deps`.
-Builds do not contact JSR. npm dependencies are checked against `protocol/deno.lock`;
-the first build still needs the npm registry and Deno compiler runtime. Once cached,
-use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` to forbid dependency downloads.
-See [dependency and connection recovery notes](docs/protocol-reliability.md).
+JSR libraries, including linejs, are pinned under `protocol/vendor/deps`, so builds do not contact JSR. npm dependencies are checked against `protocol/deno.lock`; the first build still needs the npm registry and Deno compiler runtime. Once cached, use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` to prevent dependency downloads. See the [dependency and connection recovery notes](docs/protocol-reliability.md).
 
 ## Development checks
 
@@ -164,30 +118,20 @@ deno task --config protocol/deno.json check
 
 ## Fork integration
 
-Integrated the documented changes from [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK), through `personal/features` commit `0907007`, while keeping Vietnamese as the default language. See the [integration notes (Vietnamese)](docs/fork-shirafukayayoi.md) for the included features and limits.
+This branch integrates documented changes from [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) through `personal/features` commit `0907007`, while keeping Vietnamese as the app's default language. See the [Vietnamese integration notes](docs/fork-shirafukayayoi.md) for features and limits.
 
----
+## Message decryption and group information
+
+Line-GTK uses linejs 3.5.0 to address message bodies appearing as `(none)`. If an earlier login saved the wrong encryption key, use the key refresh button under **Settings → Account** or on a decryption-failed bubble to reauthorize with a phone QR scan. Existing private keys are kept, and the correct key generation is retrieved from the phone. Group information loads in batches; names and images are stored for later launches.
 
 ## Warning
 
-This is an unofficial client. Using it may violate LINE Terms of Service. Prefer a secondary account or device session. Expect breakage when LINE changes login or crypto.
-
----
+This is an unofficial client. Using it may violate LINE's Terms of Service. Prefer a secondary account or device session. LINE login or encryption changes may break the client.
 
 ## Acknowledgments
 
-Protocol and E2EE talk to LINE through [linejs](https://github.com/evex-dev/linejs) by [evex-dev](https://github.com/evex-dev). This app is a GTK frontend around that library; it is not affiliated with LINE Corporation or evex-dev.
-
----
+Protocol and end-to-end encryption access LINE through [linejs](https://github.com/evex-dev/linejs) by [evex-dev](https://github.com/evex-dev). This app is a GTK frontend around that library and is not affiliated with LINE Corporation or evex-dev.
 
 ## License
 
 [GPL-3.0-or-later](LICENSE)
-
-## メッセージの復号とグループ情報
-
-本文が `(none)` になる問題に対応するため、linejs 3.5.0を使用します。
-以前のログインで誤った鍵が保存されていた場合は、設定の「アカウント」または
-復号失敗の吹き出しにある暗号鍵の再取得ボタンから、スマホでQR再認証してください。
-保存済みの秘密鍵は保持し、正しい世代の鍵をスマホから受け取ります。
-グループ情報は小分けに取得し、名前と画像を次回起動時にも表示できるよう保存します。

@@ -1,6 +1,7 @@
 use super::virtual_list::{Edge, Trimmed};
 use super::*;
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 /// Messages requested per page when scrolling through history.
@@ -55,6 +56,209 @@ impl HistoryWindow {
             Edge::Bottom => &mut self.newer_request,
         }
     }
+}
+
+/// Open the bounded source-message window supplied by the shared-media cache.
+/// This path never loads the latest messages or changes the read frontier.
+pub(super) fn jump_to_shared_message(
+    state: &AppState,
+    chat_mid: &str,
+    message_id: &str,
+    created_time: i64,
+) {
+    if message_id.parse::<u128>().is_err() || !*state.session_ready.borrow() {
+        toast(state, &crate::i18n::t("reply_original_unavailable"));
+        return;
+    }
+    let Some(account) = state.self_mid.borrow().clone() else {
+        return;
+    };
+    let chat = state
+        .chats
+        .borrow()
+        .iter()
+        .find(|chat| chat.mid == chat_mid)
+        .cloned();
+    let Some(chat) = chat else {
+        toast(state, &crate::i18n::t("reply_original_unavailable"));
+        return;
+    };
+    let changed_chat = state.current_chat.borrow().as_deref() != Some(chat_mid);
+    if !open_chat_for_history(state, &chat) {
+        return;
+    }
+    if changed_chat {
+        clear_messages(state);
+        *state.msg_list_fp.borrow_mut() = None;
+    }
+
+    let generation = state.history_request_generation.borrow().wrapping_add(1);
+    *state.history_request_generation.borrow_mut() = generation;
+    // Cancel any idle rendering and scroll pinning left by a latest-page load.
+    let render_generation = state.message_render_generation.borrow().wrapping_add(1);
+    *state.message_render_generation.borrow_mut() = render_generation;
+    *state.render_batch.borrow_mut() = None;
+    *state.scroll_pin_gen.borrow_mut() += 1;
+    *state.scroll_pinning.borrow_mut() = false;
+    *state.stick_bottom.borrow_mut() = false;
+    *state.history.borrow_mut() = HistoryWindow {
+        has_more_newer: true,
+        ..HistoryWindow::default()
+    };
+    state.message_list.set_sentinel(Edge::Top, false);
+    state.message_list.set_sentinel(Edge::Bottom, false);
+    set_msg_state(state, "loading", None);
+    update_jump_banner(state);
+    match state.sidecar.request(
+        "fetch_shared_message_context",
+        Some(serde_json::json!({
+            "chatMid": chat_mid,
+            "messageId": message_id,
+            "createdTime": created_time,
+            "limit": PAGE_SIZE,
+        })),
+    ) {
+        Ok(id) => {
+            state.pending.borrow_mut().insert(
+                id,
+                Pending::SharedMessageContext {
+                    account,
+                    chat_mid: chat_mid.into(),
+                    message_id: message_id.into(),
+                    generation,
+                },
+            );
+        }
+        Err(_) => shared_context_failed(state),
+    }
+}
+
+pub(super) fn shared_context_response(
+    state: &AppState,
+    pending: Pending,
+    ok: bool,
+    result: &serde_json::Value,
+) {
+    let Pending::SharedMessageContext {
+        account,
+        chat_mid,
+        message_id,
+        generation,
+    } = pending
+    else {
+        return;
+    };
+    let owner = Navigation {
+        message_id: message_id.clone(),
+        chat_mid: chat_mid.clone(),
+        account: Some(account),
+        generation,
+        pages: 0,
+        settling_until: None,
+    };
+    if !*state.session_ready.borrow()
+        || !owner.matches(
+            state.current_chat.borrow().as_deref(),
+            state.self_mid.borrow().as_deref(),
+            *state.history_request_generation.borrow(),
+        )
+    {
+        return;
+    }
+    let messages = ok
+        .then(|| shared_context_messages(result, &chat_mid, &message_id))
+        .flatten();
+    let Some(messages) = messages else {
+        shared_context_failed(state);
+        return;
+    };
+    let messages: Vec<_> = messages
+        .iter()
+        .map(|message| unsend::masked(state, message))
+        .collect();
+    if !messages
+        .iter()
+        .any(|message| message.id == message_id && message.content_type != "UNSENT")
+    {
+        shared_context_failed(state);
+        return;
+    }
+
+    clear_messages(state);
+    *state.msg_list_fp.borrow_mut() = None;
+    *state.stick_bottom.borrow_mut() = false;
+    *state.history.borrow_mut() = HistoryWindow {
+        has_more_older: result
+            .get("hasMoreOlder")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true),
+        // The source view remains detached until the user returns to latest.
+        has_more_newer: true,
+        ..HistoryWindow::default()
+    };
+    for message in messages {
+        append_message(state, &message, false);
+    }
+    set_msg_state(state, "list", None);
+    update_chat_subtitle(state);
+    jump_to_message(state, &message_id);
+    arm(state);
+    update_jump_banner(state);
+    state.window.present();
+}
+
+fn shared_context_failed(state: &AppState) {
+    if state.message_list.message_count() > 0 {
+        set_msg_state(state, "list", None);
+    } else {
+        set_msg_state(
+            state,
+            "empty",
+            Some(&crate::i18n::t("reply_original_unavailable")),
+        );
+    }
+    update_jump_banner(state);
+    toast(state, &crate::i18n::t("reply_original_unavailable"));
+}
+
+/// Reject mismatched results and keep the source inside even an oversized page.
+fn shared_context_messages(
+    result: &serde_json::Value,
+    chat_mid: &str,
+    message_id: &str,
+) -> Option<Vec<MessageInfo>> {
+    if result.get("chatMid").and_then(|value| value.as_str()) != Some(chat_mid)
+        || result
+            .get("targetMessageId")
+            .and_then(|value| value.as_str())
+            != Some(message_id)
+    {
+        return None;
+    }
+    let mut messages = BTreeMap::new();
+    for message in parse_messages(result) {
+        if !message.id.is_empty() {
+            messages.insert(message.id.clone(), message);
+        }
+    }
+    let mut messages: Vec<_> = messages.into_values().collect();
+    messages.sort_by(|a, b| {
+        a.created_time.cmp(&b.created_time).then_with(|| {
+            match (a.id.parse::<u128>(), b.id.parse::<u128>()) {
+                (Ok(a), Ok(b)) => a.cmp(&b),
+                _ => a.id.cmp(&b.id),
+            }
+        })
+    });
+    let target = messages
+        .iter()
+        .position(|message| message.id == message_id)?;
+    if messages[target].content_type == "UNSENT" || messages[target].decryption_failed {
+        return None;
+    }
+    let start = target.saturating_sub(WINDOW_MAX / 2);
+    let end = (start + WINDOW_MAX).min(messages.len());
+    Some(messages.drain(start..end).collect())
 }
 
 /// Find an original reply in the bounded message window, paging backwards when
@@ -322,6 +526,11 @@ fn on_edge(state: &AppState, edge: Edge) {
 }
 
 fn request(state: &AppState, edge: Edge) {
+    // Saved messages only: older pages need the login, so look again later.
+    if !*state.session_ready.borrow() {
+        recheck_after(state, edge, Duration::from_secs(1));
+        return;
+    }
     let wait = {
         let mut history = state.history.borrow_mut();
         if history.request(edge).is_some() {
@@ -781,5 +990,72 @@ mod navigation_tests {
         assert!(passed_target("42", "42"));
         assert!(!passed_target("100", "99"));
         assert!(!passed_target("pending-1", "42"));
+    }
+
+    #[test]
+    fn shared_context_rejects_another_target_or_conversation_and_unavailable_sources() {
+        let mut result = serde_json::json!({
+            "chatMid": "group",
+            "targetMessageId": "42",
+            "messages": [{ "id": "42", "contentType": "IMAGE" }],
+        });
+        assert!(shared_context_messages(&result, "group", "42").is_some());
+        assert!(shared_context_messages(&result, "other", "42").is_none());
+        assert!(shared_context_messages(&result, "group", "43").is_none());
+        result["messages"][0]["contentType"] = serde_json::json!("UNSENT");
+        assert!(shared_context_messages(&result, "group", "42").is_none());
+        result["messages"][0]["contentType"] = serde_json::json!("IMAGE");
+        result["messages"][0]["decryptionFailed"] = serde_json::json!(true);
+        assert!(shared_context_messages(&result, "group", "42").is_none());
+        result["messages"] = serde_json::json!([]);
+        assert!(shared_context_messages(&result, "group", "42").is_none());
+    }
+
+    #[test]
+    fn shared_context_keeps_an_old_source_in_a_bounded_window() {
+        let mut items: Vec<_> = (1..=500)
+            .rev()
+            .map(|id| serde_json::json!({ "id": id.to_string(), "createdTime": id }))
+            .collect();
+        items.push(serde_json::json!({ "id": "5", "createdTime": 5, "text": "fresh" }));
+        items.push(serde_json::json!({ "id": "bad", "createdTime": "not a timestamp" }));
+        let result = serde_json::json!({
+            "chatMid": "group", "targetMessageId": "5", "messages": items,
+        });
+        let messages = shared_context_messages(&result, "group", "5").unwrap();
+        assert_eq!(messages.len(), WINDOW_MAX);
+        assert_eq!(messages.first().unwrap().id, "1");
+        assert_eq!(messages.last().unwrap().id, "200");
+        let sources: Vec<_> = messages
+            .iter()
+            .filter(|message| message.id == "5")
+            .collect();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].text, "fresh");
+    }
+
+    #[test]
+    fn shared_context_orders_equal_timestamps_by_exact_message_id() {
+        let result = serde_json::json!({
+            "chatMid": "group",
+            "targetMessageId": "9007199254740993",
+            "messages": [
+                { "id": "9007199254740993", "createdTime": 1 },
+                { "id": "10000000000000000", "createdTime": 1 },
+                { "id": "9", "createdTime": 1 },
+                { "id": "9007199254740992", "createdTime": 1 },
+            ],
+        });
+        let messages = shared_context_messages(&result, "group", "9007199254740993").unwrap();
+        let ids: Vec<_> = messages.iter().map(|message| message.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "9",
+                "9007199254740992",
+                "9007199254740993",
+                "10000000000000000"
+            ]
+        );
     }
 }

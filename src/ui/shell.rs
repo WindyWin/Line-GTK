@@ -47,6 +47,7 @@ pub struct ShellWidgets {
     pub settings_btn: gtk::Button,
     pub friends_btn: gtk::Button,
     pub album_btn: gtk::Button,
+    pub shared_media_btn: gtk::Button,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
     pub chat_filter_bar: gtk::Box,
@@ -395,6 +396,22 @@ pub fn build_shell_page() -> ShellWidgets {
         .css_classes(["flat"])
         .build();
     chat_bar.append(&album_btn);
+    let shared_media_btn = gtk::Button::builder()
+        .label(crate::i18n::t("shared_media"))
+        .sensitive(false)
+        .css_classes(["flat"])
+        .build();
+    let conversation_menu = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text(crate::i18n::t("shared_media"))
+        .css_classes(["flat"])
+        .build();
+    let menu = gtk::Popover::new();
+    menu.set_child(Some(&shared_media_btn));
+    conversation_menu.set_popover(Some(&menu));
+    let popover = menu.clone();
+    shared_media_btn.connect_clicked(move |_| popover.popdown());
+    chat_bar.append(&conversation_menu);
     chat_bar.append(&mute_btn);
     chat_bar.append(&call_btn);
 
@@ -726,6 +743,7 @@ pub fn build_shell_page() -> ShellWidgets {
         settings_btn,
         friends_btn,
         album_btn,
+        shared_media_btn,
         side_title,
         search_entry,
         chat_filter_bar,

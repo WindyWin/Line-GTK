@@ -58,6 +58,18 @@ import { createChatPreviews } from "./chat_previews.ts";
 import { createAlbumService } from "./albums.ts";
 import { createMessageSenders } from "./message_senders.ts";
 import { createUserProfiles } from "./user_profiles.ts";
+import {
+  type BootProfile,
+  loadBootCache,
+  loadBootMessages,
+  saveBootSession,
+} from "./boot_cache.ts";
+import {
+  createSharedMediaService,
+  type SharedMediaAnchor,
+  type SharedMediaSource,
+} from "./shared_media.ts";
+import { createSharedAttachmentCache } from "./shared_media_cache.ts";
 
 type Json = Record<string, unknown>;
 
@@ -92,6 +104,7 @@ const LINE_DEVICE = (Deno.env.get("LINE_DEVICE")?.trim() ||
 const LINE_VERSION = Deno.env.get("LINE_VERSION")?.trim() || "26.6.2";
 const chatCachePath = join(cacheDir, "chats.json");
 const contactCachePath = join(cacheDir, "contacts.json");
+const bootSessionPath = join(cacheDir, "session.json");
 const msgDiskDir = join(cacheDir, "messages");
 await ensurePrivateDir(msgDiskDir);
 
@@ -202,6 +215,8 @@ async function sessionFailure(error: unknown) {
 }
 
 let client: Client | null = null;
+/** Account of the cache shown before the network login finishes. */
+let bootAccountMid = "";
 const albums = createAlbumService({
   getClient: () => client,
   sessionId: () => myMid(),
@@ -322,7 +337,13 @@ let chatCache: { at: number; chats: ChatRow[] } | null = null;
 let chatCacheWrite = Promise.resolve();
 function saveChatCache(): Promise<void> {
   const write = chatCacheWrite.then(async () => {
-    if (chatCache) await atomicWriteJson(chatCachePath, chatCache);
+    // 起動直後に別アカウントの一覧を出さないよう、保存時のアカウントを記録する。
+    if (chatCache) {
+      await atomicWriteJson(chatCachePath, {
+        ...chatCache,
+        accountMid: myMid() || bootAccountMid,
+      });
+    }
   });
   // 1回の保存失敗で、後続の更新まで停止しないようにする。
   chatCacheWrite = write.catch(() => {});
@@ -339,6 +360,7 @@ function invalidateMessages(chatMid: string) {
 
 /** Add a live message to history that was already checked this session. */
 function appendCachedMessage(chatMid: string, message: Json) {
+  void sharedMedia.observe(chatMid, [{ message }]).catch(() => {});
   const cached = msgCache.get(chatMid);
   if (!cached) return;
   msgCache.set(chatMid, {
@@ -460,6 +482,7 @@ const unsends = createUnsendService({
       : undefined;
   },
   changed: async (chatMid, id) => {
+    await sharedMedia.unsent(chatMid, id);
     const cached = msgCache.get(chatMid)?.messages ??
       await loadDiskMessages(chatMid);
     if (cached?.length) {
@@ -478,6 +501,201 @@ const unsends = createUnsendService({
         lastActivity: row?.lastActivity ?? 0,
       });
       await saveChatCache();
+    }
+  },
+});
+
+// The owner changes even when the same account logs in again with a new client.
+let sharedOwnerClient: Client | null = null;
+let sharedOwnerGeneration = -1;
+let sharedOwner: object = {};
+function sharedSession() {
+  if (!client || authDead || !myMid()) return null;
+  if (sharedOwnerClient !== client || sharedOwnerGeneration !== workGen) {
+    sharedOwnerClient = client;
+    sharedOwnerGeneration = workGen;
+    sharedOwner = {};
+  }
+  return { accountMid: myMid(), owner: sharedOwner };
+}
+
+async function sharedHistoryPage(
+  chatMid: string,
+  anchor: SharedMediaAnchor | null,
+): Promise<SharedMediaSource[]> {
+  const active = client;
+  const session = sharedSession();
+  if (!active || !session) throw new Error("shared_media_not_logged_in");
+  const check = () => {
+    if (sharedSession()?.owner !== session.owner) {
+      throw new Error("shared_media_cancelled");
+    }
+  };
+  const raw = anchor
+    ? await active.base.talk.getPreviousMessagesV2WithRequest({
+      request: {
+        messageBoxId: chatMid,
+        endMessageId: {
+          messageId: coerceI64(anchor.messageId),
+          deliveredTime: coerceI64(
+            anchor.createdTime > 0 ? anchor.createdTime : 0,
+          ),
+        },
+        messagesCount: 100,
+      },
+    })
+    : await active.base.talk.getRecentMessagesV2({
+      messageBoxId: chatMid,
+      messagesCount: 100,
+    });
+  check();
+  const result: SharedMediaSource[] = [];
+  for (const message of raw) {
+    // The history endpoint can include the requested boundary message.
+    if (anchor && String(message.id) === anchor.messageId) continue;
+    const summary = await summarizeRawMessage(message, { withMedia: false });
+    check();
+    const meta = message.contentMetadata ?? {};
+    const size = Number(meta.FILE_SIZE);
+    if (meta.FILE_SIZE && Number.isSafeInteger(size) && size >= 0) {
+      summary.fileSize = size;
+    }
+    result.push({ message: summary, raw: message as unknown as Json });
+  }
+  return result;
+}
+
+async function resolveSharedTalk(chatMid: string, source: SharedMediaSource) {
+  const active = client;
+  const session = sharedSession();
+  if (!active || !session) throw new Error("shared_media_not_logged_in");
+  const check = () => {
+    if (sharedSession()?.owner !== session.owner) {
+      throw new Error("shared_media_cancelled");
+    }
+  };
+  let raw = source.raw;
+  if (!raw) {
+    const messages = await active.base.talk.getPreviousMessagesV2WithRequest({
+      request: {
+        messageBoxId: chatMid,
+        endMessageId: {
+          messageId: coerceI64(String(source.message.id)),
+          deliveredTime: coerceI64(Number(source.message.createdTime) || 0),
+        },
+        messagesCount: 2,
+      },
+    });
+    check();
+    raw = messages.find((message) =>
+      String(message.id) === String(source.message.id)
+    ) as unknown as Json;
+    if (!raw) {
+      // Exclusive-boundary servers need an actual newer message as the anchor.
+      const targetId = BigInt(String(source.message.id));
+      const cached = await sharedSeedMessages(chatMid);
+      check();
+      const next = cached.filter((message) => {
+        try {
+          return BigInt(String(message.id)) > targetId;
+        } catch {
+          return false;
+        }
+      }).sort((a, b) => {
+        const aa = BigInt(String(a.id)), bb = BigInt(String(b.id));
+        return aa < bb ? -1 : aa > bb ? 1 : 0;
+      })[0];
+      const nearby = next
+        ? await active.base.talk.getPreviousMessagesV2WithRequest({
+          request: {
+            messageBoxId: chatMid,
+            endMessageId: {
+              messageId: coerceI64(String(next.id)),
+              deliveredTime: coerceI64(Number(next.createdTime) || 0),
+            },
+            messagesCount: 100,
+          },
+        })
+        : await active.base.talk.getRecentMessagesV2({
+          messageBoxId: chatMid,
+          messagesCount: 100,
+        });
+      check();
+      raw = nearby.find((message) =>
+        String(message.id) === String(source.message.id)
+      ) as unknown as Json;
+    }
+  }
+  if (!raw || String(raw.id) !== String(source.message.id)) {
+    throw new Error("shared_media_original_unavailable");
+  }
+  const restored = normalizeRaw(raw);
+  if (Array.isArray(restored.chunks)) {
+    restored.chunks = restored.chunks.map((chunk: unknown) => {
+      if (chunk instanceof Uint8Array) return chunk;
+      const value = chunk as { type?: string; data?: number[] };
+      return Array.isArray(value?.data) ? Uint8Array.from(value.data) : chunk;
+    });
+  }
+  const tm = await TalkMessage.fromRawTalk(
+    restored as unknown as Parameters<typeof TalkMessage.fromRawTalk>[0],
+    active,
+  );
+  check();
+  return tm;
+}
+
+async function sharedSeedMessages(chatMid: string): Promise<Json[]> {
+  const session = sharedSession();
+  if (!session) return [];
+  let disk: Json[] = [];
+  try {
+    // Shared browsing reuses retained content independently of refresh TTL.
+    const cached = JSON.parse(
+      await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
+    );
+    if (
+      cached.accountMid === session.accountMid && Array.isArray(cached.messages)
+    ) {
+      disk = restoreCachedMessages(cached.messages);
+    }
+  } catch { /* no existing cache */ }
+  if (sharedSession()?.owner !== session.owner) {
+    throw new Error("shared_media_cancelled");
+  }
+  // Memory entries have no durable provenance. History discovery verifies
+  // legacy IDs before adopting them and reuses their existing media files.
+  return disk;
+}
+
+const sharedMedia = createSharedMediaService({
+  cacheDir,
+  session: sharedSession,
+  seed: async (chatMid) => {
+    const messages = await sharedSeedMessages(chatMid);
+    return messages.map((message) => ({ message }));
+  },
+  fetchPage: sharedHistoryPage,
+  cacheAttachment: createSharedAttachmentCache({
+    mediaDir,
+    accountMid: myMid,
+    getClient: () => client,
+    resolve: resolveSharedTalk,
+    existingFile,
+    existingFullImage,
+    isImageBytes,
+    isPreview: isPreviewOrThumbImage,
+    mediaDest,
+    thumbDest,
+  }),
+  mask: (chatMid, messages) => unsends.mask(chatMid, messages),
+  changed: (chatMid) => {
+    const session = sharedSession();
+    if (session) {
+      emitEvent("shared_media_changed", {
+        accountMid: session.accountMid,
+        chatMid,
+      });
     }
   },
 });
@@ -571,6 +789,7 @@ const commands = createCommandService({
   },
   getClient: () => client,
   setClient: (next) => {
+    if (client !== next) msgCache.clear();
     client = next;
   },
   isListening: () => listening,
@@ -852,7 +1071,7 @@ async function myProfilePayload(profile: {
   if (avatarPath) {
     emitEvent("avatar_ready", { mid: profile.mid, avatarPath });
   }
-  return {
+  const payload = {
     mid: profile.mid,
     displayName: profile.displayName ?? "",
     statusMessage: profile.statusMessage ?? "",
@@ -860,6 +1079,11 @@ async function myProfilePayload(profile: {
     avatarPath,
     pictureUrl,
   };
+  bootAccountMid = profile.mid;
+  void saveBootSession(bootSessionPath, payload as BootProfile).catch((e) =>
+    console.error("[boot session]", e)
+  );
+  return payload;
 }
 
 async function loadDiskContacts() {
@@ -909,17 +1133,26 @@ async function saveDiskContacts() {
 }
 
 async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
+  const session = sharedSession();
+  if (!session) return null;
   try {
     await refreshCachePolicy();
     const raw = JSON.parse(
       await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
     );
+    if (
+      sharedSession()?.owner !== session.owner ||
+      raw.accountMid !== session.accountMid
+    ) {
+      return null;
+    }
     if (Date.now() - Number(raw.at || 0) > cachePolicy().diskMsg) return null;
     if (Array.isArray(raw.messages)) {
-      return await unsends.mask(
+      const messages = await unsends.mask(
         chatMid,
         restoreCachedMessages(raw.messages as Json[]),
       );
+      return sharedSession()?.owner === session.owner ? messages : null;
     }
   } catch { /* miss */ }
   return null;
@@ -930,19 +1163,30 @@ async function saveDiskMessages(
   messages: Json[],
   opts: { contiguous?: boolean } = {},
 ) {
+  const session = sharedSession();
+  if (!session) return;
   try {
     const file = join(msgDiskDir, `${chatMid}.json`);
     let stored: Json[] = [];
     try {
       const raw = JSON.parse(await Deno.readTextFile(file));
-      if (Array.isArray(raw.messages)) stored = raw.messages as Json[];
+      if (
+        raw.accountMid === session.accountMid && Array.isArray(raw.messages)
+      ) {
+        stored = raw.messages as Json[];
+      }
     } catch { /* first write */ }
     const merged = mergeMessages(
       stored,
       await unsends.mask(chatMid, messages),
       opts,
     );
-    await atomicWriteJson(file, { at: Date.now(), messages: merged });
+    if (sharedSession()?.owner !== session.owner) return;
+    await atomicWriteJson(file, {
+      at: Date.now(),
+      accountMid: session.accountMid,
+      messages: merged,
+    });
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
   }
@@ -2122,6 +2366,27 @@ async function handle(req: Json) {
         bootRestoreController?.abort();
         await commands.loginToken(id, params.token as string | undefined);
         break;
+      case "load_cached_messages": {
+        const chatMid = String(params.chatMid ?? "");
+        const limit = Math.max(1, Math.min(Number(params.limit ?? 40), 200));
+        await refreshCachePolicy();
+        // 通信前の表示用。接続後は通常の fetch_messages が最新へ更新する。
+        const stored = await loadBootMessages(
+          msgDiskDir,
+          chatMid,
+          myMid() || bootAccountMid,
+          cachePolicy().diskMsg,
+        );
+        ok(id, {
+          chatMid,
+          messages: stored
+            ? await messageView.forUiMessages(
+              restoreCachedMessages(stored).slice(-limit),
+            )
+            : [],
+        });
+        break;
+      }
       case "list_chats":
         if (params.reconnect) {
           await connectionRecovery.reconnect();
@@ -2130,6 +2395,87 @@ async function handle(req: Json) {
         }
         await commands.listChats(id, !!params.force, !!params.quiet);
         break;
+      case "list_shared_media":
+      case "download_shared_media":
+      case "stop_shared_media":
+      case "fetch_shared_message_context": {
+        try {
+          const chatMid = String(params.chatMid ?? "");
+          if (method === "list_shared_media") {
+            ok(
+              id,
+              await sharedMedia.list(
+                chatMid,
+                String(params.category ?? "photos_videos"),
+                String(params.cursor ?? ""),
+                Number(params.limit ?? 60),
+                !!params.refresh,
+              ),
+            );
+          } else if (method === "download_shared_media") {
+            ok(
+              id,
+              await sharedMedia.download(
+                chatMid,
+                String(params.messageId ?? ""),
+                !!params.retry,
+              ),
+            );
+          } else if (method === "stop_shared_media") {
+            await sharedMedia.pause(chatMid);
+            ok(id, { paused: true });
+          } else {
+            const owner = sharedSession();
+            const target = String(params.messageId ?? "");
+            const source = await sharedMedia.source(chatMid, target);
+            if (!source) throw new Error("shared_media_unavailable");
+            let preceding: SharedMediaSource[] = [];
+            try {
+              preceding = await sharedHistoryPage(chatMid, {
+                messageId: target,
+                createdTime: Number(source.message.createdTime) || 0,
+              });
+            } catch {
+              // Cached source remains navigable while offline.
+            }
+            if (!owner || sharedSession()?.owner !== owner.owner) {
+              throw new Error("shared_media_cancelled");
+            }
+            const targetMessage = { ...source.message };
+            if (source.attachment) {
+              targetMessage.filePath = source.attachment.path;
+              targetMessage.imagePath = source.attachment.thumbnailPath ?? null;
+            }
+            const messages = preceding.map((item) => item.message)
+              .filter((message) => String(message.id) !== target);
+            messages.sort((a, b) =>
+              Number(a.createdTime) - Number(b.createdTime)
+            );
+            const context = await forUiMessages([
+              ...messages.slice(-49),
+              targetMessage,
+            ], chatMid);
+            if (sharedSession()?.owner !== owner.owner) {
+              throw new Error("shared_media_cancelled");
+            }
+            ok(id, {
+              chatMid,
+              targetMessageId: target,
+              messages: context,
+              hasMoreOlder: true,
+            });
+          }
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          fail(
+            id,
+            /^shared_media_[a-z_]+$/.test(code)
+              ? code
+              : "shared_media_request_failed",
+          );
+        }
+        break;
+      }
       case "list_albums":
       case "list_album_photos":
       case "download_album_photo": {
@@ -2318,6 +2664,8 @@ async function handle(req: Json) {
       }
       case "clear_cache": {
         const kind = String(params.kind ?? "all");
+        // Settle/invalidate writers before the existing cache files are wiped.
+        await sharedMedia.clear(kind);
         const wipe = async (dir: string) => {
           try {
             for await (const e of Deno.readDir(dir)) {
@@ -2461,6 +2809,10 @@ async function handle(req: Json) {
         listening = false;
         chatCache = null;
         msgCache.clear();
+        bootAccountMid = "";
+        try {
+          await Deno.remove(bootSessionPath);
+        } catch { /* ignore */ }
         ok(id, {});
         break;
       default:
@@ -2487,6 +2839,21 @@ emitEvent("ready", {
 });
 
 if (bootAuth) {
+  await refreshCachePolicy();
+  const cached = await loadBootCache(
+    bootSessionPath,
+    chatCachePath,
+    cachePolicy().diskChat,
+  );
+  if (cached) {
+    bootAccountMid = cached.accountMid;
+    // 接続を待たず、前回の一覧とプロフィールを先に見せる。
+    emitEvent("cached_boot", {
+      accountMid: cached.accountMid,
+      profile: { ...cached.profile, device: bootDevice },
+      chats: cached.chats,
+    });
+  }
   const controller = new AbortController();
   bootRestoreController = controller;
   // Keep stdin responsive (including ping) while a server is unavailable.

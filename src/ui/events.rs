@@ -22,7 +22,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             account_mid,
             chat_mid,
             message_id,
-        } => unsend::apply(state, &account_mid, &chat_mid, &message_id),
+        } => {
+            unsend::apply(state, &account_mid, &chat_mid, &message_id);
+            if state.self_mid.borrow().as_deref() == Some(account_mid.as_str()) {
+                shared_media::unsent(state, &chat_mid, &message_id);
+            }
+        }
         ProtocolEvent::MessageReaction {
             account_mid,
             chat_mid,
@@ -105,7 +110,25 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             });
             on_logged_in(state, &result);
         }
+        ProtocolEvent::CachedBoot {
+            mid,
+            display_name,
+            status_message,
+            picture_path,
+            avatar_path,
+            picture_url,
+            chats,
+        } => cache_boot::show(
+            state,
+            &mid,
+            &display_name,
+            &status_message,
+            avatar_path.as_deref(),
+            picture_url.as_deref().or(picture_path.as_deref()),
+            chats,
+        ),
         ProtocolEvent::SessionFailed { error } => {
+            cache_boot::abort(state);
             *state.session_ready.borrow_mut() = false;
             hide_upload_progress(state);
             if auto_login::restore_failed(state, &error) {
@@ -395,12 +418,21 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Messages { chat_mid, messages } => {
             if state.current_chat.borrow().as_deref() == Some(chat_mid.as_str())
                 && !resume_sync::stale_history_event(state, &chat_mid)
+                && !history::is_detached(state)
             {
                 apply_messages(state, messages);
                 let refreshing = state.pending.borrow().values().any(|p| {
                     matches!(p, Pending::FetchMessages { chat_mid: mid, .. } if *mid == chat_mid)
                 });
                 set_syncing(state, refreshing);
+            }
+        }
+        ProtocolEvent::SharedMediaChanged {
+            account_mid,
+            chat_mid,
+        } => {
+            if state.self_mid.borrow().as_deref() == Some(account_mid.as_str()) {
+                shared_media::changed(state, &chat_mid);
             }
         }
         ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
@@ -733,6 +765,29 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 return;
             }
+            if let Some(Pending::SharedMedia {
+                ui,
+                generation,
+                request,
+            }) = pending
+            {
+                if let Some(ui) = ui.upgrade() {
+                    shared_media::response(
+                        state,
+                        &ui,
+                        generation,
+                        request,
+                        ok,
+                        &result,
+                        error.as_deref(),
+                    );
+                }
+                return;
+            }
+            if let Some(context @ Pending::SharedMessageContext { .. }) = pending {
+                history::shared_context_response(state, context, ok, &result);
+                return;
+            }
             if let Some(Pending::ResumeSync {
                 generation,
                 account,
@@ -749,9 +804,18 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 history::response(state, id, older_or_newer, ok, &result);
                 return;
             }
+            if let Some(Pending::CachedMessages {
+                chat_mid,
+                generation,
+            }) = pending
+            {
+                cache_boot::cached_messages(state, &chat_mid, generation, ok, &result);
+                return;
+            }
             if let Some(Pending::FetchMessages { generation, .. }) = pending.as_ref()
                 && *generation != *state.history_request_generation.borrow()
             {
+                cache_boot::end(state);
                 return;
             }
             if matches!(pending, Some(Pending::FetchMessages { .. })) {
@@ -791,6 +855,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         "empty",
                         Some(error.as_deref().unwrap_or("Failed to load chats")),
                     );
+                }
+                if matches!(pending, Some(Pending::FetchMessages { .. })) {
+                    cache_boot::end(state);
                 }
                 if matches!(pending, Some(Pending::FetchMessages { .. }))
                     && !has_message_content(state)
@@ -871,6 +938,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             apply_messages(state, messages);
                         }
                     }
+                    cache_boot::end(state);
                 }
                 Some(Pending::Send {
                     placeholder_id,
@@ -897,7 +965,11 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                         history::enforce_live_limit(state);
                     }
                 }
-                Some(Pending::FetchOlder { .. } | Pending::FetchNewer { .. }) => {}
+                Some(
+                    Pending::CachedMessages { .. }
+                    | Pending::FetchOlder { .. }
+                    | Pending::FetchNewer { .. },
+                ) => {}
                 Some(Pending::ListStickers) => {
                     fill_sticker_popover(state, &result);
                 }
@@ -925,6 +997,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(
                     Pending::MentionMembers { .. }
                     | Pending::Album { .. }
+                    | Pending::SharedMedia { .. }
+                    | Pending::SharedMessageContext { .. }
                     | Pending::Unsend { .. }
                     | Pending::UserProfile { .. }
                     | Pending::React { .. }
@@ -942,6 +1016,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Exited(code) => {
             resume_sync::cancel(state);
             albums::close(state);
+            shared_media::close(state);
             hidden_chats::close(state);
             user_profile::close();
             user_profile::update_header(state, None);
@@ -1003,6 +1078,7 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    let saved_view = cache_boot::active(state);
     chat_snapshots::clear();
     contact_blocks::reset(state);
     user_profile::close();
@@ -1013,9 +1089,11 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    shared_media::close(state);
     hidden_chats::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
+            cache_boot::verify_account(state, &profile.mid);
             auto_login::logged_in(state);
             if state.self_mid.borrow().as_deref() != Some(profile.mid.as_str()) {
                 state.peer_reads.borrow_mut().clear();
@@ -1053,8 +1131,18 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
                 state.stack.set_transition_duration(0);
             }
             state.status.set_text(&crate::i18n::t("loading_chats"));
-            set_side_state(state, "loading", None);
-            set_msg_state(state, "idle", None);
+            // Saved chats stay on screen while the latest ones load.
+            cache_boot::logged_in(state);
+            let keep_view = saved_view && !state.chats.borrow().is_empty();
+            if keep_view {
+                state.side_spinner.set_spinning(true);
+                state.side_spinner.set_visible(true);
+            } else {
+                set_side_state(state, "loading", None);
+            }
+            if state.current_chat.borrow().is_none() {
+                set_msg_state(state, "idle", None);
+            }
             contact_blocks::request_refresh(state);
             if let Ok(id) = state.sidecar.list_chats() {
                 state.pending.borrow_mut().insert(id, Pending::ListChats);
@@ -1089,6 +1177,8 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    cache_boot::abort(state);
+    state.shared_media_btn.set_sensitive(false);
     chat_snapshots::clear();
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
@@ -1096,6 +1186,7 @@ pub(super) fn show_login(state: &AppState, hint: &str) {
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    shared_media::close(state);
     hidden_chats::close(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);

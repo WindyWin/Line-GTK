@@ -359,7 +359,7 @@ fn merged_messages(
 
 fn apply_resumed_messages(state: &AppState, incoming: Vec<MessageInfo>) {
     if history::is_detached(state) {
-        history::reload_latest(state);
+        // A reconnect must preserve an explicitly opened historical context.
         return;
     }
     invalidate_history(state);

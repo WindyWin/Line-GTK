@@ -1,5 +1,6 @@
 mod albums;
 mod auto_login;
+mod cache_boot;
 mod call_history;
 mod call_window;
 mod calls;
@@ -28,6 +29,7 @@ mod read_pause;
 mod replies;
 mod resume_sync;
 mod settings;
+mod shared_media;
 mod shell;
 mod state;
 mod sticker_preview;
@@ -216,6 +218,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         peer_reads: Rc::new(RefCell::new(crate::read_receipts::ReadReceipts::default())),
         unread_sync: Rc::new(RefCell::new(unread_sync::UnreadSync::default())),
         restored_last_chat: Rc::new(RefCell::new(false)),
+        cache_preview: Rc::new(RefCell::new(false)),
+        outbox: Rc::new(RefCell::new(cache_boot::Outbox::default())),
         media_queue: Rc::new(RefCell::new(VecDeque::new())),
         media_pumping: Rc::new(RefCell::new(false)),
         stick_bottom: Rc::new(RefCell::new(true)),
@@ -238,6 +242,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         friends_btn: shell.friends_btn,
         album_btn: shell.album_btn,
         album_ui: Rc::new(RefCell::new(None)),
+        shared_media_btn: shell.shared_media_btn,
+        shared_media_ui: Rc::new(RefCell::new(None)),
         hidden_chats_ui: Rc::new(RefCell::new(None)),
         friends_ui: Rc::new(RefCell::new(None)),
         side_title: shell.side_title,
@@ -303,6 +309,12 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
 
     read_pause::wire(&state);
     albums::wire(&state);
+    {
+        let s = state.clone();
+        state
+            .shared_media_btn
+            .connect_clicked(move |_| shared_media::open(&s));
+    }
     chat_filter::wire(&state);
     hidden_chats::wire(&state);
     contact_blocks::wire(&state);
@@ -1038,6 +1050,14 @@ fn send_current(state: &AppState) {
         .as_ref()
         .filter(|target| target.chat_mid == chat_mid)
         .map(|target| target.quote.clone());
+    if cache_boot::active(state) {
+        cache_boot::enqueue(state, &chat_mid, text, mentions, reply_to);
+        replies::cancel(state);
+        state.composer.set_text("");
+        dismiss_new_marker(state);
+        pin_messages_to_latest(state);
+        return;
+    }
     match state.sidecar.send_mentions(
         &chat_mid,
         &text,
@@ -1163,6 +1183,9 @@ fn apply_ui_language(state: &AppState) {
         ))]);
     chat_filter::apply_language(state);
     state.album_btn.set_label(&crate::i18n::t("albums"));
+    state
+        .shared_media_btn
+        .set_label(&crate::i18n::t("shared_media"));
     state
         .album_btn
         .set_tooltip_text(Some(&crate::i18n::t("albums")));
@@ -1466,6 +1489,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     auto_login::manual_logout(&s2);
                     albums::close(&s2);
+                    shared_media::close(&s2);
                     hidden_chats::close(&s2);
                     contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
@@ -1506,6 +1530,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
+                    shared_media::close(&s2);
                     hidden_chats::close(&s2);
                     contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
@@ -1702,25 +1727,20 @@ fn request_friends_list(state: &AppState) {
     }
 }
 
-fn open_chat(state: &AppState, chat: &ChatInfo) {
-    if !*state.session_ready.borrow() {
-        toast(state, &crate::i18n::t("still_restoring"));
-        return;
+/// Prepare an explicit history destination without fetching latest messages or
+/// sending read receipts. The anchored history request owns the next render.
+fn open_chat_for_history(state: &AppState, chat: &ChatInfo) -> bool {
+    if !*state.session_ready.borrow() || hidden_chats::is_hidden(state, &chat.mid) {
+        return false;
     }
-
-    if hidden_chats::is_hidden(state, &chat.mid) {
-        toast(state, &crate::i18n::t("hidden_chat_open_hint"));
-        return;
+    if state.current_chat.borrow().as_deref() != Some(chat.mid.as_str()) {
+        prepare_chat_header(state, chat);
     }
+    state.window.present();
+    true
+}
 
-    let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
-    if already_open {
-        // Tap again while already open: mark read without reloading the thread.
-        mark_chat_read(state, &chat.mid);
-        clear_unread_badge(state, &chat.mid);
-        return;
-    }
-
+fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
     chat_snapshots::leave(state);
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
@@ -1754,6 +1774,30 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     state.mute_btn.set_sensitive(can_mute);
     update_mute_btn(state, chat.muted);
     state.media_queue.borrow_mut().clear();
+    state.shared_media_btn.set_sensitive(true);
+}
+
+fn open_chat(state: &AppState, chat: &ChatInfo) {
+    let saved_view = !*state.session_ready.borrow() && cache_boot::active(state);
+    if !*state.session_ready.borrow() && !saved_view {
+        toast(state, &crate::i18n::t("still_restoring"));
+        return;
+    }
+
+    if hidden_chats::is_hidden(state, &chat.mid) {
+        toast(state, &crate::i18n::t("hidden_chat_open_hint"));
+        return;
+    }
+
+    let already_open = state.current_chat.borrow().as_deref() == Some(chat.mid.as_str());
+    if already_open {
+        // Tap again while already open: mark read without reloading the thread.
+        mark_chat_read(state, &chat.mid);
+        clear_unread_badge(state, &chat.mid);
+        return;
+    }
+
+    prepare_chat_header(state, chat);
     let snapshot = chat_snapshots::take(state, &chat.mid);
     if snapshot.is_none() {
         set_msg_state(state, "loading", None);
@@ -1766,20 +1810,34 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
     // What the chat showed last time appears at once; the fetch only adds what is new.
     let refreshing = snapshot.is_some();
     set_syncing(state, false);
-    let fetch = if let Some(messages) = snapshot {
+    if let Some(messages) = snapshot {
         apply_messages(state, messages);
+    }
+    // Before the login finishes only stored messages can be shown.
+    let fetch = if saved_view {
+        state.sidecar.load_cached_messages(&chat.mid, 40)
+    } else if refreshing {
         state.sidecar.fetch_messages_quiet(&chat.mid, 40)
     } else {
         state.sidecar.fetch_messages(&chat.mid, 40)
     };
     match fetch {
         Ok(id) => {
-            set_syncing(state, refreshing);
+            set_syncing(state, refreshing || saved_view);
+            let chat_mid = chat.mid.clone();
+            let generation = *state.history_request_generation.borrow();
             state.pending.borrow_mut().insert(
                 id,
-                Pending::FetchMessages {
-                    chat_mid: chat.mid.clone(),
-                    generation: *state.history_request_generation.borrow(),
+                if saved_view {
+                    Pending::CachedMessages {
+                        chat_mid,
+                        generation,
+                    }
+                } else {
+                    Pending::FetchMessages {
+                        chat_mid,
+                        generation,
+                    }
                 },
             );
         }
@@ -1853,6 +1911,7 @@ fn restart_login(state: &AppState) {
     user_profile::update_header(state, None);
     resume_sync::cancel(state);
     albums::close(state);
+    shared_media::close(state);
     hidden_chats::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();

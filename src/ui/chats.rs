@@ -1,33 +1,18 @@
 use super::*;
 
 pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bool) {
-    clear_list(&state.chat_list);
-    state.chat_avatars.borrow_mut().clear();
-    state.chat_previews.borrow_mut().clear();
-    state.chat_unread_badges.borrow_mut().clear();
-
     for chat in &mut chats {
         if !chat.preview.is_empty() {
             chat.preview = localize_preview(&chat.preview);
         }
     }
+    {
+        let account = state.self_mid.borrow().clone().unwrap_or_default();
+        pinned_chats::sort(&mut chats, &state.config.borrow(), &account);
+    }
 
-    for chat in &chats {
-        let (row, avatar, preview, badge) = build_chat_row(chat, *state.sidebar_compact.borrow());
-        hidden_chats::wire_context(state, &row, chat);
-        state
-            .chat_avatars
-            .borrow_mut()
-            .insert(chat.mid.clone(), avatar);
-        state
-            .chat_previews
-            .borrow_mut()
-            .insert(chat.mid.clone(), preview);
-        state
-            .chat_unread_badges
-            .borrow_mut()
-            .insert(chat.mid.clone(), badge);
-        state.chat_list.append(&row);
+    if !sync_chat_rows(state, &chats) {
+        rebuild_chat_rows(state, &chats);
     }
 
     let n = chats.len();
@@ -53,6 +38,167 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
     chat_filter::refresh(state);
     refresh_tray_menu(state);
     hidden_chats::refresh(state);
+}
+
+fn rebuild_chat_rows(state: &AppState, chats: &[ChatInfo]) {
+    clear_list(&state.chat_list);
+    state.chat_avatars.borrow_mut().clear();
+    state.chat_previews.borrow_mut().clear();
+    state.chat_unread_badges.borrow_mut().clear();
+    for chat in chats {
+        let row = new_chat_row(state, chat);
+        state.chat_list.append(&row);
+    }
+}
+
+fn new_chat_row(state: &AppState, chat: &ChatInfo) -> gtk::ListBoxRow {
+    let (row, avatar, preview, badge) = build_chat_row(chat, *state.sidebar_compact.borrow());
+    hidden_chats::wire_context(state, &row, chat);
+    state
+        .chat_avatars
+        .borrow_mut()
+        .insert(chat.mid.clone(), avatar);
+    state
+        .chat_previews
+        .borrow_mut()
+        .insert(chat.mid.clone(), preview);
+    state
+        .chat_unread_badges
+        .borrow_mut()
+        .insert(chat.mid.clone(), badge);
+    row
+}
+
+/// Bring the sidebar to `chats` by editing the rows that exist, so a refresh
+/// over the saved list does not clear the list or lose the selection.
+/// Returns false when the rows do not match `state.chats` and need a rebuild.
+fn sync_chat_rows(state: &AppState, chats: &[ChatInfo]) -> bool {
+    let old = state.chats.borrow().clone();
+    let mut rows = HashMap::new();
+    for (index, chat) in old.iter().enumerate() {
+        match state.chat_list.row_at_index(index as i32) {
+            Some(row) => rows.insert(chat.mid.clone(), row),
+            None => return false,
+        };
+    }
+    if rows.len() != old.len()
+        || state.chat_list.row_at_index(old.len() as i32).is_some()
+        || chats
+            .iter()
+            .map(|chat| chat.mid.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+            != chats.len()
+    {
+        return false;
+    }
+    let keep: HashSet<_> = chats.iter().map(|chat| chat.mid.as_str()).collect();
+    for chat in &old {
+        if !keep.contains(chat.mid.as_str())
+            && let Some(row) = rows.remove(&chat.mid)
+        {
+            state.chat_list.remove(&row);
+            state.chat_avatars.borrow_mut().remove(&chat.mid);
+            state.chat_previews.borrow_mut().remove(&chat.mid);
+            state.chat_unread_badges.borrow_mut().remove(&chat.mid);
+        }
+    }
+
+    let compact = *state.sidebar_compact.borrow();
+    let previous: HashMap<_, _> = old.iter().map(|chat| (chat.mid.as_str(), chat)).collect();
+    for chat in chats {
+        if let (Some(row), Some(before)) = (rows.get(&chat.mid), previous.get(chat.mid.as_str())) {
+            update_chat_row(state, row, before, chat, compact);
+        } else {
+            rows.insert(chat.mid.clone(), new_chat_row(state, chat));
+        }
+    }
+
+    let current: Vec<String> = old
+        .iter()
+        .filter(|chat| keep.contains(chat.mid.as_str()))
+        .map(|chat| chat.mid.clone())
+        .collect();
+    let target: Vec<String> = chats.iter().map(|chat| chat.mid.clone()).collect();
+    for (mid, index) in cache_boot::row_moves(&current, &target) {
+        let Some(row) = rows.get(&mid) else {
+            continue;
+        };
+        if row.parent().is_some() {
+            state.chat_list.remove(row);
+        }
+        state.chat_list.insert(row, index as i32);
+    }
+    true
+}
+
+fn update_chat_row(
+    state: &AppState,
+    row: &gtk::ListBoxRow,
+    before: &ChatInfo,
+    chat: &ChatInfo,
+    compact: bool,
+) {
+    update_chat_row_name(row, &chat.name);
+    update_chat_row_time(row, &format_activity(chat.last_activity));
+    if let Some(label) = state.chat_previews.borrow().get(&chat.mid) {
+        label.set_text(&chat_preview_text(chat));
+    }
+    if let Some(badge) = state.chat_unread_badges.borrow().get(&chat.mid) {
+        badge.set_text(&if chat.unread > 0 {
+            chat.unread.to_string()
+        } else {
+            String::new()
+        });
+        badge.set_visible(chat.unread > 0);
+    }
+    if chat.avatar_path != before.avatar_path
+        && let Some(path) = chat.avatar_path.as_deref()
+        && std::path::Path::new(path).exists()
+        && let Some(avatar) = state.chat_avatars.borrow().get(&chat.mid).cloned()
+    {
+        let px = if compact {
+            AVATAR_COMPACT_PX
+        } else {
+            AVATAR_CHAT_PX
+        };
+        attach_texture_async(avatar, path.to_string(), px * 2);
+    }
+}
+
+fn chat_preview_text(chat: &ChatInfo) -> String {
+    if chat.preview.is_empty() {
+        if chat.last_activity > 0 {
+            crate::i18n::t("loading_last")
+        } else {
+            crate::i18n::t("no_recent")
+        }
+    } else {
+        localize_preview(&chat.preview)
+    }
+}
+
+/// The time label sits right after the name in the row's top line.
+fn update_chat_row_time(row: &gtk::ListBoxRow, text: &str) {
+    let Some(outer) = row.child() else { return };
+    let Ok(box_) = outer.downcast::<gtk::Box>() else {
+        return;
+    };
+    let mut child = box_.first_child();
+    while let Some(w) = child {
+        if w.css_classes().iter().any(|c| c == "line-chat-text")
+            && let Ok(inner) = w.clone().downcast::<gtk::Box>()
+            && let Some(top) = inner.first_child()
+            && let Ok(top_box) = top.downcast::<gtk::Box>()
+            && let Some(name) = top_box.first_child()
+            && let Some(time) = name.next_sibling()
+            && let Ok(label) = time.downcast::<gtk::Label>()
+        {
+            label.set_text(text);
+            return;
+        }
+        child = w.next_sibling();
+    }
 }
 
 pub(super) fn select_sidebar_chat(state: &AppState, mid: Option<&str>) {
@@ -214,7 +360,7 @@ pub(super) fn maybe_restore_last_chat(state: &AppState) {
         *state.restored_last_chat.borrow_mut() = true;
         return;
     }
-    if !*state.session_ready.borrow() {
+    if !*state.session_ready.borrow() && !cache_boot::active(state) {
         return;
     }
     let last = state.config.borrow().last_chat_mid.clone();
@@ -362,17 +508,8 @@ pub(super) fn build_chat_row(
         .orientation(gtk::Orientation::Horizontal)
         .spacing(8)
         .build();
-    let preview_text = if chat.preview.is_empty() {
-        if chat.last_activity > 0 {
-            crate::i18n::t("loading_last")
-        } else {
-            crate::i18n::t("no_recent")
-        }
-    } else {
-        localize_preview(&chat.preview)
-    };
     let preview = gtk::Label::builder()
-        .label(&preview_text)
+        .label(chat_preview_text(chat))
         .xalign(0.0)
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -417,7 +554,8 @@ pub(super) fn clear_list(list: &gtk::ListBox) {
 }
 
 pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
-    if !read_pause::can_mark_read(state, chat_mid) {
+    // Only saved messages are shown before the login finishes.
+    if !*state.session_ready.borrow() || !read_pause::can_mark_read(state, chat_mid) {
         return;
     }
     let Some(last_id) = state.last_incoming_id.borrow().clone() else {
@@ -538,6 +676,10 @@ pub(super) fn receipt_status(
     id: &str,
     created_time: i64,
 ) -> (String, String, bool) {
+    if id.starts_with("pending-outbox-") {
+        let text = crate::i18n::t("outbox_waiting");
+        return (text.clone(), text, false);
+    }
     if id.starts_with("pending-") {
         let text = crate::i18n::t("media_sending");
         return (text.clone(), text, false);

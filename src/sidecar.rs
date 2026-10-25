@@ -283,6 +283,33 @@ impl Sidecar {
         self.request("list_chats", Some(json!({ "force": false })))
     }
 
+    pub fn list_shared_media(
+        &self,
+        chat_mid: &str,
+        category: &str,
+        cursor: &str,
+        refresh: bool,
+    ) -> Result<u64> {
+        self.request(
+            "list_shared_media",
+            Some(
+                json!({"chatMid": chat_mid, "category": category, "cursor": cursor,
+                "limit": 60, "refresh": refresh}),
+            ),
+        )
+    }
+
+    pub fn download_shared_media(&self, chat_mid: &str, message_id: &str) -> Result<u64> {
+        self.request(
+            "download_shared_media",
+            Some(json!({"chatMid": chat_mid, "messageId": message_id})),
+        )
+    }
+
+    pub fn stop_shared_media(&self, chat_mid: &str) -> Result<u64> {
+        self.request("stop_shared_media", Some(json!({"chatMid": chat_mid})))
+    }
+
     pub fn fetch_messages(&self, chat_mid: &str, limit: u32) -> Result<u64> {
         self.fetch_messages_forced(chat_mid, limit, false)
     }
@@ -291,6 +318,14 @@ impl Sidecar {
         self.request(
             "fetch_messages",
             Some(json!({ "chatMid": chat_mid, "limit": limit, "force": force })),
+        )
+    }
+
+    /// Stored messages of a chat, answered without a login (cache preview).
+    pub fn load_cached_messages(&self, chat_mid: &str, limit: u32) -> Result<u64> {
+        self.request(
+            "load_cached_messages",
+            Some(json!({ "chatMid": chat_mid, "limit": limit })),
         )
     }
 
@@ -655,6 +690,20 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
+                        "shared_media_changed" => ProtocolEvent::SharedMediaChanged {
+                            account_mid: resp
+                                .extra
+                                .get("accountMid")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            chat_mid: resp
+                                .extra
+                                .get("chatMid")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        },
                         "sender_profile" => ProtocolEvent::SenderProfile {
                             mid: resp
                                 .extra
@@ -783,6 +832,27 @@ fn read_loop<R: std::io::Read>(
                                 }
                             } else {
                                 ProtocolEvent::Error("message event missing payload".into())
+                            }
+                        }
+                        "cached_boot" => {
+                            let text = |value: Option<&serde_json::Value>| {
+                                value.and_then(|v| v.as_str()).map(|s| s.to_string())
+                            };
+                            let profile = resp.extra.get("profile");
+                            let field = |name: &str| text(profile.and_then(|p| p.get(name)));
+                            ProtocolEvent::CachedBoot {
+                                mid: text(resp.extra.get("accountMid")).unwrap_or_default(),
+                                display_name: field("displayName").unwrap_or_default(),
+                                status_message: field("statusMessage").unwrap_or_default(),
+                                picture_path: field("picturePath"),
+                                avatar_path: field("avatarPath"),
+                                picture_url: field("pictureUrl"),
+                                chats: resp
+                                    .extra
+                                    .get("chats")
+                                    .cloned()
+                                    .and_then(|v| serde_json::from_value(v).ok())
+                                    .unwrap_or_default(),
                             }
                         }
                         "chats" => {
@@ -1292,6 +1362,20 @@ mod authentication_tests {
             rx.try_recv().unwrap(),
             ProtocolEvent::MessageReaction { reaction: None, .. }
         ));
+    }
+
+    #[test]
+    fn shared_media_changes_keep_the_account_and_conversation() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event = b"{\"event\":\"shared_media_changed\",\"accountMid\":\"u-self\",\"chatMid\":\"c-group\"}\n";
+        read_loop(&event[..], tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::SharedMediaChanged {
+            account_mid, chat_mid
+        } if account_mid == "u-self" && chat_mid == "c-group")
+        );
     }
 
     #[test]

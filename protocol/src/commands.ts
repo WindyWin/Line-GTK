@@ -380,6 +380,9 @@ export function createCommandService(runtime: CommandRuntime) {
     try {
       await refreshCachePolicy();
       const raw = JSON.parse(await Deno.readTextFile(chatCachePath));
+      const account = String(runtime.getClient()?.base?.profile?.mid ?? "");
+      // 別アカウントで保存した一覧は使わない。
+      if (raw?.accountMid && account && raw.accountMid !== account) return null;
       if (
         Array.isArray(raw?.chats) &&
         Date.now() - Number(raw.at || 0) < cachePolicy().diskChat
