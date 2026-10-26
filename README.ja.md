@@ -147,7 +147,7 @@ cargo build --release
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
 
-linejsを含むJSRライブラリはバージョンを固定して `protocol/vendor/deps` に保存しているため、ビルド時にJSRには接続しません。npm依存関係は `protocol/deno.lock` で検証します。初回ビルドにはnpmレジストリとDenoコンパイラーのランタイムが必要です。キャッシュ後は `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` でダウンロードを禁止できます。[依存関係と接続復旧の説明](docs/protocol-reliability.md)も参照してください。
+ビルド時に、バージョンとチェックサムを固定したlinejsなどのライブラリをGitHubから `protocol/vendor/deps` に自動ダウンロードします。ライブラリのソースはGit管理対象外で、検証用マニフェストと `protocol/deno.lock` は保持します。JSRには接続しません。初回ビルドにはGitHub、npmレジストリとDenoコンパイラーのランタイムが必要です。キャッシュ後は `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` でダウンロードを禁止できます。[依存関係と接続復旧の説明](docs/protocol-reliability.md)も参照してください。
 
 ## 開発時の確認
 

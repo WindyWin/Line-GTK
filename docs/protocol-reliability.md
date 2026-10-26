@@ -2,29 +2,41 @@
 
 ## Build dependencies
 
-The protocol uses checked-in copies of linejs 3.5.0, linejs-types 3.5.0,
+The protocol uses pinned downloads of linejs 3.5.0, linejs-types 3.5.0,
 loose-types 1.0.1, and the standard packages matching the original lockfile:
-path 1.1.6, internal 1.0.14, assert 1.0.19. They come from the upstream GitHub
-release sources, with upstream MIT licenses retained. `protocol/dependencies.json`
-maps package exports to local files, including the ShopService previously
-imported directly from a JSR URL. No application module is loaded from JSR.
+path 1.1.6, internal 1.0.14, assert 1.0.19. Sources come from upstream GitHub
+archives with SHA-256 verification and MIT licenses retained. Downloaded source
+files live in the ignored `protocol/vendor/deps` directory; only its verification
+manifest is committed. Application-owned call patches under
+`protocol/vendor/linejs-call` remain committed.
 
-`scripts/vendor-protocol.py --verify` checks the import map and all vendored
-source hashes against `protocol/vendor/deps/manifest.json`. The build calls it
-before compiling with a frozen Deno lockfile. npm dependencies and their
-transitive dependencies remain in `protocol/deno.lock` with integrity hashes.
+`protocol/dependencies.json` maps package exports to the prepared local files,
+including ShopService. No application module is loaded from JSR.
+`python3 scripts/vendor-protocol.py --ensure` reuses verified sources or prepares
+missing ones. It checks downloaded archives, the complete source manifest, and
+the import map before installing sources, and never updates pins. Modified local
+sources are rejected. `--verify` only checks existing files without downloading.
+The sidecar build and Deno `prepare`, `check`, `dev`, and `sidecar` tasks prepare
+sources automatically. Direct `deno check`/`deno test` commands require running
+preparation first.
 
-The first build needs npm access and Deno's compiler runtime. Subsequent builds
-can use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` with the existing cache.
-This removes the JSR/Cloudflare dependency; it does not make a fresh Rust/Deno
-toolchain installation or an empty npm cache work without network access.
+The first build needs GitHub archive access, npm access, and Deno's compiler
+runtime. Archives are cached in `target/protocol-archives`; use `--archives DIR`
+to supply another cache. `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` prevents
+dependency downloads, reusing prepared sources or restoring from cached archives.
+Preparation also accepts `--offline`. Missing offline archives produce an error
+with setup instructions. npm dependencies remain pinned with integrity hashes in
+`protocol/deno.lock`, and compilation uses its frozen lockfile. A fresh toolchain
+or empty compiler/npm cache still requires network access.
 
 To change library versions, review and update the refs and archive SHA-256
 values in `scripts/vendor-protocol.py`, the npm pins, and any affected local
 call patches. Then run `./scripts/update-protocol.sh`, inspect the resulting
-source/lockfile diff, run protocol tests, and rebuild the sidecar. The script
-does not select a floating `latest` version. Already downloaded archives can
-be supplied through `--archives DIRECTORY`.
+manifest/import-map/lockfile diff, run protocol tests, and rebuild the sidecar.
+The update command deliberately regenerates pins; normal preparation does not.
+It does not select a floating `latest` version. Packaging prepares sources before
+compilation and includes the downloaded sources and licenses in the payload, so
+installed applications do not need build-time downloads.
 
 ## Packaged sidecar
 

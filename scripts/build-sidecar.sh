@@ -4,7 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 deno_bin="${DENO:-deno}"
 output="${1:-$project_root/protocol/line-gtk-protocol}"
-python3 "$project_root/scripts/vendor-protocol.py" --verify
+python3 "$project_root/scripts/vendor-protocol.py" --ensure
 offline=()
 if [[ "${DENO_OFFLINE:-0}" == 1 ]]; then
   offline=(--cached-only)

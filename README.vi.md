@@ -105,7 +105,7 @@ cargo build --release
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
 
-Các thư viện JSR, gồm linejs, được ghim trong `protocol/vendor/deps`, nên quá trình build không liên hệ JSR. Phụ thuộc npm được kiểm tra với `protocol/deno.lock`; lần build đầu vẫn cần npm registry và runtime biên dịch Deno. Sau khi lưu cache, dùng `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` để chặn tải phụ thuộc. Xem [ghi chú về phụ thuộc và khôi phục kết nối](docs/protocol-reliability.md).
+Quá trình build tự tải thư viện đã ghim phiên bản và checksum, gồm linejs, từ GitHub vào `protocol/vendor/deps` (không lưu mã thư viện trong Git). Manifest và `protocol/deno.lock` vẫn được lưu trong Git; không liên hệ JSR. Lần build đầu cần GitHub, npm registry và runtime biên dịch Deno. Sau khi lưu cache, dùng `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` để chặn tải phụ thuộc. Xem [ghi chú về phụ thuộc và khôi phục kết nối](docs/protocol-reliability.md).
 
 ## Kiểm tra khi phát triển
 

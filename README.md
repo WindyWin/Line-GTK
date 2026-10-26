@@ -105,7 +105,7 @@ cargo build --release
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
 
-JSR libraries, including linejs, are pinned under `protocol/vendor/deps`, so builds do not contact JSR. npm dependencies are checked against `protocol/deno.lock`; the first build still needs the npm registry and Deno compiler runtime. Once cached, use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` to prevent dependency downloads. See the [dependency and connection recovery notes](docs/protocol-reliability.md).
+Builds automatically download checksum-pinned libraries, including linejs, from GitHub into the ignored `protocol/vendor/deps` directory. Builds do not contact JSR. Version pins, the source manifest, and `protocol/deno.lock` remain committed. The first build needs GitHub, the npm registry, and the Deno compiler runtime. Once cached, use `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` to prevent dependency downloads. See the [dependency and connection recovery notes](docs/protocol-reliability.md).
 
 ## Development checks
 

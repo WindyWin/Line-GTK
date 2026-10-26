@@ -45,8 +45,10 @@ commit authors preserved, and subsequent work in
 ## Protocol and packaging impact
 
 - Rust/TypeScript RPC models and events expand together for the added features.
-- Protocol dependencies are pinned and vendored with a verification manifest and
-  update scripts. Offline sidecar compilation works after compiler/npm caching.
+- Protocol dependencies are downloaded from checksum-pinned GitHub archives into
+  an ignored local directory. Version pins, the verification manifest, import
+  map, and update scripts remain committed. Offline builds reuse prepared sources
+  or cached archives after compiler/npm caching.
 - Sidecar startup/ping smoke checks and CI cover Rust, protocol, and packaging.
 - Arch/local package helpers and Flatpak configuration include dependency and
   translation support. Automatic email sign-in requires a Secret Service provider.
@@ -78,6 +80,10 @@ Checked on 2026-10-26:
 - `deno task --config protocol/deno.json check`: format, lint, type checking, and
   231 tests passed.
 - `python3 scripts/vendor-protocol.py --verify`: 244 dependency files verified.
+- Six Python dependency-preparation regression tests passed.
+- Fresh source-tree preparation passed both with an empty archive cache using
+  GitHub downloads and offline using the existing archive cache. The fresh tree
+  also passed all 231 protocol tests and offline sidecar compilation/smoke checks.
 - `DENO_OFFLINE=1 ./scripts/build-sidecar.sh`: compiled successfully; empty-session
   startup and ping smoke checks passed.
 

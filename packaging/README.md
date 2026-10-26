@@ -58,3 +58,10 @@ payload source with reproducible, network-independent source modules.
 
 It prints SHA-256 checksums and the matching `gh release create` command, but
 does not commit, tag, push, or publish anything.
+
+Protocol builds automatically prepare checksum-pinned GitHub library downloads.
+Only the dependency manifest is committed; source files and licenses are included
+in the built package. Fresh builds need network access. With prepared sources or
+archives in `target/protocol-archives` and cached npm/compiler dependencies, use
+`DENO_OFFLINE=1` to build without dependency downloads. See
+[protocol dependency notes](../docs/protocol-reliability.md).

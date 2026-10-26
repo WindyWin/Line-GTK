@@ -35,9 +35,12 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Verify vendored JSR sources
+      - name: Download and verify pinned protocol sources
         working-directory: .
-        run: python3 scripts/vendor-protocol.py --verify
+        run: python3 scripts/vendor-protocol.py --ensure
+      - name: Test dependency preparation
+        working-directory: .
+        run: python3 -m unittest discover -s scripts/tests -p '*_test.py'
       - run: deno task check
       - name: Compile offline sidecar
         working-directory: .

@@ -10,7 +10,7 @@ Install stable Rust, GTK4 4.14+, Libadwaita 1.5+, Deno 2, Python 3, and ffmpeg/f
 
 ```bash
 cargo build --release                       # Build the native client
-./scripts/build-sidecar.sh                   # Verify, compile, and smoke-test the sidecar
+./scripts/build-sidecar.sh                   # Prepare, verify, compile, and smoke-test the sidecar
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk # Launch locally
 cargo fmt --all -- --check                   # Check Rust formatting
 cargo clippy --all-targets --all-features -- -D warnings
