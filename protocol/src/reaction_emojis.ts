@@ -1,5 +1,6 @@
 import { join } from "@std/path";
 import { ensurePrivateDir } from "./storage.ts";
+import { emojiVersion } from "./reactions.ts";
 
 type Json = Record<string, unknown>;
 export type EmojiPack = { id: string; name: string; iconPath: string | null };
@@ -54,7 +55,7 @@ type Runtime = {
 export function createReactionEmojiPacks(runtime: Runtime) {
   const get = runtime.fetch ?? fetch;
   let cached: { account: string; at: number; packs: EmojiPack[] } | null = null;
-  const metas = new Map<string, string[]>();
+  const metas = new Map<string, { ids: string[]; version: number }>();
 
   async function icon(id: string): Promise<string | null> {
     const path = join(runtime.directory, `emoji-pack-${id}.png`);
@@ -121,12 +122,12 @@ export function createReactionEmojiPacks(runtime: Runtime) {
   }
 
   async function pack(productId: unknown): Promise<{
-    emojis: { key: string; resourceType: number }[];
+    emojis: { key: string; resourceType: number; version: number }[];
   }> {
     const id = String(productId ?? "");
     if (!PRODUCT.test(id)) throw new Error("reaction_invalid_pack");
-    let ids = metas.get(id);
-    if (!ids) {
+    let meta = metas.get(id);
+    if (!meta) {
       const response = await get(
         `https://stickershop.line-scdn.net/sticonshop/v1/product/${id}/android/meta.json`,
         { signal: AbortSignal.timeout(8000), redirect: "error" },
@@ -135,13 +136,15 @@ export function createReactionEmojiPacks(runtime: Runtime) {
         await response.body?.cancel();
         throw new Error("reaction_packs_unavailable");
       }
-      ids = packEmojiIds(await response.json());
+      const data = await response.json();
+      meta = { ids: packEmojiIds(data), version: emojiVersion(data?.version) };
       if (metas.size >= 100) metas.clear();
-      metas.set(id, ids);
+      metas.set(id, meta);
     }
-    const emojis = ids.map((emoji) => ({
+    const emojis = meta.ids.map((emoji) => ({
       key: `${id}_${emoji}`,
       resourceType: 1,
+      version: meta.version,
     }));
     runtime.observe([{ emojis: emojis.map(({ key }) => ({ key })) }]);
     return { emojis };

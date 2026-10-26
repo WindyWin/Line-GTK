@@ -1,3 +1,4 @@
+mod autostart;
 mod config;
 mod credentials;
 mod desktop_notify;
@@ -35,7 +36,8 @@ fn main() -> Result<()> {
 
     let repo_root = discover_repo_root()?;
     tracing::info!(?repo_root, ?data_dir, "starting LINE GTK");
-    ui::run(repo_root, data_dir)
+    let background = env::args().skip(1).any(|a| a == autostart::BACKGROUND_FLAG);
+    ui::run(repo_root, data_dir, background)
 }
 
 fn prefer_gstreamer_hw_decoders() {

@@ -1,4 +1,5 @@
 import type { Client } from "@evex/linejs";
+import { chatEventOf } from "./chat_events.ts";
 
 type Json = Record<string, unknown>;
 type Runtime = {
@@ -124,6 +125,12 @@ export function createMessageSenders(runtime: Runtime) {
     for (const message of messages) {
       if (typeof message.to !== "string" || !/^[cr]/.test(message.to)) continue;
       if (!message.mine && userMid(message.from)) mids.add(message.from);
+      const event = chatEventOf(message);
+      if (event) {
+        for (const mid of [event.actorMid, ...event.targetMids]) {
+          if (userMid(mid)) mids.add(mid);
+        }
+      }
       const reply = message.replyTo as Json | null | undefined;
       if (reply && !reply.mine && userMid(reply.from)) mids.add(reply.from);
     }

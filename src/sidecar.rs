@@ -919,6 +919,7 @@ fn read_loop<R: std::io::Read>(
                             }
                         }
                         "chat_preview" => ProtocolEvent::ChatPreview {
+                            contact_only: resp.extra.get("contactOnly").and_then(|v| v.as_bool()),
                             mid: resp
                                 .extra
                                 .get("mid")

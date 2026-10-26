@@ -1,6 +1,22 @@
 import type { Client } from "@evex/linejs";
 
 type GroupApi = Pick<Client["base"]["talk"], "getChats" | "getAllChatMids">;
+type GroupMuteApi = Pick<Client["base"]["talk"], "updateChat">;
+
+export async function setGroupMuted(
+  talk: GroupMuteApi,
+  mid: string,
+  muted: boolean,
+  reqSeq: number,
+): Promise<void> {
+  await talk.updateChat({
+    request: {
+      reqSeq,
+      chat: { chatMid: mid, notificationDisabled: muted },
+      updatedAttribute: "NOTIFICATION_SETTING",
+    },
+  });
+}
 export type GroupProfile = {
   mid: string;
   name: string;

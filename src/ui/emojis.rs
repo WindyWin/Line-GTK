@@ -80,13 +80,6 @@ fn mention_in_view(
 }
 
 fn wire_click(state: &AppState, content: &EmojiText) {
-    if !content
-        .mentions
-        .iter()
-        .any(|m| !m.all && mentions::is_user_mid(&m.mid))
-    {
-        return;
-    }
     let click = gtk::GestureClick::builder()
         .button(1)
         .propagation_phase(gtk::PropagationPhase::Capture)
@@ -94,17 +87,18 @@ fn wire_click(state: &AppState, content: &EmojiText) {
     let press = Rc::new(std::cell::Cell::new((0.0, 0.0)));
     {
         let press = press.clone();
-        click.connect_pressed(move |_, _, x, y| press.set((x, y)));
+        click.connect_pressed(move |gesture, _, x, y| {
+            // Conversation text is not a selection surface. Claim the press
+            // before TextView starts selecting or moves its insertion cursor.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            press.set((x, y));
+        });
     }
     {
         let (state, content) = (state.clone(), content.clone());
         click.connect_released(move |gesture, n, x, y| {
             let (px, py) = press.get();
-            if n != 1
-                || (x - px).abs() > 4.0
-                || (y - py).abs() > 4.0
-                || content.view.buffer().has_selection()
-            {
+            if n != 1 || (x - px).abs() > 4.0 || (y - py).abs() > 4.0 {
                 return;
             }
             let textures = state.emoji_textures.borrow();
@@ -123,7 +117,7 @@ fn wire_click(state: &AppState, content: &EmojiText) {
             let over = mention_in_view(&content.view, &textures.borrow(), &content, x, y).is_some();
             content
                 .view
-                .set_cursor_from_name(Some(if over { "pointer" } else { "text" }));
+                .set_cursor_from_name(Some(if over { "pointer" } else { "default" }));
         });
     }
     content.view.add_controller(motion);
@@ -194,11 +188,12 @@ pub(super) fn append(state: &AppState, bubble: &gtk::Box, message: &MessageInfo)
     let view = gtk::TextView::builder()
         .editable(false)
         .cursor_visible(false)
+        .focusable(false)
         .wrap_mode(gtk::WrapMode::WordChar)
         .accepts_tab(false)
         .css_classes(["line-bubble-text", "line-emoji-text"])
         .build();
-    view.set_extra_menu(Some(&replies::menu(message)));
+    view.set_cursor_from_name(Some("default"));
     view.update_property(&[gtk::accessible::Property::Label(&message.text)]);
     let content = EmojiText {
         view: view.clone(),

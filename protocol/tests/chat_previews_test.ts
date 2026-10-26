@@ -3,6 +3,24 @@ import { createChatPreviews, type PreviewChat } from "../src/chat_previews.ts";
 
 type Json = Record<string, unknown>;
 
+Deno.test("loading a first message promotes a contact into conversations", async () => {
+  const chat = {
+    mid: "u-contact",
+    preview: "",
+    lastActivity: 0,
+    contactOnly: true,
+  };
+  const { previews, events } = previewFixture([chat]);
+  await previews.updateFromMessages(chat.mid, []);
+  assertEquals(chat.contactOnly, true);
+  await previews.updateFromMessages(chat.mid, [
+    { id: "1", createdTime: 20, text: "Hello" },
+  ]);
+  assertEquals(chat.contactOnly, false);
+  assertEquals(events.at(-1)?.contactOnly, false);
+  assertEquals(chat.lastActivity, 20);
+});
+
 export function previewFixture(chats: PreviewChat[]) {
   const events: PreviewChat[] = [];
   let saved = 0;

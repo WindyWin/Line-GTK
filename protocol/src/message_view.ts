@@ -1,6 +1,7 @@
 import { withReplyPreviews } from "./replies.ts";
 import { isMediaType } from "./messages.ts";
 import { callHistoryOf, callHistoryPreview } from "./call_history.ts";
+import { chatEventOf, normalizeChatEvent } from "./chat_events.ts";
 import { join } from "@std/path";
 
 type Json = Record<string, unknown>;
@@ -33,6 +34,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     const text = String(msg.text ?? "").trim();
     const L = previewLang();
     if (ct === "UNSENT") return L.unsent;
+    if (chatEventOf(msg)) return L.groupUpdated;
     if (msg.decryptionFailed === true) return L.encrypted;
     const call = callHistoryPreview(msg, L);
     if (call) return call;
@@ -51,6 +53,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     if (code === "vi" || code === "vie" || code === "vietnamese") {
       return {
         you: "Bạn",
+        groupUpdated: "Thông tin nhóm đã được cập nhật",
         unsent: "Tin nhắn đã được thu hồi",
         callIncoming: "Cuộc gọi đến",
         callOutgoing: "Cuộc gọi đi",
@@ -75,6 +78,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     if (code === "ja" || code === "ja-jp" || code === "ja_jp") {
       return {
         you: "自分",
+        groupUpdated: "グループの情報が更新されました",
         unsent: "メッセージの送信が取り消されました",
         callIncoming: "着信がありました",
         callOutgoing: "発信しました",
@@ -100,6 +104,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
     return th
       ? {
         you: "คุณ",
+        groupUpdated: "อัปเดตข้อมูลกลุ่มแล้ว",
         unsent: "ยกเลิกข้อความแล้ว",
         callIncoming: "มีสายเรียกเข้า",
         callOutgoing: "โทรออก",
@@ -122,6 +127,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
       }
       : {
         you: "You",
+        groupUpdated: "Group information updated",
         unsent: "Message unsent",
         callIncoming: "Incoming call",
         callOutgoing: "Outgoing call",
@@ -145,6 +151,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
   }
 
   function previewLine(msg: Json): string {
+    if (chatEventOf(msg)) return previewBody(msg);
     const L = previewLang();
     const who = msg.mine ? L.you : L.they;
     return `${who}: ${previewBody(msg)}`;
@@ -204,7 +211,7 @@ export function createMessageView(runtime: MessageViewRuntime) {
 
   /** Serve disk-cached stickers/thumbs immediately; only hydrate misses. */
   async function forUiMessages(messages: Json[]): Promise<Json[]> {
-    const prepared = withReplyPreviews(messages);
+    const prepared = withReplyPreviews(messages.map(normalizeChatEvent));
     return await Promise.all(prepared.map(async (m) => {
       if (m.decryptionFailed === true) return { ...m, needsMedia: false };
       const callHistory = callHistoryOf(m);

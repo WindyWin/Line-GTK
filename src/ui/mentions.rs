@@ -608,80 +608,60 @@ pub(super) fn is_user_mid(mid: &str) -> bool {
     mid.len() > 1 && mid.starts_with('u')
 }
 
-fn mention_at_byte<'a>(text: &str, spans: &'a [Mention], byte: usize) -> Option<&'a str> {
-    if byte > text.len() || !text.is_char_boundary(byte) {
-        return None;
+// Use GTK's native links so mouse and keyboard activation do not compete
+// with text-selection gestures. Message text and IDs never become raw markup.
+fn label_markup(text: &str, spans: &[Mention]) -> (String, Vec<String>) {
+    let mut boundaries: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    boundaries.push(text.len());
+    let mut markup = String::new();
+    let mut targets = Vec::new();
+    let mut previous = 0;
+    for span in spans.iter().take(100) {
+        if span.all || !is_user_mid(&span.mid) || span.end <= span.start {
+            continue;
+        }
+        let (Some(&start), Some(&end)) = (boundaries.get(span.start), boundaries.get(span.end))
+        else {
+            continue;
+        };
+        if start < previous {
+            continue;
+        }
+        markup.push_str(&glib::markup_escape_text(&text[previous..start]));
+        markup.push_str(&format!(
+            "<a href=\"line-mention:{}\">{}</a>",
+            targets.len(),
+            glib::markup_escape_text(&text[start..end]),
+        ));
+        targets.push(span.mid.clone());
+        previous = end;
     }
-    mention_at(spans, text[..byte].chars().count())
+    markup.push_str(&glib::markup_escape_text(&text[previous..]));
+    (markup, targets)
 }
 
-fn label_mention(
-    label: &gtk::Label,
-    text: &str,
-    spans: &[Mention],
-    x: f64,
-    y: f64,
-) -> Option<String> {
-    let (ox, oy) = label.layout_offsets();
-    let scale = gtk::pango::SCALE as f64;
-    let (inside, index, _) = label.layout().xy_to_index(
-        ((x - ox as f64) * scale) as i32,
-        ((y - oy as f64) * scale) as i32,
-    );
-    if !inside {
-        return None;
-    }
-    mention_at_byte(text, spans, usize::try_from(index).ok()?).map(str::to_string)
-}
-
-/// Opens the profile of a mentioned user when the label is clicked (not dragged).
 pub(super) fn wire_label_click(
     state: &AppState,
     label: &gtk::Label,
     text: &str,
     spans: &[Mention],
 ) {
-    if !spans.iter().any(|m| !m.all && is_user_mid(&m.mid)) {
+    let (markup, targets) = label_markup(text, spans);
+    if targets.is_empty() {
         return;
     }
-    let (text, spans) = (text.to_string(), spans.to_vec());
-    let click = gtk::GestureClick::builder()
-        .button(1)
-        .propagation_phase(gtk::PropagationPhase::Capture)
-        .build();
-    let press = Rc::new(std::cell::Cell::new((0.0, 0.0)));
-    {
-        let press = press.clone();
-        click.connect_pressed(move |_, _, x, y| press.set((x, y)));
-    }
-    {
-        let (state, label, text, spans) =
-            (state.clone(), label.clone(), text.clone(), spans.clone());
-        click.connect_released(move |gesture, n, x, y| {
-            let (px, py) = press.get();
-            if n != 1
-                || (x - px).abs() > 4.0
-                || (y - py).abs() > 4.0
-                || label.selection_bounds().is_some()
-            {
-                return;
-            }
-            if let Some(mid) = label_mention(&label, &text, &spans, x, y) {
-                gesture.set_state(gtk::EventSequenceState::Claimed);
-                user_profile::open(&state, &mid);
-            }
-        });
-    }
-    label.add_controller(click);
-    let motion = gtk::EventControllerMotion::new();
-    {
-        let label = label.clone();
-        motion.connect_motion(move |_, x, y| {
-            let over = label_mention(&label, &text, &spans, x, y).is_some();
-            label.set_cursor_from_name(over.then_some("pointer"));
-        });
-    }
-    label.add_controller(motion);
+    label.set_markup(&markup);
+    let state = state.clone();
+    label.connect_activate_link(move |_, uri| {
+        if let Some(mid) = uri
+            .strip_prefix("line-mention:")
+            .and_then(|index| index.parse::<usize>().ok())
+            .and_then(|index| targets.get(index))
+        {
+            user_profile::open(&state, mid);
+        }
+        glib::Propagation::Stop
+    });
 }
 
 pub(super) fn mentions_account(message: &MessageInfo, account: Option<&str>) -> bool {
@@ -749,8 +729,39 @@ mod tests {
         assert_eq!(mention_at(&spans, 6), None);
         assert_eq!(mention_at(&spans, 9), None);
         assert_eq!(mention_at(&spans, 14), None);
-        assert_eq!(mention_at_byte("😀 @Amy hi", &spans, 5), Some("u-person"));
-        assert_eq!(mention_at_byte("😀 @Amy hi", &spans, 1), None);
+    }
+
+    #[test]
+    fn mention_links_preserve_unicode_and_escape_message_text() {
+        let (markup, targets) = label_markup("😀 @A&B <hi>", &[mention(2, 6)]);
+        assert_eq!(
+            markup,
+            "😀 <a href=\"line-mention:0\">@A&amp;B</a> &lt;hi&gt;"
+        );
+        assert_eq!(targets, vec!["u-person"]);
+    }
+
+    #[test]
+    fn mention_links_skip_invalid_overlapping_and_non_user_spans() {
+        let (markup, targets) = label_markup(
+            "@Amy @all @Bob",
+            &[
+                mention(0, 0),
+                mention(0, 4),
+                mention(1, 4),
+                Mention {
+                    all: true,
+                    ..mention(5, 9)
+                },
+                Mention {
+                    mid: "c-group".into(),
+                    ..mention(10, 14)
+                },
+                mention(10, 999),
+            ],
+        );
+        assert_eq!(markup, "<a href=\"line-mention:0\">@Amy</a> @all @Bob");
+        assert_eq!(targets, vec!["u-person"]);
     }
     #[test]
     fn notification_requires_own_identity_in_metadata() {

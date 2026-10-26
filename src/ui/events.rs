@@ -254,6 +254,17 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             handle_call_state(state, &peer, &call_state, error.as_deref());
         }
         ProtocolEvent::Message(msg) => {
+            if msg.chat_event.is_some() {
+                let account_mid = state.self_mid.borrow().clone().unwrap_or_default();
+                handle_event(
+                    state,
+                    ProtocolEvent::ChatEvent {
+                        account_mid,
+                        message: msg,
+                    },
+                );
+                return;
+            }
             let msg = unsend::masked(state, &msg);
             // 取消後に遅れて届いた本文で、一覧や通知を復活させない。
             if msg.content_type == "UNSENT" {
@@ -295,6 +306,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     unread: 0,
                     preview: preview.clone(),
                     muted: false,
+                    contact_only: Some(false),
                 },
             );
 
@@ -303,6 +315,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == peer) {
                 chat.preview = preview.clone();
+                chat.contact_only = Some(false);
                 if msg.created_time > chat.last_activity {
                     chat.last_activity = msg.created_time;
                 }
@@ -476,6 +489,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             mid,
             preview,
             last_activity,
+            contact_only,
         } => {
             let preview = localize_preview(&preview);
             if let Some(label) = state.chat_previews.borrow().get(&mid) {
@@ -483,6 +497,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }
             if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
                 chat.preview = preview;
+                if let Some(contact_only) = contact_only {
+                    chat.contact_only = Some(contact_only);
+                }
                 if last_activity > chat.last_activity {
                     chat.last_activity = last_activity;
                 }

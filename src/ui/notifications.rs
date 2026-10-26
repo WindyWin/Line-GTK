@@ -3,8 +3,11 @@ use crate::desktop_notify::{ChatNotification, NotificationTicket};
 use crate::protocol::MessageInfo;
 use gtk::gio;
 use gtk::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+const NOTIFICATION_WINDOW: Duration = Duration::from_secs(12);
 
 pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &str) {
     let viewing =
@@ -29,6 +32,29 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         .filter(|p| !p.is_empty() && Path::new(p).is_file())
         .map(str::to_string)
         .or_else(|| state.media_ready_paths.borrow().get(&msg.id).cloned());
+    // Keep one visible bubble per conversation while the previous one is alive.
+    // The pending entry also lets delayed sender/image updates target that bubble.
+    let account = state.self_mid.borrow().clone();
+    let pending = state.notif_pending.borrow();
+    let previous = pending
+        .values()
+        .filter(|meta| {
+            meta.account == account
+                && meta.chat_mid == peer_mid
+                && meta.notified
+                && meta.created.elapsed() < NOTIFICATION_WINDOW
+                && meta
+                    .ticket
+                    .as_ref()
+                    .is_none_or(|ticket| !ticket.is_closed())
+        })
+        .max_by_key(|meta| meta.created);
+    let coalesced = previous.is_some();
+    let replace = previous
+        .and_then(|meta| meta.ticket.as_ref())
+        .filter(|ticket| !ticket.is_closed())
+        .cloned();
+    drop(pending);
     let meta = PendingNotif {
         mentioned: super::mentions::mentions_account(msg, state.self_mid.borrow().as_deref()),
         chat_mid: peer_mid.to_string(),
@@ -39,7 +65,8 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
         body: preview_body_ui(msg),
         avatar_path,
         sticker,
-        ticket: None,
+        ticket: replace,
+        coalesced,
         notified: false,
         created: Instant::now(),
         account: state.self_mid.borrow().clone(),
@@ -71,7 +98,7 @@ pub(super) fn notify_incoming(state: &AppState, msg: &MessageInfo, peer_mid: &st
     } else {
         deliver(state, &msg.id, meta);
     }
-    if state.config.borrow().notification_sound {
+    if !coalesced && state.config.borrow().notification_sound {
         play_notification_sound(state);
     }
 }
@@ -87,23 +114,39 @@ fn chat_muted(state: &AppState, mid: &str) -> bool {
 
 fn pending_for_delivery(state: &AppState, id: &str) -> Option<PendingNotif> {
     let meta = state.notif_pending.borrow().get(id).cloned()?;
+    // A slower media/name lookup for an older message must not overwrite the
+    // newest message in the conversation's notification.
+    let superseded = is_superseded(&state.notif_pending.borrow(), id, &meta);
     let viewing = state.current_chat.borrow().as_deref() == Some(meta.chat_mid.as_str())
         && state.window.is_active();
+    if superseded {
+        return None;
+    }
     if !notifications_allowed(state)
         || chat_muted(state, &meta.chat_mid)
         || viewing
         || !*state.session_ready.borrow()
         || meta.account != *state.self_mid.borrow()
         || meta.created.elapsed() >= Duration::from_secs(30)
-        || meta
-            .ticket
-            .as_ref()
-            .is_some_and(NotificationTicket::is_closed)
+        || (meta.notified
+            && meta
+                .ticket
+                .as_ref()
+                .is_some_and(NotificationTicket::is_closed))
     {
         state.notif_pending.borrow_mut().remove(id);
         return None;
     }
     Some(meta)
+}
+
+fn is_superseded(pending: &HashMap<String, PendingNotif>, id: &str, meta: &PendingNotif) -> bool {
+    pending.iter().any(|(other_id, other)| {
+        other_id != id
+            && other.account == meta.account
+            && other.chat_mid == meta.chat_mid
+            && other.created > meta.created
+    })
 }
 
 fn wait_for_details(state: &AppState, meta: &PendingNotif) -> bool {
@@ -194,10 +237,9 @@ fn deliver(state: &AppState, message_id: &str, meta: PendingNotif) {
             avatar_path: meta.avatar_path.as_deref(),
             image_path,
             chat_mid: &meta.chat_mid,
-            message_id,
-            suppress_sound: meta.notified,
+            suppress_sound: meta.notified || meta.coalesced,
             sticker: meta.sticker,
-            replace: meta.ticket.as_ref(),
+            replace: meta.ticket.as_ref().filter(|ticket| !ticket.is_closed()),
         },
     );
     if let Some(pending) = state.notif_pending.borrow_mut().get_mut(message_id) {
@@ -233,11 +275,12 @@ fn send_desktop_notification(
             } else {
                 notification.set_icon(&gio::ThemedIcon::new("line-gtk"));
             }
-            let id = if request.message_id.is_empty() {
-                format!("line-gtk-{}", request.chat_mid)
-            } else {
-                format!("line-gtk-{}", request.message_id)
-            };
+            let account = state.self_mid.borrow();
+            let id = format!(
+                "line-gtk-{}-{}",
+                account.as_deref().unwrap_or("unknown"),
+                request.chat_mid
+            );
             state.app.send_notification(Some(&id), &notification);
             None
         }
@@ -356,4 +399,50 @@ fn play_system_sound_file(path: &Path, volume: f64) -> bool {
         .stderr(std::process::Stdio::null())
         .spawn()
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending(chat_mid: &str, account: &str, created: Instant) -> PendingNotif {
+        PendingNotif {
+            mentioned: false,
+            chat_mid: chat_mid.into(),
+            sender_mid: None,
+            displayed_sender: None,
+            image_path: None,
+            title: String::new(),
+            body: String::new(),
+            avatar_path: None,
+            sticker: false,
+            ticket: None,
+            coalesced: false,
+            notified: true,
+            created,
+            account: Some(account.into()),
+        }
+    }
+
+    #[test]
+    fn late_details_cannot_replace_newer_message_or_another_account() {
+        let now = Instant::now();
+        let old = pending("c-group", "u-account", now);
+        let mut by_id = HashMap::new();
+        by_id.insert("old".into(), old.clone());
+        by_id.insert(
+            "new".into(),
+            pending("c-group", "u-account", now + Duration::from_millis(1)),
+        );
+        by_id.insert(
+            "other-chat".into(),
+            pending("c-other", "u-account", now + Duration::from_secs(1)),
+        );
+        by_id.insert(
+            "other-account".into(),
+            pending("c-group", "u-other", now + Duration::from_secs(1)),
+        );
+        assert!(is_superseded(&by_id, "old", &old));
+        assert!(!is_superseded(&by_id, "new", &by_id["new"]));
+    }
 }

@@ -21,6 +21,7 @@ pub struct SettingsDeps {
     pub on_hidden_chats: Rc<dyn Fn(&gtk::Window)>,
     pub on_blocked_contacts: Rc<dyn Fn(&gtk::Window)>,
     pub on_tray_settings: Rc<dyn Fn()>,
+    pub on_autostart: Rc<dyn Fn()>,
     pub on_discord_rpc: Rc<dyn Fn()>,
     pub toast: Rc<dyn Fn(&str)>,
 }
@@ -170,6 +171,45 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     }
     desktop_grp.add(&tray_row);
     desktop_grp.add(&close_tray_row);
+
+    let autostart_row = libadwaita::SwitchRow::builder()
+        .title(i18n::t("autostart"))
+        .subtitle(i18n::t("autostart_subtitle"))
+        .active(deps.config.borrow().autostart)
+        .build();
+    let autostart_hidden_row = libadwaita::SwitchRow::builder()
+        .title(i18n::t("autostart_hidden"))
+        .subtitle(i18n::t("autostart_hidden_subtitle"))
+        .active(deps.config.borrow().autostart_hidden)
+        .sensitive(deps.config.borrow().autostart)
+        .build();
+    {
+        let cfg = deps.config.clone();
+        let data_dir = deps.data_dir.clone();
+        let on_autostart = deps.on_autostart.clone();
+        let autostart_hidden_row = autostart_hidden_row.clone();
+        autostart_row.connect_active_notify(move |row| {
+            let on = row.is_active();
+            cfg.borrow_mut().autostart = on;
+            cfg.borrow().save(&data_dir);
+            autostart_hidden_row.set_sensitive(on);
+            on_autostart();
+        });
+    }
+    {
+        let cfg = deps.config.clone();
+        let data_dir = deps.data_dir.clone();
+        let on_autostart = deps.on_autostart.clone();
+        autostart_hidden_row.connect_active_notify(move |row| {
+            cfg.borrow_mut().autostart_hidden = row.is_active();
+            cfg.borrow().save(&data_dir);
+            if cfg.borrow().autostart {
+                on_autostart();
+            }
+        });
+    }
+    desktop_grp.add(&autostart_row);
+    desktop_grp.add(&autostart_hidden_row);
 
     let discord_grp = libadwaita::PreferencesGroup::builder()
         .title(i18n::t("settings_discord"))

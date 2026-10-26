@@ -329,7 +329,7 @@ pub(super) fn open(state: &AppState, parent: &gtk::Window) {
         .orientation(gtk::Orientation::Vertical)
         .spacing(8)
         .build();
-    root.append(&libadwaita::HeaderBar::new());
+    window.set_titlebar(Some(&libadwaita::HeaderBar::new()));
     let refresh = gtk::Button::with_label(&crate::i18n::t("contact_blocks_refresh"));
     let s = state.clone();
     refresh.connect_clicked(move |_| request_refresh(&s));

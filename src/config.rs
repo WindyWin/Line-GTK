@@ -67,6 +67,10 @@ pub struct AppConfig {
     pub tray_enabled: bool,
     /// Close window button hides to tray instead of quitting (requires tray).
     pub close_to_tray: bool,
+    /// Start with the desktop session (XDG autostart entry / Background portal).
+    pub autostart: bool,
+    /// Autostarted instances stay in the tray instead of opening the window.
+    pub autostart_hidden: bool,
     /// Show Discord Rich Presence while the app is running.
     pub discord_rpc: bool,
     /// Discord Application (Client) ID. Empty uses the built-in LINE GTK app ID.
@@ -115,6 +119,8 @@ impl Default for AppConfig {
             experimental_calls: false,
             tray_enabled: true,
             close_to_tray: true,
+            autostart: false,
+            autostart_hidden: true,
             discord_rpc: false,
             discord_rpc_client_id: String::new(),
             discord_rpc_show_chat: false,

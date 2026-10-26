@@ -8,6 +8,7 @@ mod chat_events;
 mod chat_filter;
 mod chat_snapshots;
 mod chats;
+mod composer_drafts;
 mod composer_media;
 mod contact_blocks;
 mod diagnostics;
@@ -17,9 +18,11 @@ mod events;
 mod friends;
 mod hidden_chats;
 mod history;
+mod link_previews;
 mod login;
 mod media;
 mod mentions;
+mod message_copy;
 mod message_senders;
 mod messages;
 mod notifications;
@@ -62,7 +65,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
+pub fn run(repo_root: PathBuf, data_dir: PathBuf, background: bool) -> Result<()> {
     let app = Application::builder()
         .application_id("dev.linegtk.LineGtk")
         .flags(gio::ApplicationFlags::FLAGS_NONE)
@@ -75,23 +78,35 @@ pub fn run(repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
             .into_iter()
             .find(|w| w.is::<ApplicationWindow>())
         {
-            window.set_visible(true);
-            window.present();
+            // A hidden autostart launch must not pop a running instance's window open.
+            if !background {
+                window.set_visible(true);
+                window.present();
+            }
             return;
         }
-        if let Err(e) = build_ui(app, repo_root.clone(), data_dir.clone()) {
+        if let Err(e) = build_ui(app, repo_root.clone(), data_dir.clone(), background) {
             eprintln!("failed to start UI: {e:#}");
         }
     });
 
-    let code = app.run();
+    // GApplication rejects options it does not know, so leave our own flag out.
+    let args: Vec<String> = std::env::args()
+        .filter(|a| a != crate::autostart::BACKGROUND_FLAG)
+        .collect();
+    let code = app.run_with_args(&args);
     if code != glib::ExitCode::SUCCESS {
         anyhow::bail!("gtk exited with {code:?}");
     }
     Ok(())
 }
 
-fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<()> {
+fn build_ui(
+    app: &Application,
+    repo_root: PathBuf,
+    data_dir: PathBuf,
+    background: bool,
+) -> Result<()> {
     shell::load_css();
     register_app_icons(&repo_root);
     let config = Rc::new(RefCell::new(AppConfig::load(&data_dir)));
@@ -148,7 +163,12 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     window.set_content(Some(&toast_overlay));
     // Apply again after the display/window exist so ForceLight/ForceDark sticks.
     apply_theme(&config.borrow().theme);
-    window.present();
+    // Start in the tray only when there is a tray to restore the window from;
+    // that is confirmed after `sync_tray` below.
+    let start_hidden = background && config.borrow().tray_enabled;
+    if !start_hidden {
+        window.present();
+    }
 
     let (tray_tx, tray_rx) = async_channel::unbounded::<crate::tray::TrayAction>();
 
@@ -165,6 +185,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
         composer: shell.composer,
+        attachment_preview: shell.attachment_preview,
+        composer_drafts: Rc::new(RefCell::new(composer_drafts::Drafts::default())),
         reply_preview: shell.reply_preview,
         reply_title: shell.reply_title,
         reply_text: shell.reply_text,
@@ -249,7 +271,8 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
         side_title: shell.side_title,
         search_entry: shell.search_entry,
         chat_filter_bar: shell.chat_filter_bar,
-        chat_filter_buttons: shell.chat_filter_buttons,
+        chat_filter_btn: shell.chat_filter_btn,
+        chat_filter_label: shell.chat_filter_label,
         compact_filter_btn: shell.compact_filter_btn,
         chat_category: Rc::new(RefCell::new(chat_filter::ChatCategory::default())),
         chat_query: Rc::new(RefCell::new(String::new())),
@@ -326,6 +349,7 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     wire_composer_narrow(&state);
     wire_actions(&state);
     replies::wire(&state);
+    message_copy::wire(&state);
     mentions::wire(&state);
     unsend::wire(&state);
     reactions::wire(&state);
@@ -335,6 +359,11 @@ fn build_ui(app: &Application, repo_root: PathBuf, data_dir: PathBuf) -> Result<
     resume_sync::wire(&state);
     sync_tray(&state);
     apply_close_behavior(&state);
+    if start_hidden && state.tray.borrow().is_none() {
+        // The tray failed to come up; never leave the app with no window and no tray.
+        state.window.present();
+    }
+    sync_autostart(&state);
     sync_discord_rpc(&state);
     {
         let discord = state.discord.clone();
@@ -420,6 +449,21 @@ fn sync_tray(state: &AppState) {
         refresh_tray_menu(state);
     }
     apply_close_behavior(state);
+}
+
+/// Keep the autostart entry pointing at the binary that is running now.
+fn sync_autostart(state: &AppState) {
+    let (enabled, hidden) = {
+        let cfg = state.config.borrow();
+        (cfg.autostart, cfg.autostart_hidden)
+    };
+    // Disabling is handled by the settings switch; the portal is only asked on user action.
+    if enabled
+        && !crate::autostart::in_flatpak()
+        && let Err(error) = crate::autostart::apply(true, hidden)
+    {
+        tracing::warn!(%error, "could not refresh the autostart entry");
+    }
 }
 
 fn sync_discord_rpc(state: &AppState) {
@@ -520,6 +564,7 @@ fn apply_self_profile(
 ) {
     if !mid.is_empty() {
         *state.self_mid.borrow_mut() = Some(mid.to_string());
+        composer_drafts::sync(state);
     }
     if !display_name.is_empty() {
         *state.self_display_name.borrow_mut() = display_name.to_string();
@@ -1036,6 +1081,9 @@ fn wire_scroll_pin(state: &AppState) {
 }
 
 fn send_current(state: &AppState) {
+    if !composer_drafts::send(state) {
+        return;
+    }
     let (text, mentions) = mentions::outgoing(state);
     if text.is_empty() {
         return;
@@ -1175,6 +1223,7 @@ fn apply_ui_language(state: &AppState) {
         tracing::warn!(%error, "プレビューの言語を更新できませんでした");
     }
     replies::refresh(state);
+    composer_drafts::refresh(state);
     chat_events::refresh(state);
     state
         .composer
@@ -1408,6 +1457,7 @@ fn wire_actions(state: &AppState) {
     let esc = gtk::EventControllerKey::new();
     esc.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape {
+            composer_drafts::cancel(&s);
             replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
@@ -1421,6 +1471,7 @@ fn wire_actions(state: &AppState) {
     esc_win.set_propagation_phase(gtk::PropagationPhase::Bubble);
     esc_win.connect_key_pressed(move |_, key, _, _| {
         if key == gdk::Key::Escape && state_chat_open(&s) {
+            composer_drafts::cancel(&s);
             replies::cancel(&s);
             dismiss_new_marker(&s);
             return glib::Propagation::Stop;
@@ -1575,6 +1626,22 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     sync_tray(&s2);
                     apply_close_behavior(&s2);
+                })
+            },
+            on_autostart: {
+                let s2 = s.clone();
+                Rc::new(move || {
+                    let (enabled, hidden) = {
+                        let cfg = s2.config.borrow();
+                        (cfg.autostart, cfg.autostart_hidden)
+                    };
+                    if let Err(error) = crate::autostart::apply(enabled, hidden) {
+                        tracing::warn!(%error, "could not update autostart");
+                        toast(
+                            &s2,
+                            &crate::i18n::tf("autostart_failed", &[("error", &error)]),
+                        );
+                    }
                 })
             },
             on_discord_rpc: {
@@ -1745,6 +1812,7 @@ fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    composer_drafts::sync(state);
     mentions::reset(state);
     read_pause::refresh_once_button(state);
     hide_upload_progress(state);
@@ -1770,7 +1838,7 @@ fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
     // Voice calls are 1:1 user chats only (bots/groups unsupported).
     refresh_call_controls(state);
     contact_blocks::refresh_controls(state);
-    let can_mute = chat.mid.starts_with('u');
+    let can_mute = chat.mid.starts_with('u') || chat.mid.starts_with('c');
     state.mute_btn.set_sensitive(can_mute);
     update_mute_btn(state, chat.muted);
     state.media_queue.borrow_mut().clear();

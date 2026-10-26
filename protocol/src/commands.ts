@@ -13,6 +13,7 @@ import type { ReadPermission } from "./read_policy.ts";
 import { replyMessageId, replySnapshot } from "./replies.ts";
 import { createLineFetch } from "./connection.ts";
 import { coerceI64 } from "./messages.ts";
+import { type ChatRow, contactChatRow } from "./chat_rows.ts";
 import {
   clampPageSize,
   mergeMessages,
@@ -28,17 +29,6 @@ import {
 } from "./message_delta.ts";
 
 type Json = Record<string, unknown>;
-type ChatRow = {
-  mid: string;
-  name: string;
-  kind: string;
-  avatarPath: string | null;
-  picturePath?: string | null;
-  lastActivity: number;
-  unread: number;
-  preview: string;
-  muted?: boolean;
-};
 type ChatCache = { at: number; chats: ChatRow[] };
 type BoxCursor = { messageId: bigint | number; deliveredTime: bigint | number };
 type ContactInfo = {
@@ -468,6 +458,9 @@ export function createCommandService(runtime: CommandRuntime) {
             ),
             unread: Number(box.unreadCount ?? 0),
             preview: prevPreview,
+            contactOnly: mid.startsWith("u") && activity <= 0 &&
+              Number(box.lastDeliveredMessageId?.messageId ?? 0) <= 0 &&
+              Number(box.unreadCount ?? 0) <= 0,
             muted: !!contactIndex.get(mid)?.muted,
           });
         }
@@ -496,17 +489,15 @@ export function createCommandService(runtime: CommandRuntime) {
               );
             }
           } else {
-            byMid.set(mid, {
+            byMid.set(
               mid,
-              name: info.name,
-              kind: info.kind,
-              picturePath: info.picturePath,
-              avatarPath: await existingFile(join(avatarDir, `${mid}.jpg`)),
-              lastActivity: 0,
-              unread: 0,
-              preview: "",
-              muted: !!info.muted,
-            });
+              contactChatRow(
+                mid,
+                info,
+                undefined,
+                await existingFile(join(avatarDir, `${mid}.jpg`)),
+              ),
+            );
           }
         }
       } catch (e) {

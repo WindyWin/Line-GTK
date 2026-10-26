@@ -20,8 +20,8 @@ fn eligible(message: &MessageInfo) -> bool {
     message.id.parse::<u128>().is_ok_and(|id| id > 0)
         && message.chat_event.is_none()
         && !message.decryption_failed
-        && !message.content_type.eq_ignore_ascii_case("CALL")
-        && !message.content_type.eq_ignore_ascii_case("UNSENT")
+        && !["CALL", "CHATEVENT", "CHAT_EVENT", "UNSENT"]
+            .contains(&message.content_type.to_ascii_uppercase().as_str())
 }
 
 fn snapshot(message: &MessageInfo) -> ReplyInfo {
@@ -97,16 +97,6 @@ pub(super) fn wire(state: &AppState) {
         }
     });
     state.window.add_action(&action);
-    let copy = gio::SimpleAction::new("copy-message", Some(glib::VariantTy::STRING));
-    let s = state.clone();
-    copy.connect_activate(move |_, value| {
-        if let Some(id) = value.and_then(|value| value.str())
-            && let Some(message) = s.reply_messages.borrow().get(id)
-        {
-            s.window.clipboard().set_text(&message.text);
-        }
-    });
-    state.window.add_action(&copy);
     let s = state.clone();
     state.reply_cancel.connect_clicked(move |_| {
         cancel(&s);
@@ -121,9 +111,11 @@ pub(super) fn cancel(state: &AppState) {
 }
 
 pub(super) fn refresh(state: &AppState) {
+    let cancel_label = crate::i18n::t("reply_cancel");
+    state.reply_cancel.set_tooltip_text(Some(&cancel_label));
     state
         .reply_cancel
-        .set_tooltip_text(Some(&crate::i18n::t("reply_cancel")));
+        .update_property(&[gtk::accessible::Property::Label(&cancel_label)]);
     let target = state.reply_target.borrow();
     if let Some(target) = target.as_ref() {
         state.reply_title.set_text(&crate::i18n::tf(
@@ -170,20 +162,27 @@ pub(super) fn append_quote(state: &AppState, bubble: &gtk::Box, quote: &ReplyInf
     let quote = resolved.as_ref().unwrap_or(quote);
     let card = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
+        .spacing(4)
         .css_classes(["line-reply-quote"])
         .build();
+    let heading = gtk::Box::builder().spacing(6).build();
+    let arrow = gtk::Image::from_icon_name("mail-reply-sender-symbolic");
+    arrow.set_pixel_size(12);
+    arrow.set_accessible_role(gtk::AccessibleRole::Presentation);
+    heading.append(&arrow);
     let author_label = gtk::Label::builder()
         .label(author(state, quote))
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .max_width_chars(36)
         .xalign(0.0)
-        .css_classes(["heading", "caption"])
+        .hexpand(true)
+        .css_classes(["heading", "caption", "line-reply-author"])
         .build();
     if !quote.mine {
         message_senders::register(state, &quote.from, &author_label);
     }
-    card.append(&author_label);
+    heading.append(&author_label);
+    card.append(&heading);
     card.append(
         &gtk::Label::builder()
             .label(quote_text(quote))
@@ -193,11 +192,12 @@ pub(super) fn append_quote(state: &AppState, bubble: &gtk::Box, quote: &ReplyInf
             .lines(2)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(38)
+            .css_classes(["line-reply-excerpt"])
             .build(),
     );
     let button = gtk::Button::builder()
         .child(&card)
-        .css_classes(["flat"])
+        .css_classes(["flat", "line-reply-quote-button"])
         .halign(gtk::Align::Fill)
         .build();
     button.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
@@ -228,6 +228,7 @@ pub(super) fn menu(message: &MessageInfo) -> gio::Menu {
         );
         menu.append_item(&item);
     }
+    message_copy::append_menu(&menu, message);
     menu
 }
 
@@ -242,7 +243,12 @@ pub(super) fn button(message: &MessageInfo) -> Option<gtk::Button> {
         .action_target(&message.id.to_variant())
         .action_name("win.reply-message")
         .valign(gtk::Align::Center)
-        .css_classes(["flat", "circular", "line-reply-button"])
+        .css_classes([
+            "flat",
+            "circular",
+            "line-message-action",
+            "line-reply-button",
+        ])
         .build();
     button.update_property(&[
         gtk::accessible::Property::Label(&label),
@@ -265,7 +271,11 @@ fn popup(bubble: &gtk::Box, menu: &gio::Menu, x: f64, y: f64) {
 }
 
 pub(super) fn wire_context(bubble: &gtk::Box, message: &MessageInfo) {
-    if !eligible(message) && !unsend::eligible(message) && !reactions::eligible(message) {
+    if !eligible(message)
+        && !unsend::eligible(message)
+        && !reactions::eligible(message)
+        && !message_copy::eligible(message)
+    {
         return;
     }
     // 仮想リストから行が外れたら、開いているメニューも片付ける。
@@ -279,11 +289,6 @@ pub(super) fn wire_context(bubble: &gtk::Box, message: &MessageInfo) {
         }
     });
     let menu = menu(message);
-    if !message.text.is_empty() {
-        let copy = gio::MenuItem::new(Some(&crate::i18n::t("copy_message")), None);
-        copy.set_action_and_target_value(Some("win.copy-message"), Some(&message.id.to_variant()));
-        menu.append_item(&copy);
-    }
     let click = gtk::GestureClick::new();
     click.set_button(3);
     click.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -375,8 +380,24 @@ mod tests {
             kind: "joined".into(),
             actor_mid: "u-peer".into(),
             target_mids: Vec::new(),
+            name: String::new(),
         });
         assert!(!eligible(&message));
+    }
+
+    #[test]
+    fn cached_chat_events_without_metadata_cannot_be_reply_targets() {
+        for content_type in ["CHATEVENT", "CHAT_EVENT", "chatEvent", "chat_event"] {
+            let message: MessageInfo = serde_json::from_value(serde_json::json!({
+                "id": "42",
+                "contentType": content_type,
+                "text": "[CHATEVENT]"
+            }))
+            .unwrap();
+            assert!(message.chat_event.is_none());
+            assert!(!eligible(&message), "{content_type}");
+            assert!(button(&message).is_none());
+        }
     }
 
     #[test]

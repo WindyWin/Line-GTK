@@ -206,7 +206,7 @@ fn open(state: &AppState) {
         .child(&contents)
         .build();
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&header);
+    window.set_titlebar(Some(&header));
     root.append(&controls);
     root.append(&scroll);
     let overlay = libadwaita::ToastOverlay::new();

@@ -16,26 +16,28 @@ export const PREDEFINED = [
 export type Predefined = typeof PREDEFINED[number];
 export type ReactionChoice =
   | { kind: Predefined }
-  | { kind: "EMOJI"; emoji: string; resourceType: number };
+  | { kind: "EMOJI"; emoji: string; resourceType: number; version: number };
 export type Reaction = ReactionChoice & { from: string; at: number };
 
 /**
  * Thrift field ids of the custom (paid) LINE emoji reaction inside
- * `ReactionType`. linejs does not know this struct; the official desktop
- * client only receives it. The default is a best guess and is replaced by the
- * layout seen in the first custom reaction read from the server.
+ * `ReactionType`. linejs does not know this struct.
+ * Defaults follow PaidReactionType in CHRLINE-Thrift;
+ * unknown field ids can also be learned from received reactions.
  */
 export type PaidLayout = {
   outer: number;
   product: number;
   emoji: number;
   resource: number;
+  version: number;
 };
 export const DEFAULT_PAID_LAYOUT: PaidLayout = {
   outer: 2,
   product: 1,
   emoji: 2,
   resource: 3,
+  version: 4,
 };
 
 const MAX_REACTIONS = 500;
@@ -66,10 +68,16 @@ function resourceTypeOf(value: unknown): number {
   return 1;
 }
 
+export function emojiVersion(value: unknown): number {
+  const version = Number(value);
+  return Number.isSafeInteger(version) && version > 0 ? version : 1;
+}
+
 function paid(
   productId: unknown,
   emojiId: unknown,
   resourceType: unknown,
+  version?: unknown,
 ): ReactionChoice | null {
   const product = String(productId ?? "");
   const emoji = String(emojiId ?? "");
@@ -78,6 +86,7 @@ function paid(
     kind: "EMOJI",
     emoji: `${product}_${emoji}`,
     resourceType: resourceTypeOf(resourceType),
+    version: emojiVersion(version),
   };
 }
 
@@ -91,7 +100,12 @@ export function decodeReactionType(
   if (!object(value)) return null;
   const named = value.paidReactionType;
   if (object(named)) {
-    const choice = paid(named.productId, named.emojiId, named.resourceType);
+    const choice = paid(
+      named.productId,
+      named.emojiId,
+      named.resourceType,
+      named.version,
+    );
     return choice ? { choice } : null;
   }
   const kind = predefined(value.predefinedReactionType ?? value["1"]);
@@ -105,12 +119,23 @@ export function decodeReactionType(
     const emoji = fields.find(([id, v]) =>
       id !== product?.[0] && typeof v === "string" && EMOJI_ID.test(v)
     );
-    const resource = fields.find(([, v]) =>
-      typeof v === "number" || typeof v === "bigint"
+    const resource = fields.find(([id, v]) =>
+      Number(id) === DEFAULT_PAID_LAYOUT.resource && typeof v === "number"
+    ) ?? fields.find(([id, v]) =>
+      Number(id) !== DEFAULT_PAID_LAYOUT.version &&
+      typeof v === "number" && (v === 1 || v === 2)
     );
-    if (!product || !emoji) continue;
-    const choice = paid(product[1], emoji[1], Number(resource?.[1] ?? 1));
-    if (!choice) continue;
+    const version = fields.find(([id, v]) =>
+      id !== resource?.[0] &&
+      (typeof v === "number" || typeof v === "bigint")
+    );
+    if (!product || !emoji) {
+      continue;
+    }
+    const choice = paid(product[1], emoji[1], resource?.[1], version?.[1]);
+    if (!choice) {
+      continue;
+    }
     return {
       choice,
       layout: {
@@ -118,6 +143,7 @@ export function decodeReactionType(
         product: Number(product[0]),
         emoji: Number(emoji[0]),
         resource: Number(resource?.[0] ?? DEFAULT_PAID_LAYOUT.resource),
+        version: Number(version?.[0] ?? DEFAULT_PAID_LAYOUT.version),
       },
     };
   }
@@ -166,7 +192,7 @@ export function validChoice(value: unknown): ReactionChoice | null {
   if (value.kind === "EMOJI") {
     const [product, emoji] = String(value.emoji ?? "").split("_");
     return EMOJI_KEY.test(String(value.emoji ?? ""))
-      ? paid(product, emoji, value.resourceType)
+      ? paid(product, emoji, value.resourceType, value.version)
       : null;
   }
   const kind = PREDEFINED.find((name) => name === value.kind);
@@ -260,6 +286,9 @@ export function paidReactArgs(
       [11, layout.product, productId],
       [11, layout.emoji, emojiId],
       [8, layout.resource, choice.resourceType],
+      // Required by PaidReactionType, even for static/default-version emoji:
+      // https://github.com/DeachSword/CHRLINE-Thrift/blob/main/subs/TalkService/ttypes.thrift
+      [10, layout.version, BigInt(choice.version)],
     ]]]],
   ]]];
 }
@@ -269,7 +298,10 @@ export function reactionError(error: unknown): string {
   if (text.startsWith("reaction_")) return text;
   if (/too old/i.test(text)) return "reaction_expired";
   if (/unsent message/i.test(text)) return "reaction_unsent";
-  if (/USER_NOT_STICON_OWNER|NOT_PREMIUM|"code":\s*(121|125)\b/.test(text)) {
+  if (
+    /USER_NOT_STICON_OWNER|NOT_PREMIUM|Invalid paidReactionType|"code":\s*(121|125)\b/
+      .test(text)
+  ) {
     return "reaction_emoji_unavailable";
   }
   return "reaction_failed";
@@ -278,7 +310,7 @@ export function reactionError(error: unknown): string {
 type Entry = { at: number; reaction: ReactionChoice | null };
 type Indexed = { chat: string; users: Record<string, Entry> };
 type Index = Record<string, Indexed>;
-type Recent = { key: string; resourceType: number };
+type Recent = { key: string; resourceType: number; version: number };
 type Runtime = {
   dataDir: string;
   getClient: () => Client | null;
@@ -398,6 +430,7 @@ export function createReactionService(runtime: Runtime) {
           ).slice(0, MAX_RECENT).map((item: Json) => ({
             key: String(item.key),
             resourceType: resourceTypeOf(item.resourceType),
+            version: emojiVersion(item.version),
           }));
         } catch {
           return [];
@@ -410,21 +443,25 @@ export function createReactionService(runtime: Runtime) {
 
   function remember(
     account: string,
-    choices: { emoji: string; resourceType: number }[],
+    choices: { emoji: string; resourceType: number; version: number }[],
   ) {
     if (!user(account) || !choices.length) return;
     remembering = remembering.then(() => loadRecent(account)).then((stored) => {
       const list = recent.get(account) ?? stored;
       let changed = false;
-      for (const { emoji, resourceType } of choices) {
+      for (const { emoji, resourceType, version } of choices) {
         if (!EMOJI_KEY.test(emoji)) continue;
-        if (list[0]?.key === emoji && list[0].resourceType >= resourceType) {
+        if (
+          list[0]?.key === emoji && list[0].resourceType >= resourceType &&
+          list[0].version >= version
+        ) {
           continue;
         }
         const known = list.find((item) => item.key === emoji);
         const next = {
           key: emoji,
           resourceType: Math.max(resourceType, known?.resourceType ?? 1),
+          version: Math.max(version, known?.version ?? 1),
         };
         list.splice(
           0,
@@ -445,12 +482,12 @@ export function createReactionService(runtime: Runtime) {
   /** Remembers LINE emoji seen in messages and reactions for the picker. */
   function observe(messages: Json[]) {
     const account = accountOf(runtime.getClient());
-    const seen: { emoji: string; resourceType: number }[] = [];
+    const seen: { emoji: string; resourceType: number; version: number }[] = [];
     for (const message of messages) {
       if (Array.isArray(message.emojis)) {
         for (const item of message.emojis.slice(0, 100)) {
           if (object(item) && typeof item.key === "string") {
-            seen.push({ emoji: item.key, resourceType: 1 });
+            seen.push({ emoji: item.key, resourceType: 1, version: 1 });
           }
         }
       }
@@ -460,6 +497,7 @@ export function createReactionService(runtime: Runtime) {
             seen.push({
               emoji: item.emoji,
               resourceType: resourceTypeOf(item.resourceType),
+              version: emojiVersion(item.version),
             });
           }
         }

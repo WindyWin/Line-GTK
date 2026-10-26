@@ -11,11 +11,7 @@ export function isMediaType(contentType: string): boolean {
 // グループで受信したメッセージは、送信者個人のトークへ振り分けない。
 export function conversationMid(message: Record<string, unknown>): string {
   const to = String(message.to ?? "");
-  return to.startsWith("c")
-    ? to
-    : message.mine
-    ? to
-    : String(message.from ?? "");
+  return /^[cr]/.test(to) ? to : message.mine ? to : String(message.from ?? "");
 }
 
 /** LINE sometimes omits contentMetadata; linejs otherwise crashes. */

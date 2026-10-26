@@ -12,9 +12,22 @@ export type ChatOperation = {
   param3?: string;
 };
 export type ChatEvent = {
-  kind: "invited" | "joined" | "left" | "removed";
+  kind:
+    | "invited"
+    | "joined"
+    | "left"
+    | "removed"
+    | "invitation_canceled"
+    | "renamed"
+    | "picture_changed"
+    | "link_join_allowed"
+    | "link_join_disabled"
+    | "created"
+    | "updated"
+    | "unknown";
   actorMid: string;
   targetMids: string[];
+  name?: string;
 };
 type EventMessage = {
   id: string;
@@ -89,10 +102,173 @@ for (
       "KICKOUT_FROM_GROUP",
       "DELETE_OTHER_FROM_CHAT",
     ]],
+    ["invitation_canceled", false, [
+      "32",
+      "126",
+      "NOTIFIED_CANCEL_INVITATION_GROUP",
+      "NOTIFIED_CANCEL_CHAT_INVITATION",
+    ]],
+    ["invitation_canceled", true, [
+      "31",
+      "125",
+      "CANCEL_INVITATION_GROUP",
+      "CANCEL_CHAT_INVITATION",
+    ]],
+    ["updated", false, [
+      "11",
+      "122",
+      "NOTIFIED_UPDATE_GROUP",
+      "NOTIFIED_UPDATE_CHAT",
+    ]],
+    ["updated", true, ["10", "121", "UPDATE_GROUP", "UPDATE_CHAT"]],
+    ["created", true, [
+      "9",
+      "20",
+      "120",
+      "CREATE_GROUP",
+      "CREATE_ROOM",
+      "CREATE_CHAT",
+    ]],
   ] as const
 ) for (const name of names) operations[name] = [kind, self];
 
-const user = (mid: string) => /^u[a-zA-Z0-9_-]{1,128}$/.test(mid);
+const user = (mid: unknown): mid is string =>
+  typeof mid === "string" && /^u[a-zA-Z0-9_-]{1,128}$/.test(mid);
+const targeted = (kind: ChatEvent["kind"]) =>
+  ["invited", "removed", "invitation_canceled"].includes(kind);
+
+const eventKinds = new Set<string>([
+  "invited",
+  "joined",
+  "left",
+  "removed",
+  "invitation_canceled",
+  "renamed",
+  "picture_changed",
+  "link_join_allowed",
+  "link_join_disabled",
+  "created",
+  "updated",
+  "unknown",
+]);
+
+function validEvent(value: unknown): value is ChatEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as ChatEvent;
+  return eventKinds.has(event.kind) &&
+    (event.actorMid === "" || user(event.actorMid)) &&
+    Array.isArray(event.targetMids) && event.targetMids.length <= 100 &&
+    event.targetMids.every(user) &&
+    (event.name === undefined ||
+      (typeof event.name === "string" && event.name.length <= 1000));
+}
+
+/** Decode history notices before discarding the raw LINE metadata. Unknown or
+ * malformed notices remain system rows, without guessing an actor or action. */
+export function chatEventOf(message: Json): ChatEvent | null {
+  if (validEvent(message.chatEvent)) return message.chatEvent;
+  if (
+    !["18", "CHATEVENT", "CHAT_EVENT"].includes(
+      String(message.contentType).toUpperCase(),
+    )
+  ) {
+    return null;
+  }
+  const unknown: ChatEvent = { kind: "unknown", actorMid: "", targetMids: [] };
+  const meta = message.contentMetadata as Json | null | undefined;
+  if (
+    typeof meta?.LOC_KEY !== "string" ||
+    (meta.LOC_ARGS !== undefined && typeof meta.LOC_ARGS !== "string")
+  ) return unknown;
+  const args = meta.LOC_ARGS ? String(meta.LOC_ARGS).split("\x1e") : [];
+  const members = (value: string | undefined): string[] => {
+    const mids = value?.split("\x1f") ?? [];
+    return mids.length && mids.length <= 100 && mids.every(user)
+      ? [...new Set(mids)]
+      : [];
+  };
+  const event = (
+    kind: ChatEvent["kind"],
+    actorMid = "",
+    targetMids: string[] = [],
+  ): ChatEvent => ({ kind, actorMid, targetMids });
+  switch (meta.LOC_KEY) {
+    case "C_MJ":
+    case "C_ML": {
+      const mids = members(args[0]);
+      if (args.length !== 1 || !mids.length) return unknown;
+      return event(meta.LOC_KEY === "C_MJ" ? "joined" : "left", mids[0], mids);
+    }
+    case "C_GI":
+    case "C_MI":
+    case "C_IC": {
+      const mids = members(args[1]);
+      if (args.length !== 2 || !user(args[0]) || !mids.length) return unknown;
+      return event(
+        meta.LOC_KEY === "C_IC" ? "invitation_canceled" : "invited",
+        args[0],
+        mids,
+      );
+    }
+    case "C_MR": {
+      const mids = members(args.at(-1));
+      if (
+        !mids.length || ![1, 2].includes(args.length) ||
+        (args.length === 2 && !user(args[0]))
+      ) {
+        return unknown;
+      }
+      return event("removed", args.length === 2 ? args[0] : "", mids);
+    }
+    case "C_PN":
+      return args.length === 2 && user(args[0]) && args[1].trim() &&
+          args[1].length <= 1000
+        ? { ...event("renamed", args[0]), name: args[1] }
+        : unknown;
+    case "C_PI":
+      return args.length === 1 && user(args[0])
+        ? event("picture_changed", args[0])
+        : unknown;
+    case "C_SN":
+    case "C_SP":
+      return args.length <= 1
+        ? event(
+          meta.LOC_KEY === "C_SN" ? "link_join_allowed" : "link_join_disabled",
+          user(args[0]) ? args[0] : "",
+        )
+        : unknown;
+    default:
+      return unknown;
+  }
+}
+
+export function normalizeChatEvent(message: Json): Json {
+  const chatEvent = chatEventOf(message);
+  return chatEvent
+    ? {
+      ...message,
+      chatEvent,
+      contentType: "CHAT_EVENT",
+      text: "",
+      mine: false,
+      reactions: [],
+      replyTo: null,
+      needsMedia: false,
+    }
+    : message;
+}
+
+export function summarizeChatEvent(raw: Json): Json | null {
+  const chatEvent = chatEventOf(raw);
+  if (!chatEvent) return null;
+  return normalizeChatEvent({
+    id: String(raw.id ?? ""),
+    to: typeof raw.to === "string" ? raw.to : "",
+    from: chatEvent.actorMid,
+    createdTime: Number(raw.createdTime ?? 0),
+    chatEvent,
+  });
+}
 export function chatEventMessage(
   op: ChatOperation,
   selfMid: string,
@@ -103,14 +279,22 @@ export function chatEventMessage(
   if (
     !definition || !user(selfMid) || !/^[cr][a-zA-Z0-9_-]{1,128}$/.test(chatMid)
   ) return null;
-  const [kind, own] = definition;
+  const [operationKind, own] = definition;
+  const attribute = own ? op.param2 : op.param3;
+  const kind = operationKind === "updated"
+    ? attribute === "1"
+      ? "renamed"
+      : attribute === "2"
+      ? "picture_changed"
+      : "updated"
+    : operationKind;
   const actorMid = own ? selfMid : op.param2 ?? "";
   if (!user(actorMid)) return null;
   const rawTargets = own ? op.param2 : op.param3;
-  const targetMids = kind === "invited" || kind === "removed"
+  const targetMids = targeted(kind)
     ? [...new Set((rawTargets ?? "").split("\x1e").filter(user))].slice(0, 100)
     : [];
-  if ((kind === "invited" || kind === "removed") && !targetMids.length) {
+  if (targeted(kind) && !targetMids.length) {
     return null;
   }
   const revision = String(op.revision ?? "");
@@ -168,13 +352,7 @@ export function createChatEvents(runtime: Runtime) {
           m.id.startsWith("event:") &&
           typeof m.to === "string" && /^[cr][a-zA-Z0-9_-]{1,128}$/.test(m.to) &&
           Number.isFinite(m.createdTime) && m.createdTime > 0 &&
-          ["invited", "joined", "left", "removed"].includes(
-            m.chatEvent?.kind,
-          ) &&
-          user(m.chatEvent?.actorMid) &&
-          Array.isArray(m.chatEvent?.targetMids) &&
-          m.chatEvent.targetMids.length <= 100 &&
-          m.chatEvent.targetMids.every(user)
+          validEvent(m.chatEvent)
         ).slice(-5000);
       }
     } catch { /* 初回またはキャッシュが消去された場合は空の履歴から始める。 */ }
@@ -237,7 +415,25 @@ export function createChatEvents(runtime: Runtime) {
     ).slice(-500);
     events.forEach(observe);
     const combined = new Map(messages.map((m) => [String(m.id), m]));
-    for (const event of events) combined.set(event.id, event);
+    const targets = (event: ChatEvent) => {
+      const mids =
+        ["joined", "left"].includes(event.kind) && !event.targetMids.length
+          ? [event.actorMid]
+          : event.targetMids;
+      return mids.slice().sort().join(",");
+    };
+    for (const event of events) {
+      // A server history notice and its live operation have different IDs.
+      // Only replace an exact timestamp/action match; nearby events may be distinct.
+      const inHistory = messages.some((message) => {
+        const history = chatEventOf(message);
+        return history && Number(message.createdTime) === event.createdTime &&
+          history.kind === event.chatEvent.kind &&
+          history.actorMid === event.chatEvent.actorMid &&
+          targets(history) === targets(event.chatEvent);
+      });
+      if (!inHistory) combined.set(event.id, event);
+    }
     return [...combined.values()].sort((a, b) =>
       Number(a.createdTime) - Number(b.createdTime)
     );

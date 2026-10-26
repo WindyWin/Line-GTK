@@ -15,7 +15,7 @@ import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
 import { mergeMessages } from "./message_history.ts";
 import { appendLive } from "./message_delta.ts";
 import { replyToOf } from "./replies.ts";
-import { groupProfile } from "./groups.ts";
+import { groupProfile, setGroupMuted } from "./groups.ts";
 import {
   DECRYPTION_FAILED,
   guardedDecrypt,
@@ -51,10 +51,15 @@ import { createMessageView } from "./message_view.ts";
 import { callHistoryOf } from "./call_history.ts";
 import { createReadReceipts } from "./read_receipts.ts";
 import { createUnreadSync } from "./unread_sync.ts";
-import { createChatEvents } from "./chat_events.ts";
+import {
+  createChatEvents,
+  normalizeChatEvent,
+  summarizeChatEvent,
+} from "./chat_events.ts";
 import { readReceiptPermission } from "./read_policy.ts";
 import { createEmojiService, lineEmojis } from "./emojis.ts";
 import { createChatPreviews } from "./chat_previews.ts";
+import { type ChatRow, contactChatRow } from "./chat_rows.ts";
 import { createAlbumService } from "./albums.ts";
 import { createMessageSenders } from "./message_senders.ts";
 import { createUserProfiles } from "./user_profiles.ts";
@@ -72,18 +77,6 @@ import {
 import { createSharedAttachmentCache } from "./shared_media_cache.ts";
 
 type Json = Record<string, unknown>;
-
-type ChatRow = {
-  mid: string;
-  name: string;
-  kind: string;
-  avatarPath: string | null;
-  picturePath?: string | null;
-  lastActivity: number;
-  unread: number;
-  preview: string;
-  muted?: boolean;
-};
 
 const dataDir = Deno.env.get("LINE_GTK_DATA") ??
   join(Deno.env.get("HOME") ?? ".", ".local", "share", "line-gtk");
@@ -273,6 +266,7 @@ const messageView = createMessageView({
 const { previewLang, previewLine, extractFlex } = messageView;
 async function forUiMessages(messages: Json[], chatMid?: string) {
   if (chatMid) messages = await unsends.mask(chatMid, messages);
+  messages = messages.map(normalizeChatEvent);
   if (chatMid) messages = await chatEvents.merge(chatMid, messages);
   if (chatMid) {
     messages = await reactions.merge(chatMid, messages);
@@ -1259,6 +1253,8 @@ async function summarizeTalkMessage(
   tm: TalkMessage,
   opts: { withMedia?: boolean } = {},
 ): Promise<Json> {
+  const event = summarizeChatEvent(tm.raw as unknown as Json);
+  if (event) return event;
   const withMedia = opts.withMedia === true;
   const raw = tm.raw as {
     id?: string | number;
@@ -1522,6 +1518,8 @@ async function summarizeRawMessage(
   raw: Parameters<typeof TalkMessage.fromRawTalk>[0],
   opts?: { withMedia?: boolean },
 ) {
+  const event = summarizeChatEvent(raw as unknown as Json);
+  if (event) return event;
   try {
     const tm = await fromRawTalkSafe(raw);
     return await summarizeTalkMessage(tm, opts);
@@ -2036,6 +2034,7 @@ async function upsertChatFromMessage(message: Json) {
     }
   }
 
+  row.contactOnly = false;
   chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== peer)];
   chatCache.at = Date.now();
   try {
@@ -2054,26 +2053,21 @@ async function upsertChatFromMessage(message: Json) {
 async function upsertChatFromContact(mid: string) {
   if (!mid || (!mid.startsWith("u") && !mid.startsWith("c"))) return;
   const info = await resolveContactInfo(mid);
+  const avatarPath = await existingFile(join(avatarDir, `${mid}.jpg`));
   if (!chatCache) chatCache = { at: Date.now(), chats: [] };
-  let row = chatCache.chats.find((x) => x.mid === mid);
-  const created = !row;
-  if (!row) {
-    row = {
-      mid,
-      name: info.name,
-      kind: info.kind,
-      picturePath: info.picturePath,
-      avatarPath: await existingFile(join(avatarDir, `${mid}.jpg`)),
-      lastActivity: Date.now(),
-      unread: 0,
-      preview: "",
-    };
+  const previous = chatCache.chats.find((x) => x.mid === mid);
+  const created = !previous;
+  const row = contactChatRow(
+    mid,
+    info,
+    previous,
+    avatarPath,
+  );
+  if (previous) {
+    Object.assign(previous, row);
   } else {
-    row.name = info.name || row.name;
-    row.kind = info.kind || row.kind;
-    row.picturePath = info.picturePath ?? row.picturePath ?? null;
+    chatCache.chats.push(row);
   }
-  chatCache.chats = [row, ...chatCache.chats.filter((c) => c.mid !== mid)];
   chatCache.at = Date.now();
   try {
     await saveChatCache();
@@ -2764,24 +2758,33 @@ async function handle(req: Json) {
         }
         const mid = String(params.mid ?? params.chatMid ?? "");
         const muted = !!params.muted;
-        if (!mid.startsWith("u")) {
-          fail(id, "mute_dm_only");
+        if (!mid.startsWith("u") && !mid.startsWith("c")) {
+          fail(id, "mute_unsupported_chat");
           break;
         }
         try {
-          await client.base.talk.updateContactSetting({
-            reqSeq: await client.base.getReqseq(),
-            mid,
-            flag: "CONTACT_SETTING_NOTIFICATION_DISABLE",
-            value: muted ? "true" : "false",
-          });
+          if (mid.startsWith("c")) {
+            await setGroupMuted(
+              client.base.talk,
+              mid,
+              muted,
+              await client.base.getReqseq(),
+            );
+          } else {
+            await client.base.talk.updateContactSetting({
+              reqSeq: await client.base.getReqseq(),
+              mid,
+              flag: "CONTACT_SETTING_NOTIFICATION_DISABLE",
+              value: muted ? "true" : "false",
+            });
+          }
           const cur = contactIndex.get(mid);
           if (cur) cur.muted = muted;
           else {
             contactIndex.set(mid, {
               name: mid,
               picturePath: null,
-              kind: "dm",
+              kind: mid.startsWith("c") ? "group" : "dm",
               muted,
             });
           }

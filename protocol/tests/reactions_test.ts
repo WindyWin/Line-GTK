@@ -4,6 +4,7 @@ import {
   createReactionService,
   decodeReactionType,
   DEFAULT_PAID_LAYOUT,
+  emojiVersion,
   normalizeReactions,
   paidReactArgs,
   reactionError,
@@ -29,14 +30,26 @@ Deno.test("標準リアクションとLINE絵文字のリアクションを読�
         resourceType: "ANIMATION",
       },
     }),
-    { choice: { kind: "EMOJI", emoji: `${PRODUCT}_012`, resourceType: 2 } },
+    {
+      choice: {
+        kind: "EMOJI",
+        emoji: `${PRODUCT}_012`,
+        resourceType: 2,
+        version: 1,
+      },
+    },
   );
   // linejsが知らない構造体は番号のまま届く。番号の並びも覚える。
   assertEquals(
     decodeReactionType({ "4": { "5": 1, "7": "003", "6": PRODUCT } }),
     {
-      choice: { kind: "EMOJI", emoji: `${PRODUCT}_003`, resourceType: 1 },
-      layout: { outer: 4, product: 6, emoji: 7, resource: 5 },
+      choice: {
+        kind: "EMOJI",
+        emoji: `${PRODUCT}_003`,
+        resourceType: 1,
+        version: 1,
+      },
+      layout: { outer: 4, product: 6, emoji: 7, resource: 5, version: 4 },
     },
   );
   assertEquals(decodeReactionType({ predefinedReactionType: 1 }), null);
@@ -66,6 +79,7 @@ Deno.test("リアクション一覧は1人1件に絞り、不正な項目を捨�
       kind: "EMOJI",
       emoji: `${PRODUCT}_001`,
       resourceType: 1,
+      version: 1,
     },
     { from: "u-a", at: 30, kind: "SAD" },
   ]);
@@ -116,13 +130,17 @@ Deno.test("LINE絵文字リアクションの送信形式と失敗理由", () =>
     paidReactArgs(
       9,
       "9007199254740993",
-      { kind: "EMOJI", emoji: `${PRODUCT}_004`, resourceType: 2 },
+      { kind: "EMOJI", emoji: `${PRODUCT}_004`, resourceType: 2, version: 123 },
       DEFAULT_PAID_LAYOUT,
     ),
     [[12, 1, [
       [8, 1, 9],
       [10, 2, 9007199254740993n],
-      [12, 3, [[12, 2, [[11, 1, PRODUCT], [11, 2, "004"], [8, 3, 2]]]]],
+      [12, 3, [[12, 2, [[11, 1, PRODUCT], [11, 2, "004"], [8, 3, 2], [
+        10,
+        4,
+        123n,
+      ]]]]],
     ]]],
   );
   assertEquals(
@@ -138,6 +156,74 @@ Deno.test("LINE絵文字リアクションの送信形式と失敗理由", () =>
     "reaction_emoji_unavailable",
   );
   assertEquals(reactionError(new Error("socket hang up")), "reaction_failed");
+  assertEquals(
+    reactionError(new Error("Invalid paidReactionType in reactionType")),
+    "reaction_emoji_unavailable",
+  );
+});
+
+Deno.test("custom reaction versions survive named and numeric decoding", () => {
+  const choice = {
+    kind: "EMOJI" as const,
+    emoji: `${PRODUCT}_001`,
+    resourceType: 2,
+    version: 123,
+  };
+  assertEquals(
+    decodeReactionType({
+      paidReactionType: {
+        productId: PRODUCT,
+        emojiId: "001",
+        resourceType: "ANIMATION",
+        version: "123",
+      },
+    }),
+    { choice },
+  );
+  assertEquals(
+    decodeReactionType({
+      "2": { "1": PRODUCT, "2": "001", "3": 2, "4": 123n },
+    }),
+    { choice, layout: DEFAULT_PAID_LAYOUT },
+  );
+  // resourceType is optional; version 1 must not be mistaken for that enum.
+  assertEquals(
+    decodeReactionType({ "2": { "1": PRODUCT, "2": "001", "4": 1 } }),
+    {
+      choice: { ...choice, resourceType: 1, version: 1 },
+      layout: DEFAULT_PAID_LAYOUT,
+    },
+  );
+  for (
+    const value of [undefined, null, 0, -1, 1.5, "bad", "9007199254740993"]
+  ) {
+    assertEquals(emojiVersion(value), 1);
+  }
+});
+
+Deno.test("recent emoji retain nondefault versions across a restart", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const f = fixture(dir);
+    f.service.observe([{
+      reactions: [{
+        kind: "EMOJI",
+        emoji: `${PRODUCT}_001`,
+        resourceType: 2,
+        version: 7,
+      }],
+    }]);
+    // Seeing the same emoji in ordinary text must not discard its known version.
+    f.service.observe([{ emojis: [{ key: `${PRODUCT}_001` }] }]);
+    const expected = [{ key: `${PRODUCT}_001`, resourceType: 2, version: 7 }];
+    assertEquals(await f.service.recentEmojis(), expected);
+    await f.service.flush();
+    const restarted = fixture(dir);
+    assertEquals(await restarted.service.recentEmojis(), expected);
+    await restarted.service.flush();
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 function fixture(dataDir: string) {
@@ -230,6 +316,7 @@ Deno.test("取得より後に届いた操作だけを履歴へ重ね、アカウ
       kind: "EMOJI",
       emoji: `${PRODUCT}_002`,
       resourceType: 1,
+      version: 1,
       from: "u-c",
       at: 2500,
     }]);
@@ -289,7 +376,7 @@ Deno.test("リアクションを送信・取消し、成功後だけ画面へ反
       paidReactArgs(
         42,
         "77",
-        { kind: "EMOJI", emoji: `${PRODUCT}_010`, resourceType: 1 },
+        { kind: "EMOJI", emoji: `${PRODUCT}_010`, resourceType: 1, version: 1 },
         DEFAULT_PAID_LAYOUT,
       ),
     ]);
@@ -341,6 +428,7 @@ Deno.test("受信したLINE絵文字リアクションの番号配置で送信�
       product: 1,
       emoji: 2,
       resource: 3,
+      version: 4,
     });
     normalizeReactions([{
       fromUserMid: "u-a",
@@ -352,6 +440,7 @@ Deno.test("受信したLINE絵文字リアクションの番号配置で送信�
       product: 2,
       emoji: 1,
       resource: 3,
+      version: 4,
     });
     await f.service.flush();
   } finally {

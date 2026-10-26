@@ -410,6 +410,13 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
         chat_events::append(state, event);
         return;
     }
+    if matches!(
+        msg.content_type.to_ascii_uppercase().as_str(),
+        "CHATEVENT" | "CHAT_EVENT" | "18"
+    ) {
+        chat_events::append(state, &chat_events::unknown());
+        return;
+    }
     // ListViewが行のフォーカスを管理するため、ListBox専用の行を入れ子にしない。
     let row = gtk::Box::builder()
         .css_classes(["line-message-row"])
@@ -516,14 +523,13 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
 
         if show_text && !msg.emojis.is_empty() {
             emojis::append(state, &bubble, msg);
-            append_link_chips(state, &bubble, &msg.text);
+            link_previews::append(&bubble, &msg.text);
         } else if show_text {
             let label = gtk::Label::builder()
                 .label(&msg.text)
                 .xalign(0.0)
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
-                .selectable(true)
                 .max_width_chars(42)
                 .css_classes(["line-bubble-text"])
                 .build();
@@ -532,10 +538,9 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
                 &msg.text,
                 &msg.mentions,
             )));
-            label.set_extra_menu(Some(&replies::menu(msg)));
             mentions::wire_label_click(state, &label, &msg.text, &msg.mentions);
             bubble.append(&label);
-            append_link_chips(state, &bubble, &msg.text);
+            link_previews::append(&bubble, &msg.text);
         } else if !has_image && !waiting_visual {
             let fallback = if msg.content_type.is_empty() {
                 "(message)".to_string()
@@ -636,7 +641,12 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
                 .spacing(6)
                 .halign(gtk::Align::End)
                 .build();
-            content.append(&reply);
+            let actions = gtk::Box::builder()
+                .valign(gtk::Align::Center)
+                .css_classes(["line-message-actions"])
+                .build();
+            actions.append(&reply);
+            content.append(&actions);
             content.append(&bubble);
             col.append(&content);
         } else {
@@ -706,13 +716,27 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
             .css_classes(["line-msg-time"])
             .build();
         incoming.append(&bubble);
+        let metadata = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .valign(gtk::Align::End)
+            .build();
+        let actions = gtk::Box::builder()
+            .halign(gtk::Align::Start)
+            .css_classes(["line-message-actions"])
+            .build();
         if let Some(reply) = replies::button(msg) {
-            incoming.append(&reply);
+            actions.append(&reply);
         }
         if let Some(react) = reactions::button(msg) {
-            incoming.append(&react);
+            actions.append(&react);
         }
-        incoming.append(&time);
+        if actions.first_child().is_some() {
+            metadata.append(&actions);
+        }
+        time.set_halign(gtk::Align::Start);
+        metadata.append(&time);
+        incoming.append(&metadata);
         incoming.append(&gtk::Box::builder().hexpand(true).build());
     }
 
@@ -1542,44 +1566,8 @@ pub(super) fn handle_flex_action(
     }
 }
 
-pub(super) fn append_link_chips(_state: &AppState, bubble: &gtk::Box, text: &str) {
-    for url in extract_urls(text).into_iter().take(4) {
-        if youtube_id(&url).is_some() {
-            let box_ = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(4)
-                .css_classes(["line-flex-card"])
-                .build();
-            box_.append(
-                &gtk::Label::builder()
-                    .label(crate::i18n::t("youtube_video"))
-                    .xalign(0.0)
-                    .css_classes(["line-flex-title"])
-                    .build(),
-            );
-            let btn = gtk::LinkButton::builder()
-                .label(crate::i18n::t("open_play_browser"))
-                .uri(&url)
-                .css_classes(["line-link-chip"])
-                .build();
-            box_.append(&btn);
-            bubble.append(&box_);
-            continue;
-        }
-        let btn = gtk::LinkButton::builder()
-            .label(if url.len() > 48 {
-                format!("{}…", &url[..45])
-            } else {
-                url.clone()
-            })
-            .uri(&url)
-            .css_classes(["line-link-chip"])
-            .build();
-        bubble.append(&btn);
-    }
-}
-
 pub(super) fn clear_messages(state: &AppState) {
+    composer_drafts::sync(state);
     state.chat_event_labels.borrow_mut().clear();
     let generation = state.message_render_generation.borrow().wrapping_add(1);
     *state.message_render_generation.borrow_mut() = generation;
@@ -1649,6 +1637,14 @@ pub(super) fn set_msg_state(state: &AppState, name: &str, empty_text: Option<&st
 }
 
 pub(super) fn preview_body_ui(msg: &MessageInfo) -> String {
+    if msg.chat_event.is_some()
+        || matches!(
+            msg.content_type.to_ascii_uppercase().as_str(),
+            "CHATEVENT" | "CHAT_EVENT" | "18"
+        )
+    {
+        return crate::i18n::t("chat_event_unknown");
+    }
     if let Some(preview) = call_history::history_preview(msg) {
         return preview;
     }

@@ -33,13 +33,13 @@ struct Pack {
 #[derive(Default)]
 pub(super) struct ReactionUi {
     slots: HashMap<String, Slot>,
-    recent: Vec<(String, i64)>,
+    recent: Vec<(String, i64, i64)>,
     recent_loading: bool,
     picker: Option<Picker>,
     packs: Vec<Pack>,
     packs_loaded: bool,
     packs_loading: bool,
-    pack_emojis: HashMap<String, Vec<(String, i64)>>,
+    pack_emojis: HashMap<String, Vec<(String, i64, i64)>>,
     loading_packs: HashSet<String>,
     /// Empty means the recently seen emoji; otherwise a pack's product id.
     selected_tab: String,
@@ -51,6 +51,7 @@ struct Choice {
     kind: String,
     emoji: Option<String>,
     resource_type: i64,
+    version: i64,
 }
 
 impl Choice {
@@ -59,6 +60,7 @@ impl Choice {
             kind: reaction.kind.clone(),
             emoji: reaction.emoji.clone(),
             resource_type: reaction.resource_type.unwrap_or(1),
+            version: reaction.version.unwrap_or(1),
         }
     }
 
@@ -73,7 +75,7 @@ pub(super) fn eligible(message: &MessageInfo) -> bool {
         && message.id.parse::<u128>().is_ok_and(|id| id > 0)
         && message.chat_event.is_none()
         && !message.decryption_failed
-        && !["CALL", "CHAT_EVENT", "UNSENT"]
+        && !["CALL", "CHATEVENT", "CHAT_EVENT", "UNSENT"]
             .contains(&message.content_type.to_ascii_uppercase().as_str())
 }
 
@@ -163,6 +165,31 @@ fn icon(state: &AppState, kind: &str, emoji: Option<&str>, size: i32) -> gtk::Wi
     };
     image.set_pixel_size(size);
     image.upcast()
+}
+
+fn choice_icon(child: &impl IsA<gtk::Widget>, selected: bool) -> gtk::Overlay {
+    let overlay = gtk::Overlay::builder().child(child).build();
+    if selected {
+        let check = gtk::Image::builder()
+            .icon_name("object-select-symbolic")
+            .pixel_size(12)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::End)
+            .can_target(false)
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .css_classes(["line-reaction-check"])
+            .build();
+        overlay.add_overlay(&check);
+    }
+    overlay
+}
+
+fn pressed(button: &gtk::Button, selected: bool) {
+    button.update_state(&[gtk::accessible::State::Pressed(if selected {
+        gtk::AccessibleTristate::True
+    } else {
+        gtk::AccessibleTristate::False
+    })]);
 }
 
 pub(super) fn strip(state: &AppState, message: &MessageInfo, anchor: &gtk::Box) -> gtk::Box {
@@ -255,7 +282,12 @@ fn render(state: &AppState, strip: &gtk::Box, message: &MessageInfo) {
             .build();
         if own {
             chip.add_css_class("line-reaction-mine");
+            let check = gtk::Image::from_icon_name("object-select-symbolic");
+            check.set_pixel_size(12);
+            check.set_accessible_role(gtk::AccessibleRole::Presentation);
+            content.append(&check);
         }
+        pressed(&chip, own);
         chip.update_property(&[gtk::accessible::Property::Label(&crate::i18n::tf(
             "reaction_chip",
             &[
@@ -275,6 +307,18 @@ fn render(state: &AppState, strip: &gtk::Box, message: &MessageInfo) {
             }
         });
         strip.append(&chip);
+    }
+    if strip.first_child().is_some() {
+        let label = crate::i18n::t("reaction_list");
+        let details = gtk::Button::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text(&label)
+            .action_name("win.show-reactions")
+            .action_target(&message.id.to_variant())
+            .css_classes(["flat", "circular", "line-reaction-details"])
+            .build();
+        details.update_property(&[gtk::accessible::Property::Label(&label)]);
+        strip.append(&details);
     }
 }
 
@@ -407,6 +451,7 @@ fn send(state: &AppState, id: &str, choice: Option<Choice>) {
                     "kind": choice.kind,
                     "emoji": choice.emoji,
                     "resourceType": choice.resource_type,
+                    "version": choice.version,
                 },
             })),
         ),
@@ -476,7 +521,7 @@ pub(super) fn recent_response(
     if !ok || state.self_mid.borrow().as_deref() != Some(account) {
         return;
     }
-    let recent: Vec<(String, i64)> = result
+    let recent: Vec<(String, i64, i64)> = result
         .get("emojis")
         .and_then(|v| v.as_array())
         .into_iter()
@@ -489,6 +534,7 @@ pub(super) fn recent_response(
                     item.get("resourceType")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(1),
+                    item.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
                 )
             })
         })
@@ -544,15 +590,23 @@ fn open_picker(state: &AppState, id: &str) {
         .margin_start(4)
         .margin_end(4)
         .build();
-    let row = gtk::Box::builder().spacing(2).build();
+    root.append(
+        &gtk::Label::builder()
+            .label(crate::i18n::t("react_message"))
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .build(),
+    );
+    let row = gtk::Box::builder().spacing(4).build();
     for (kind, _, key) in PREDEFINED {
         let selected = current.as_ref().is_some_and(|r| r.kind == kind);
         let button = gtk::Button::builder()
-            .child(&icon(state, kind, None, 28))
+            .child(&choice_icon(&icon(state, kind, None, 28), selected))
             .tooltip_text(crate::i18n::t(key))
             .css_classes(["flat", "line-reaction-option"])
             .build();
         button.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(key))]);
+        pressed(&button, selected);
         if selected {
             button.add_css_class("line-reaction-selected");
         }
@@ -567,12 +621,14 @@ fn open_picker(state: &AppState, id: &str) {
                 kind: kind.into(),
                 emoji: None,
                 resource_type: 1,
+                version: 1,
             };
             send(&s, &id, (!selected).then_some(choice));
         });
         row.append(&button);
     }
     root.append(&row);
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(
         &gtk::Label::builder()
             .label(crate::i18n::t("reaction_line_emoji"))
@@ -585,18 +641,18 @@ fn open_picker(state: &AppState, id: &str) {
         &gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_width(320)
+            .min_content_width(288)
             .propagate_natural_height(true)
             .child(&tabs)
             .build(),
     );
     let grid = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
-        .max_children_per_line(8)
+        .max_children_per_line(6)
         .min_children_per_line(6)
         .homogeneous(true)
-        .row_spacing(2)
-        .column_spacing(2)
+        .row_spacing(4)
+        .column_spacing(4)
         .build();
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -683,6 +739,7 @@ fn tab_button(
         .css_classes(["flat", "line-reaction-tab"])
         .build();
     button.update_property(&[gtk::accessible::Property::Label(tip)]);
+    pressed(&button, active);
     if active {
         button.add_css_class("line-reaction-selected");
     }
@@ -796,18 +853,19 @@ fn refill_picker(state: &AppState) {
         );
         return;
     }
-    for (key, resource_type) in items {
+    for (key, resource_type, version) in items {
         let selected = current
             .as_ref()
             .is_some_and(|r| r.kind == EMOJI && r.emoji.as_deref() == Some(key.as_str()));
         let button = gtk::Button::builder()
-            .child(&emoji_image(state, &key, 28))
+            .child(&choice_icon(&emoji_image(state, &key, 28), selected))
             .tooltip_text(crate::i18n::t("reaction_line_emoji"))
             .css_classes(["flat", "line-reaction-option"])
             .build();
         button.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
             "reaction_line_emoji",
         ))]);
+        pressed(&button, selected);
         if selected {
             button.add_css_class("line-reaction-selected");
         }
@@ -824,6 +882,7 @@ fn refill_picker(state: &AppState) {
                 kind: EMOJI.into(),
                 emoji: Some(key.clone()),
                 resource_type,
+                version,
             };
             send(&s, &id, (!selected).then_some(choice));
         });
@@ -941,7 +1000,7 @@ pub(super) fn pack_response(
         return;
     }
     if ok {
-        let emojis: Vec<(String, i64)> = result
+        let emojis: Vec<(String, i64, i64)> = result
             .get("emojis")
             .and_then(|v| v.as_array())
             .into_iter()
@@ -954,6 +1013,7 @@ pub(super) fn pack_response(
                         item.get("resourceType")
                             .and_then(|v| v.as_i64())
                             .unwrap_or(1),
+                        item.get("version").and_then(|v| v.as_i64()).unwrap_or(1),
                     )
                 })
             })
@@ -1074,7 +1134,12 @@ pub(super) fn button(message: &MessageInfo) -> Option<gtk::Button> {
         .action_target(&message.id.to_variant())
         .action_name("win.react-message")
         .valign(gtk::Align::Center)
-        .css_classes(["flat", "circular", "line-reply-button"])
+        .css_classes([
+            "flat",
+            "circular",
+            "line-message-action",
+            "line-react-button",
+        ])
         .build();
     button.update_property(&[gtk::accessible::Property::Label(&label)]);
     Some(button)
@@ -1110,6 +1175,7 @@ mod tests {
             kind: kind.into(),
             emoji: emoji.map(Into::into),
             resource_type: None,
+            version: None,
         }
     }
 
@@ -1128,6 +1194,21 @@ mod tests {
         message.id = "10".into();
         message.content_type = "UNSENT".into();
         assert!(!eligible(&message));
+    }
+
+    #[test]
+    fn cached_chat_events_without_metadata_cannot_receive_reactions() {
+        for content_type in ["CHATEVENT", "CHAT_EVENT", "chatEvent", "chat_event"] {
+            let message: MessageInfo = serde_json::from_value(serde_json::json!({
+                "id": "42",
+                "contentType": content_type,
+                "text": "[CHATEVENT]"
+            }))
+            .unwrap();
+            assert!(message.chat_event.is_none());
+            assert!(!eligible(&message), "{content_type}");
+            assert!(button(&message).is_none());
+        }
     }
 
     #[test]
@@ -1181,5 +1262,16 @@ mod tests {
             error_text(Some("socket closed")),
             crate::i18n::t("reaction_failed")
         );
+    }
+
+    #[test]
+    fn custom_reaction_choices_preserve_the_pack_version() {
+        let mut value = reaction("u-a", EMOJI, Some("5ac1bfd5040ab15980c9b435_001"));
+        assert_eq!(Choice::of(&value).version, 1);
+        value.version = Some(7);
+        value.resource_type = Some(2);
+        let choice = Choice::of(&value);
+        assert_eq!(choice.version, 7);
+        assert_eq!(choice.resource_type, 2);
     }
 }

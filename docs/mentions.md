@@ -24,6 +24,14 @@ pipeline with “{sender} mentioned you in {group}” as the title. Notification
 sound preferences, chat muting, and active-conversation suppression still apply.
 Clicking the notification opens the chat.
 
+Click an individual mention in a received message to open that user's profile.
+Text messages use native GTK links, which also support Tab and Enter. Message
+bodies do not place a text cursor or start a selection when clicked. Right-click
+a message (or use Menu / Shift+F10 with its bubble focused) and choose **Copy**
+to copy the whole message, or **Select and copy…** to select part of its original
+text in a separate dialog. The dialog supports Ctrl+C, **Copy selection**, and
+**Copy all**, including the fallback text for custom LINE emoji.
+
 Clicking a reply quote scrolls to its original message and briefly highlights it.
 If necessary, the client loads older history, up to 100 pages (5,000 messages).
 Missing originals produce a translated notice. Account, chat, and request
@@ -42,4 +50,6 @@ A logged-in manual check is still required before release:
 - Exchange mentions with an official LINE client, including emoji before names.
 - Check picker focus, keyboard/mouse selection, retry, and failed-send recovery.
 - Check mention notifications with muted, active, and background conversations.
+- Open mentioned profiles with the mouse and keyboard, including messages with
+  custom LINE emoji. Check whole-message and partial copying with multiline text.
 - Open reply originals in the current window, older history, and unavailable cases.

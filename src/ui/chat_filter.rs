@@ -7,25 +7,33 @@ pub(super) enum ChatCategory {
     Friends,
     Groups,
     Official,
+    NoMessages,
 }
 
 impl ChatCategory {
-    pub const ITEMS: [(Self, &str, &str); 4] = [
+    pub const ITEMS: [(Self, &str, &str); 5] = [
         (Self::All, "all", "chat_filter_all"),
         (Self::Friends, "friends", "chat_filter_friends"),
         (Self::Groups, "groups", "chat_filter_groups"),
         (Self::Official, "official", "chat_filter_official"),
+        (Self::NoMessages, "no-messages", "chat_filter_no_messages"),
     ];
 
     fn matches(self, chat: &ChatInfo, query: &str) -> bool {
         let group =
             matches!(chat.kind.as_str(), "group" | "room") || chat.mid.starts_with(['c', 'r']);
         let official = chat.kind == "bot";
+        // Older caches did not distinguish contacts from conversations.
+        let contact_only = !group
+            && chat
+                .contact_only
+                .unwrap_or(chat.last_activity <= 0 && chat.unread == 0 && chat.preview.is_empty());
         let category = match self {
-            Self::All => true,
-            Self::Friends => !group && !official,
+            Self::All => !contact_only,
+            Self::Friends => !contact_only && !group && !official,
             Self::Groups => group,
-            Self::Official => !group && official,
+            Self::Official => !contact_only && !group && official,
+            Self::NoMessages => contact_only,
         };
         category
             && (query.is_empty()
@@ -59,22 +67,25 @@ pub(super) fn wire(state: &AppState) {
 
 pub(super) fn apply_language(state: &AppState) {
     let menu = gio::Menu::new();
-    for ((category, id, key), button) in ChatCategory::ITEMS.iter().zip(&state.chat_filter_buttons)
-    {
+    for (category, id, key) in ChatCategory::ITEMS {
         let label = crate::i18n::t(key);
-        button.set_label(&label);
-        button.set_tooltip_text(Some(&label));
         let item = gio::MenuItem::new(Some(&label), None);
         item.set_action_and_target_value(Some("win.chat-category"), Some(&id.to_variant()));
         menu.append_item(&item);
-        if *category == *state.chat_category.borrow() {
+        if category == *state.chat_category.borrow() {
             let title = crate::i18n::tf("chat_filter_current", &[("category", &label)]);
+            state.chat_filter_label.set_text(&label);
+            state.chat_filter_btn.set_tooltip_text(Some(&title));
+            state
+                .chat_filter_btn
+                .update_property(&[gtk::accessible::Property::Label(&title)]);
             state.compact_filter_btn.set_tooltip_text(Some(&title));
             state
                 .compact_filter_btn
                 .update_property(&[gtk::accessible::Property::Label(&title)]);
         }
     }
+    state.chat_filter_btn.set_menu_model(Some(&menu));
     state.compact_filter_btn.set_menu_model(Some(&menu));
 }
 
@@ -130,6 +141,60 @@ pub(super) fn refresh(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contacts_without_messages_have_their_own_category() {
+        for kind in ["dm", "bot"] {
+            for metadata in [
+                serde_json::json!({}),
+                serde_json::json!({"contactOnly": true, "lastActivity": 123, "preview": "Tap to open"}),
+            ] {
+                let mut raw =
+                    serde_json::json!({"mid": "u-contact", "kind": kind, "name": "Alice"});
+                raw.as_object_mut()
+                    .unwrap()
+                    .extend(metadata.as_object().unwrap().clone());
+                let chat: ChatInfo = serde_json::from_value(raw).unwrap();
+                for (category, _, _) in ChatCategory::ITEMS {
+                    assert_eq!(
+                        category.matches(&chat, ""),
+                        category == ChatCategory::NoMessages
+                    );
+                }
+                assert!(ChatCategory::NoMessages.matches(&chat, "alice"));
+                assert!(!ChatCategory::NoMessages.matches(&chat, "bob"));
+            }
+        }
+    }
+
+    #[test]
+    fn real_conversations_stay_visible_while_previews_are_loading() {
+        for metadata in [
+            serde_json::json!({"lastActivity": 123}),
+            serde_json::json!({"unread": 1}),
+            serde_json::json!({"contactOnly": false}),
+        ] {
+            let mut raw = serde_json::json!({"mid": "u-chat", "kind": "dm", "name": "Alice"});
+            raw.as_object_mut()
+                .unwrap()
+                .extend(metadata.as_object().unwrap().clone());
+            let chat: ChatInfo = serde_json::from_value(raw).unwrap();
+            assert!(ChatCategory::All.matches(&chat, ""));
+            assert!(ChatCategory::Friends.matches(&chat, ""));
+            assert!(!ChatCategory::NoMessages.matches(&chat, ""));
+        }
+    }
+
+    #[test]
+    fn empty_groups_remain_in_group_and_all_categories() {
+        let chat: ChatInfo = serde_json::from_value(serde_json::json!({
+            "mid": "c-group", "name": "New group", "kind": "group"
+        }))
+        .unwrap();
+        assert!(ChatCategory::All.matches(&chat, ""));
+        assert!(ChatCategory::Groups.matches(&chat, ""));
+        assert!(!ChatCategory::NoMessages.matches(&chat, ""));
+    }
 
     #[test]
     fn categories_partition_chats_using_metadata_instead_of_names() {

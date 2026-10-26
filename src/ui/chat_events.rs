@@ -9,21 +9,54 @@ fn text(state: &AppState, event: &ChatEventInfo) -> String {
             message_senders::name(state, mid)
         }
     };
-    let actor = name(&event.actor_mid);
+    let actor = if event.actor_mid.is_empty() {
+        String::new()
+    } else {
+        name(&event.actor_mid)
+    };
     let targets = event
         .target_mids
         .iter()
         .map(|mid| name(mid))
         .collect::<Vec<_>>()
-        .join("、");
+        .join(&crate::i18n::t("chat_event_separator"));
+    let actor = if matches!(event.kind.as_str(), "joined" | "left") && !targets.is_empty() {
+        targets.clone()
+    } else {
+        actor
+    };
     let key = match event.kind.as_str() {
         "invited" => "chat_event_invited",
         "joined" => "chat_event_joined",
         "left" => "chat_event_left",
+        "removed" if actor.is_empty() => "chat_event_removed_members",
         "removed" => "chat_event_removed",
+        "invitation_canceled" => "chat_event_invitation_canceled",
+        "renamed" if !event.name.is_empty() => "chat_event_renamed_to",
+        "renamed" => "chat_event_renamed",
+        "picture_changed" => "chat_event_picture_changed",
+        "link_join_allowed" => "chat_event_link_join_allowed",
+        "link_join_disabled" => "chat_event_link_join_disabled",
+        "created" => "chat_event_created",
         _ => "chat_event_unknown",
     };
-    crate::i18n::tf(key, &[("actor", &actor), ("targets", &targets)])
+    crate::i18n::tf(
+        key,
+        &[
+            ("actor", &actor),
+            ("targets", &targets),
+            ("name", &event.name),
+        ],
+    )
+}
+
+pub(super) fn unknown() -> ChatEventInfo {
+    ChatEventInfo {
+        kind: "unknown".into(),
+        actor_mid: String::new(),
+        target_mids: Vec::new(),
+        name: String::new(),
+    }
 }
 pub(super) fn append(state: &AppState, event: &ChatEventInfo) {
     let label = gtk::Label::builder()

@@ -17,6 +17,11 @@ pub(super) fn apply_chats(state: &AppState, mut chats: Vec<ChatInfo>, cached: bo
 
     let n = chats.len();
     *state.chats.borrow_mut() = chats;
+    if let Some(mid) = state.current_chat.borrow().as_deref()
+        && let Some(chat) = state.chats.borrow().iter().find(|chat| chat.mid == mid)
+    {
+        update_mute_btn(state, chat.muted);
+    }
     chat_filter::refresh(state);
 
     if n == 0 {
@@ -229,7 +234,9 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
     let existed = state.chats.borrow().iter().any(|c| c.mid == mid);
 
     if existed {
+        let mut newer_activity = false;
         if let Some(cur) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
+            cur.contact_only = chat.contact_only;
             if !chat.name.is_empty() && chat.name != mid {
                 cur.name = chat.name.clone();
             }
@@ -240,6 +247,7 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
                 cur.preview = chat.preview.clone();
             }
             if chat.last_activity > cur.last_activity {
+                newer_activity = true;
                 cur.last_activity = chat.last_activity;
             }
             if let Some(path) = chat.avatar_path.clone() {
@@ -253,7 +261,9 @@ pub(super) fn upsert_chat_row(state: &AppState, chat: ChatInfo) {
         }
         // Refresh visible name on the row: rebuild is heavy; update via child labels if needed.
         // Promote to top so new activity is obvious.
-        promote_chat_to_top(state, &mid);
+        if newer_activity {
+            promote_chat_to_top(state, &mid);
+        }
         // Update name label on the row (first heading label in the row).
         if let Some(pos) = state.chats.borrow().iter().position(|c| c.mid == mid)
             && let Some(row) = state.chat_list.row_at_index(pos as i32)
@@ -630,8 +640,8 @@ pub(super) fn toggle_chat_mute(state: &AppState) {
     let Some(mid) = state.current_chat.borrow().clone() else {
         return;
     };
-    if !mid.starts_with('u') {
-        toast(state, &crate::i18n::t("mute_dm_only"));
+    if !mid.starts_with('u') && !mid.starts_with('c') {
+        toast(state, &crate::i18n::t("mute_unsupported_chat"));
         return;
     }
     let currently = state
@@ -642,17 +652,11 @@ pub(super) fn toggle_chat_mute(state: &AppState) {
         .map(|c| c.muted)
         .unwrap_or(false);
     let next = !currently;
-    match state.sidecar.mute_chat(&mid, next) {
-        Ok(_) => {
-            if let Some(chat) = state.chats.borrow_mut().iter_mut().find(|c| c.mid == mid) {
-                chat.muted = next;
-            }
-            update_mute_btn(state, next);
-        }
-        Err(e) => toast(
+    if let Err(e) = state.sidecar.mute_chat(&mid, next) {
+        toast(
             state,
             &crate::i18n::tf("mute_failed", &[("error", &e.to_string())]),
-        ),
+        );
     }
 }
 

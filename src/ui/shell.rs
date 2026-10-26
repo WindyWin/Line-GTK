@@ -6,6 +6,7 @@ pub struct ShellWidgets {
     pub message_list: super::virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
     pub composer: gtk::Entry,
+    pub attachment_preview: gtk::Box,
     pub reply_preview: gtk::Revealer,
     pub reply_title: gtk::Label,
     pub reply_text: gtk::Label,
@@ -51,7 +52,8 @@ pub struct ShellWidgets {
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
     pub chat_filter_bar: gtk::Box,
-    pub chat_filter_buttons: [gtk::ToggleButton; 4],
+    pub chat_filter_btn: gtk::MenuButton,
+    pub chat_filter_label: gtk::Label,
     pub compact_filter_btn: gtk::MenuButton,
     pub compact_search_btn: gtk::Button,
     pub compact_search_entry: gtk::SearchEntry,
@@ -83,6 +85,20 @@ pub fn build_shell_page() -> ShellWidgets {
         .icon_name("line-gtk")
         .pixel_size(22)
         .css_classes(["line-app-brand-icon"])
+        .build();
+    // KDE may put the application icon in the window controls. Keep our
+    // brand icon only when the desktop layout does not already show one.
+    header
+        .settings()
+        .bind_property("gtk-decoration-layout", &brand_icon, "visible")
+        .transform_to(|_, layout: Option<String>| {
+            Some(
+                !layout.is_some_and(|layout| {
+                    layout.split([',', ':']).any(|control| control == "icon")
+                }),
+            )
+        })
+        .sync_create()
         .build();
     let brand_label = gtk::Label::builder()
         .label("LINE GTK")
@@ -230,25 +246,30 @@ pub fn build_shell_page() -> ShellWidgets {
     let chat_filter_bar = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(0)
-        .margin_start(8)
-        .margin_end(8)
+        .margin_start(12)
+        .margin_end(12)
         .margin_bottom(8)
-        .css_classes(["linked", "line-chat-filters"])
         .build();
-    let chat_filter_buttons = super::chat_filter::ChatCategory::ITEMS.map(|(_, id, key)| {
-        gtk::ToggleButton::builder()
-            .label(crate::i18n::t(key))
-            .action_target(&id.to_variant())
-            .action_name("win.chat-category")
-            .hexpand(true)
-            .build()
-    });
-    for button in &chat_filter_buttons[1..] {
-        button.set_group(Some(&chat_filter_buttons[0]));
-    }
-    for button in &chat_filter_buttons {
-        chat_filter_bar.append(button);
-    }
+    let filter_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let filter_icon = gtk::Image::from_icon_name("view-filter-symbolic");
+    filter_icon.set_accessible_role(gtk::AccessibleRole::Presentation);
+    filter_content.append(&filter_icon);
+    let chat_filter_label = gtk::Label::builder()
+        .label(crate::i18n::t("chat_filter_all"))
+        .xalign(0.0)
+        .hexpand(true)
+        .wrap(true)
+        .build();
+    filter_content.append(&chat_filter_label);
+    let filter_arrow = gtk::Image::from_icon_name("pan-down-symbolic");
+    filter_arrow.set_accessible_role(gtk::AccessibleRole::Presentation);
+    filter_content.append(&filter_arrow);
+    let chat_filter_btn = gtk::MenuButton::builder()
+        .child(&filter_content)
+        .hexpand(true)
+        .css_classes(["flat", "line-chat-filter"])
+        .build();
+    chat_filter_bar.append(&chat_filter_btn);
     let compact_filter_btn = gtk::MenuButton::builder()
         .icon_name("view-list-symbolic")
         .css_classes(["flat", "circular"])
@@ -646,6 +667,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     let reply_text = gtk::Label::builder()
         .xalign(0.0)
+        .single_line_mode(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .hexpand(true)
         .build();
@@ -659,15 +681,23 @@ pub fn build_shell_page() -> ShellWidgets {
     let reply_cancel = gtk::Button::builder()
         .icon_name("window-close-symbolic")
         .valign(gtk::Align::Center)
-        .css_classes(["flat", "circular"])
+        .css_classes(["flat", "circular", "line-reply-cancel"])
         .build();
     let reply_bar = gtk::Box::builder()
         .spacing(10)
         .margin_start(12)
         .margin_end(12)
+        .margin_top(4)
+        .margin_bottom(4)
         .css_classes(["line-reply-preview"])
         .build();
-    reply_bar.append(&gtk::Image::from_icon_name("mail-reply-sender-symbolic"));
+    let reply_icon = gtk::Image::builder()
+        .icon_name("mail-reply-sender-symbolic")
+        .pixel_size(20)
+        .css_classes(["line-reply-preview-icon"])
+        .accessible_role(gtk::AccessibleRole::Presentation)
+        .build();
+    reply_bar.append(&reply_icon);
     reply_bar.append(&reply_column);
     reply_bar.append(&reply_cancel);
     let reply_preview = gtk::Revealer::builder()
@@ -675,6 +705,15 @@ pub fn build_shell_page() -> ShellWidgets {
         .reveal_child(false)
         .build();
     conversation.append(&reply_preview);
+    let attachment_preview = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .visible(false)
+        .build();
+    conversation.append(&attachment_preview);
     conversation.append(&composer_stack);
 
     let sidebar_paned = gtk::Paned::builder()
@@ -703,6 +742,7 @@ pub fn build_shell_page() -> ShellWidgets {
         message_list,
         message_scroll,
         composer,
+        attachment_preview,
         reply_preview,
         reply_title,
         reply_text,
@@ -747,7 +787,8 @@ pub fn build_shell_page() -> ShellWidgets {
         side_title,
         search_entry,
         chat_filter_bar,
-        chat_filter_buttons,
+        chat_filter_btn,
+        chat_filter_label,
         compact_filter_btn,
         compact_search_btn,
         compact_search_entry,
@@ -773,18 +814,31 @@ pub fn load_css() {
 .line-read-pause { padding: 4px 8px; border-radius: 10px; }
 .line-read-pause.line-read-paused { background: alpha(@accent_bg_color, 0.16); color: @accent_color; }
 .line-chat-read-paused, .line-chat-pinned, .line-chat-blocked { background: @window_bg_color; color: @accent_color; border-radius: 999px; padding: 2px; }
-.line-reply-quote { border-left: 3px solid @accent_bg_color; padding: 4px 8px; background: alpha(@accent_bg_color, 0.08); border-radius: 4px; }
-.line-reply-preview { border-left: 3px solid @accent_bg_color; padding: 8px 10px; background: alpha(@accent_bg_color, 0.10); border-radius: 8px; }
-.line-reply-button { min-width: 28px; min-height: 28px; padding: 0; color: @accent_color; }
+.line-reply-quote-button { padding: 0; border-radius: 8px; }
+.line-reply-quote { border-left: 3px solid @accent_bg_color; padding: 8px 10px; background: alpha(@accent_bg_color, 0.10); border-radius: 8px; }
+.line-reply-author, .line-reply-preview-icon { color: @accent_color; }
+.line-reply-excerpt { font-size: 0.9em; }
+.line-reply-preview { border-left: 3px solid @accent_bg_color; padding: 10px 12px; background: alpha(@accent_bg_color, 0.08); border-radius: 10px; }
+.line-reply-cancel { min-width: 32px; min-height: 32px; padding: 0; }
+.line-message-actions { border-radius: 999px; background: alpha(@card_bg_color, 0.65); border: 1px solid alpha(@borders, 0.45); padding: 2px; }
+.line-message-row .line-message-actions { opacity: 0; transition: opacity 120ms ease-in-out; }
+.line-message-row:hover .line-message-actions,
+.line-message-row:focus-within .line-message-actions { opacity: 1; }
+.line-message-action { min-width: 30px; min-height: 30px; padding: 0; color: @window_fg_color; }
+.line-message-action:hover, .line-message-action:focus-visible { color: @accent_color; background: alpha(@accent_bg_color, 0.12); }
 .line-album-photo { border-radius: 12px; padding: 4px; }
 .line-emoji-text, .line-emoji-text text { background: transparent; color: inherit; padding: 0; }
-.line-reaction-strip { margin: 0 6px; }
-.line-reaction-chip { min-height: 22px; padding: 1px 7px; border-radius: 999px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); font-size: 0.85em; }
+.line-reaction-strip { margin: 2px 4px 0; }
+.line-reaction-chip { min-height: 28px; padding: 1px 8px; border-radius: 999px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); font-size: 0.85em; }
+.line-reaction-chip:hover { background: alpha(@accent_bg_color, 0.12); border-color: alpha(@accent_bg_color, 0.5); }
+.line-reaction-count { font-weight: 600; }
 .line-reaction-chip.line-reaction-mine { background: alpha(@accent_bg_color, 0.18); border-color: alpha(@accent_bg_color, 0.65); }
-.line-reaction-tab { min-width: 32px; min-height: 32px; padding: 2px; border-radius: 8px; }
-.line-reaction-tab.line-reaction-selected { background: alpha(@accent_bg_color, 0.24); }
-.line-reaction-option { min-width: 36px; min-height: 36px; padding: 2px; border-radius: 10px; }
+.line-reaction-details { min-width: 28px; min-height: 28px; padding: 0; }
+.line-reaction-tab { min-width: 36px; min-height: 36px; padding: 2px; border-radius: 8px; border-bottom: 2px solid transparent; }
+.line-reaction-tab.line-reaction-selected { background: alpha(@accent_bg_color, 0.16); border-bottom-color: @accent_bg_color; }
+.line-reaction-option { min-width: 40px; min-height: 40px; padding: 2px; border-radius: 10px; }
 .line-reaction-option.line-reaction-selected { background: alpha(@accent_bg_color, 0.24); }
+.line-reaction-check { color: @accent_fg_color; background: @accent_bg_color; border-radius: 999px; padding: 1px; }
 
         .line-shell {
             background: @window_bg_color;
@@ -906,7 +960,7 @@ pub fn load_css() {
             min-width: 40px;
             min-height: 40px;
         }
-        .line-chat-filters button { padding: 5px 6px; font-size: 0.85em; }
+        .line-chat-filter > button { padding: 8px 10px; border-radius: 10px; }
         .line-search {
             border-radius: 12px;
             margin-bottom: 4px;
@@ -1190,7 +1244,11 @@ pub fn load_css() {
         }
         .line-flex-title { font-weight: 700; }
         .line-flex-action { margin-top: 4px; }
-        .line-link-chip { margin-top: 4px; }
+        .line-link-preview { border-radius: 10px; padding: 8px; background: alpha(@card_bg_color, 0.75); border: 1px solid alpha(@borders, 0.5); max-width: 360px; }
+        .line-link-preview-title { font-weight: 700; }
+        .line-link-preview-description { font-size: 0.9em; opacity: 0.8; }
+        .line-link-preview-domain { font-size: 0.8em; opacity: 0.7; }
+        .line-link-preview-actions { margin-top: 4px; }
         .line-unread {
             background: @accent_bg_color;
             color: @accent_fg_color;

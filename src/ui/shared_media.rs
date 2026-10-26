@@ -172,7 +172,7 @@ pub(super) fn open(state: &AppState) {
     footer.append(&page_label);
     footer.append(&next);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&header);
+    window.set_titlebar(Some(&header));
     root.append(&tabs);
     root.append(&feedback);
     root.append(&scroll);

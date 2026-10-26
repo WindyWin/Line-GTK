@@ -247,7 +247,7 @@ pub(super) fn open(state: &AppState, mid: &str) {
     let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
-    root.append(&libadwaita::HeaderBar::new());
+    window.set_titlebar(Some(&libadwaita::HeaderBar::new()));
     let body = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(10)
@@ -492,6 +492,7 @@ mod tests {
             unread: 0,
             preview: String::new(),
             muted: false,
+            contact_only: Some(true),
         }
     }
 

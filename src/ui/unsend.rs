@@ -4,7 +4,7 @@ pub(super) fn eligible(message: &MessageInfo) -> bool {
     message.mine
         && message.id.parse::<u128>().is_ok_and(|id| id > 0)
         && message.chat_event.is_none()
-        && !["CALL", "CHAT_EVENT", "UNSENT"]
+        && !["CALL", "CHATEVENT", "CHAT_EVENT", "UNSENT"]
             .contains(&message.content_type.to_ascii_uppercase().as_str())
 }
 
@@ -178,5 +178,20 @@ mod tests {
         assert!(!eligible(&message));
         message.content_type = "CALL".into();
         assert!(!eligible(&message));
+    }
+
+    #[test]
+    fn cached_chat_events_without_metadata_cannot_be_unsent() {
+        for content_type in ["CHATEVENT", "CHAT_EVENT", "chatEvent", "chat_event"] {
+            let message: MessageInfo = serde_json::from_value(serde_json::json!({
+                "id": "42",
+                "mine": true,
+                "contentType": content_type,
+                "text": "[CHATEVENT]"
+            }))
+            .unwrap();
+            assert!(message.chat_event.is_none());
+            assert!(!eligible(&message), "{content_type}");
+        }
     }
 }

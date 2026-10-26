@@ -53,6 +53,8 @@ pub struct ChatInfo {
     pub preview: String,
     #[serde(rename = "muted", default)]
     pub muted: bool,
+    #[serde(rename = "contactOnly", default)]
+    pub contact_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,6 +158,8 @@ pub struct MessageReaction {
     pub emoji: Option<String>,
     #[serde(rename = "resourceType", default)]
     pub resource_type: Option<i64>,
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -270,10 +274,12 @@ pub struct SharedMediaDownload {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ChatEventInfo {
     pub kind: String,
-    #[serde(rename = "actorMid")]
+    #[serde(rename = "actorMid", default)]
     pub actor_mid: String,
     #[serde(rename = "targetMids", default)]
     pub target_mids: Vec<String>,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -366,6 +372,7 @@ pub enum ProtocolEvent {
         mid: String,
         preview: String,
         last_activity: i64,
+        contact_only: Option<bool>,
     },
     ChatMute {
         mid: String,

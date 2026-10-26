@@ -239,6 +239,85 @@ Deno.test("一覧がメモリキャッシュでも未取得のプレビューを
   assertEquals(fixture.runtime.getChatCache()?.chats[0].preview, "");
 });
 
+Deno.test("startup separates contacts from conversations and persists the category", async () => {
+  const directory = await Deno.makeTempDir();
+  const fixture = commandFixture("通信", `${directory}/chats.json`);
+  const info = {
+    name: "Contact without messages",
+    picturePath: null,
+    kind: "dm",
+    muted: false,
+  };
+  fixture.runtime.contactIndex.set("u-contact", info);
+  fixture.runtime.contactIndex.set("u-official", { ...info, kind: "bot" });
+  fixture.runtime.contactIndex.set("c-group", { ...info, kind: "group" });
+  fixture.chat.preview = "Previous message";
+  fixture.runtime.getClient()!.base.talk.getMessageBoxes = () =>
+    Promise.resolve({
+      messageBoxes: [
+        {
+          id: fixture.chat.mid,
+          lastDeliveredMessageId: { messageId: 2, deliveredTime: 20 },
+        },
+        {
+          id: "u-empty-box",
+          lastDeliveredMessageId: { messageId: 0, deliveredTime: 0 },
+        },
+        {
+          id: "u-no-preview",
+          lastDeliveredMessageId: { messageId: 3, deliveredTime: 0 },
+        },
+      ],
+    } as never);
+  try {
+    await fixture.commands.listChats(1, true);
+    const chats = fixture.runtime.getChatCache()!.chats;
+    assertEquals(
+      chats.find((row) => row.mid === "u-contact")?.contactOnly,
+      true,
+    );
+    assertEquals(
+      chats.find((row) => row.mid === "u-official")?.contactOnly,
+      true,
+    );
+    assertEquals(
+      chats.find((row) => row.mid === "c-group")?.contactOnly,
+      false,
+    );
+    assertEquals(
+      chats.find((row) => row.mid === fixture.chat.mid)?.contactOnly,
+      false,
+    );
+    assertEquals(
+      chats.find((row) => row.mid === "u-empty-box")?.contactOnly,
+      true,
+    );
+    assertEquals(
+      chats.find((row) => row.mid === "u-no-preview")?.contactOnly,
+      false,
+    );
+
+    const restarted = commandFixture("通信", fixture.runtime.chatCachePath);
+    restarted.runtime.setChatCache(null);
+    await restarted.commands.listChats(2);
+    const cached = restarted.events.find((event) => event.event === "chats");
+    const contacts = (cached?.chats as typeof chats).filter((row) =>
+      row.contactOnly
+    );
+    assertEquals(contacts.map((row) => row.mid).sort(), [
+      "u-contact",
+      "u-empty-box",
+      "u-official",
+    ]);
+    assertEquals(
+      contacts.every((row) => row.lastActivity === 0 && !row.preview),
+      true,
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("再起動後の一覧更新で保存済みのプレビューを失わない", async () => {
   const directory = await Deno.makeTempDir();
   const fixture = commandFixture("通信", `${directory}/chats.json`);

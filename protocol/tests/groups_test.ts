@@ -1,5 +1,9 @@
-import { assert, assertEquals } from "@std/assert";
-import { fetchGroupProfiles, groupProfile } from "../src/groups.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  fetchGroupProfiles,
+  groupProfile,
+  setGroupMuted,
+} from "../src/groups.ts";
 import { conversationMid } from "../src/messages.ts";
 
 Deno.test("115グループを上限以下のバッチで取得し、名前と画像を保持する", async () => {
@@ -89,5 +93,44 @@ Deno.test("グループの受信・送信を同じトークに振り分け、個
   assertEquals(
     conversationMid({ mine: true, from: "u-self", to: "u-friend" }),
     "u-friend",
+  );
+});
+
+Deno.test("group notification toggle sends the chat setting and propagates failure", async () => {
+  const requests: unknown[] = [];
+  const talk = {
+    updateChat: (request: unknown) => {
+      requests.push(request);
+      return Promise.resolve({} as never);
+    },
+  };
+  await setGroupMuted(talk, "c-group", true, 17);
+  await setGroupMuted(talk, "c-group", false, 18);
+  assertEquals(requests, [
+    {
+      request: {
+        reqSeq: 17,
+        chat: { chatMid: "c-group", notificationDisabled: true },
+        updatedAttribute: "NOTIFICATION_SETTING",
+      },
+    },
+    {
+      request: {
+        reqSeq: 18,
+        chat: { chatMid: "c-group", notificationDisabled: false },
+        updatedAttribute: "NOTIFICATION_SETTING",
+      },
+    },
+  ]);
+  await assertRejects(
+    () =>
+      setGroupMuted(
+        { updateChat: () => Promise.reject(new Error("server rejected")) },
+        "c-group",
+        true,
+        19,
+      ),
+    Error,
+    "server rejected",
   );
 });

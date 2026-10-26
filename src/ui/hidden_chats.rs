@@ -175,7 +175,7 @@ pub(super) fn open(state: &AppState, parent: &gtk::Window) {
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .build();
-    content.append(&libadwaita::HeaderBar::new());
+    window.set_titlebar(Some(&libadwaita::HeaderBar::new()));
     let description = gtk::Label::builder()
         .label(crate::i18n::t("hidden_chats_description"))
         .wrap(true)

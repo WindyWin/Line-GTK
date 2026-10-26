@@ -6,6 +6,7 @@ export type PreviewChat = {
   mid: string;
   preview: string;
   lastActivity: number;
+  contactOnly?: boolean;
 };
 
 type PreviewRuntime = {
@@ -55,7 +56,9 @@ export function createChatPreviews(runtime: PreviewRuntime) {
     if (newest && Number(newest.createdTime ?? 0) < chat.lastActivity) return;
     if (!newest && chat.preview && !needsChatPreview(chat)) return;
     const preview = newest ? runtime.previewLine(newest) : runtime.fallback();
-    if (chat.preview === preview) return;
+    const promoted = !!newest && chat.contactOnly === true;
+    if (chat.preview === preview && !promoted) return;
+    if (promoted) chat.contactOnly = false;
     chat.preview = preview;
     chat.lastActivity = Math.max(
       chat.lastActivity,
@@ -65,6 +68,7 @@ export function createChatPreviews(runtime: PreviewRuntime) {
       mid: chat.mid,
       preview: chat.preview,
       lastActivity: chat.lastActivity,
+      ...(promoted ? { contactOnly: false } : {}),
     });
     await runtime.save();
   }

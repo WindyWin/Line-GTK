@@ -28,7 +28,6 @@ pub struct ChatNotification<'a> {
     pub avatar_path: Option<&'a str>,
     pub image_path: Option<&'a str>,
     pub chat_mid: &'a str,
-    pub message_id: &'a str,
     pub suppress_sound: bool,
     pub sticker: bool,
     pub replace: Option<&'a NotificationTicket>,

@@ -45,6 +45,10 @@ Deno.test("日本語のプレビューと実行中の言語切り替え", () => 
       view.previewLine({ mine: true, contentType: "IMAGE" }),
       "You: Photo",
     );
+    assertEquals(
+      view.previewLine({ contentType: "CHATEVENT", text: "[CHATEVENT]" }),
+      "Group information updated",
+    );
     Deno.env.set("LINE_GTK_LANG", "th");
     assertEquals(
       view.previewLine({ mine: true, contentType: "IMAGE" }),
@@ -54,4 +58,35 @@ Deno.test("日本語のプレビューと実行中の言語切り替え", () => 
     if (previous === undefined) Deno.env.delete("LINE_GTK_LANG");
     else Deno.env.set("LINE_GTK_LANG", previous);
   }
+});
+
+Deno.test("cached history placeholders become system rows without message actions", async () => {
+  const view = createMessageView({
+    normType: (value) => String(value ?? "NONE"),
+    existingFullImage: () => Promise.resolve(null),
+    existingImage: () => Promise.resolve(null),
+    mediaDest: () => "",
+    thumbDest: () => "",
+    isValidAudioFile: () => Promise.resolve(false),
+    uiMediaPath: () => Promise.resolve(null),
+    stickerDir: "",
+  });
+  const [notice] = await view.forUiMessages([{
+    id: "123",
+    contentType: "CHATEVENT",
+    text: "[CHATEVENT]",
+    mine: true,
+    replyTo: { messageId: "12" },
+    reactions: [{ kind: "NICE" }],
+  }]);
+  assertEquals(notice.contentType, "CHAT_EVENT");
+  assertEquals(notice.chatEvent, {
+    kind: "unknown",
+    actorMid: "",
+    targetMids: [],
+  });
+  assertEquals(notice.text, "");
+  assertEquals(notice.mine, false);
+  assertEquals(notice.replyTo, null);
+  assertEquals(notice.reactions, []);
 });

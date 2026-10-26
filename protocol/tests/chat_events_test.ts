@@ -1,6 +1,144 @@
 import { assert, assertEquals } from "@std/assert";
 import type { Client } from "@evex/linejs";
-import { chatEventMessage, createChatEvents } from "../src/chat_events.ts";
+import {
+  type ChatEvent,
+  chatEventMessage,
+  chatEventOf,
+  createChatEvents,
+  normalizeChatEvent,
+  summarizeChatEvent,
+} from "../src/chat_events.ts";
+
+function history(key: string, args = "") {
+  return {
+    id: "9007199254740995",
+    to: "c-group",
+    from: "u-envelope",
+    createdTime: 1_760_000_000_000,
+    contentType: 18,
+    contentMetadata: { LOC_KEY: key, LOC_ARGS: args },
+  };
+}
+
+Deno.test("history notices decode rename, membership, pictures and invitation links", () => {
+  const cases: Array<[string, string, ChatEvent]> = [
+    ["C_PN", "u-alice\x1eNew <group>", {
+      kind: "renamed",
+      actorMid: "u-alice",
+      targetMids: [],
+      name: "New <group>",
+    }],
+    ["C_GI", "u-alice\x1eu-bob\x1fu-charlie\x1fu-bob", {
+      kind: "invited",
+      actorMid: "u-alice",
+      targetMids: ["u-bob", "u-charlie"],
+    }],
+    ["C_MI", "u-alice\x1eu-bob", {
+      kind: "invited",
+      actorMid: "u-alice",
+      targetMids: ["u-bob"],
+    }],
+    ["C_MJ", "u-bob\x1fu-charlie", {
+      kind: "joined",
+      actorMid: "u-bob",
+      targetMids: ["u-bob", "u-charlie"],
+    }],
+    ["C_ML", "u-bob", {
+      kind: "left",
+      actorMid: "u-bob",
+      targetMids: ["u-bob"],
+    }],
+    ["C_MR", "u-alice\x1eu-bob", {
+      kind: "removed",
+      actorMid: "u-alice",
+      targetMids: ["u-bob"],
+    }],
+    ["C_MR", "u-bob", { kind: "removed", actorMid: "", targetMids: ["u-bob"] }],
+    ["C_IC", "u-alice\x1eu-bob", {
+      kind: "invitation_canceled",
+      actorMid: "u-alice",
+      targetMids: ["u-bob"],
+    }],
+    ["C_PI", "u-alice", {
+      kind: "picture_changed",
+      actorMid: "u-alice",
+      targetMids: [],
+    }],
+    ["C_SN", "", { kind: "link_join_allowed", actorMid: "", targetMids: [] }],
+    ["C_SP", "u-alice", {
+      kind: "link_join_disabled",
+      actorMid: "u-alice",
+      targetMids: [],
+    }],
+  ];
+  for (const [key, args, expected] of cases) {
+    const raw = history(key, args);
+    assertEquals(chatEventOf(raw), expected);
+    const summary = summarizeChatEvent(raw)!;
+    assertEquals(summary.chatEvent, expected);
+    assertEquals(summary.id, raw.id);
+    assertEquals(summary.createdTime, raw.createdTime);
+    assertEquals(summary.contentType, "CHAT_EVENT");
+    assertEquals(summary.text, "");
+    assertEquals(summary.needsMedia, false);
+    assertEquals(chatEventOf(summary), expected);
+  }
+});
+
+Deno.test("unknown, malformed and legacy notices remain neutral system messages", () => {
+  const unknown: ChatEvent = { kind: "unknown", actorMid: "", targetMids: [] };
+  for (
+    const raw of [
+      history("__proto__"),
+      history("FUTURE_EVENT", "u-alice"),
+      history("C_PN", "u-alice"),
+      history("C_PN", "Not a MID\x1eTitle"),
+      history("C_PN", "u-alice\x1e"),
+      history("C_MR", "u-bob\x1fNot a MID"),
+      history("C_MI", "u-alice\x1eu-bob\x1eextra"),
+      { contentType: "CHATEVENT", text: "[CHATEVENT]" },
+      {
+        contentType: "CHAT_EVENT",
+        contentMetadata: { LOC_KEY: "C_PN", LOC_ARGS: ["bad"] },
+      },
+    ]
+  ) {
+    assertEquals(chatEventOf(raw), unknown);
+    assertEquals(normalizeChatEvent(raw).text, "");
+  }
+  const text = { contentType: "NONE", text: "[CHATEVENT]" };
+  assertEquals(chatEventOf(text), null);
+  assertEquals(normalizeChatEvent(text), text);
+});
+
+Deno.test("live group changes and invitation cancellations use numeric and named operations", () => {
+  for (
+    const type of [11, 122, "NOTIFIED_UPDATE_GROUP", "NOTIFIED_UPDATE_CHAT"]
+  ) {
+    for (
+      const [param3, kind] of [["1", "renamed"], ["2", "picture_changed"], [
+        "4",
+        "updated",
+      ]] as const
+    ) {
+      assertEquals(
+        chatEventMessage({ ...invitation, type, param3 }, "u-self")?.chatEvent,
+        { kind, actorMid: "u-alice", targetMids: [] },
+      );
+    }
+  }
+  assertEquals(
+    chatEventMessage({ ...invitation, type: 121, param2: "1" }, "u-self")
+      ?.chatEvent,
+    { kind: "renamed", actorMid: "u-self", targetMids: [] },
+  );
+  for (const type of [32, 126, "NOTIFIED_CANCEL_CHAT_INVITATION"]) {
+    assertEquals(
+      chatEventMessage({ ...invitation, type }, "u-self")?.chatEvent.kind,
+      "invitation_canceled",
+    );
+  }
+});
 
 const invitation = {
   type: 124,
@@ -163,6 +301,43 @@ Deno.test("壊れたキャッシュのイベントを無視し、通常の本文
     const f = fixture(directory);
     const messages = [{ id: "42", text: "本文", createdTime: 500 }];
     assertEquals(await f.service.merge("c-group", messages), messages);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("history notices replace matching live events without losing nearby events", async () => {
+  const directory = await Deno.makeTempDir();
+  try {
+    const f = fixture(directory);
+    f.service.handleOperation(invitation);
+    f.service.handleOperation({ ...invitation, type: 130, revision: "3" });
+    f.service.handleOperation({
+      ...invitation,
+      type: 122,
+      param3: "1",
+      revision: "2",
+      createdTime: invitation.createdTime + 1,
+    });
+    await f.service.settled();
+    const notice = summarizeChatEvent(
+      history("C_GI", "u-alice\x1eu-bob\x1fu-charlie"),
+    )!;
+    const joined = {
+      ...summarizeChatEvent(history("C_MJ", "u-alice")),
+      id: "joined",
+    };
+    const merged = await f.service.merge("c-group", [notice, joined]);
+    assertEquals(merged.map((m) => m.id), [notice.id, "joined", "event:2"]);
+    const restored = createChatEvents(f.runtime);
+    assertEquals(
+      (await restored.merge("c-group", [notice, joined])).map((m) => m.id),
+      [
+        notice.id,
+        "joined",
+        "event:2",
+      ],
+    );
   } finally {
     await Deno.remove(directory, { recursive: true });
   }

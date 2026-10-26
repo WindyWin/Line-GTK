@@ -11,6 +11,21 @@ const groupMessage = (from: string) => ({
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 15));
 }
+
+Deno.test("history event actors and targets resolve names even without envelope senders", async () => {
+  const f = fixture();
+  f.service.observe([{
+    to: "c-group",
+    from: "",
+    contentType: "CHATEVENT",
+    contentMetadata: {
+      LOC_KEY: "C_GI",
+      LOC_ARGS: "u-alice\x1eu-bob\x1fu-charlie",
+    },
+  }]);
+  await settle();
+  assertEquals(f.batches.flat().sort(), ["u-alice", "u-bob", "u-charlie"]);
+});
 function fixture() {
   let clock = 0;
   let mid = "u-self";

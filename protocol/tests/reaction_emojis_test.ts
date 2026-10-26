@@ -54,7 +54,7 @@ Deno.test("パックの絵文字IDはLINEの並び順で読み、不正な値を
   );
 });
 
-function fixture(dir: string) {
+function fixture(dir: string, version?: unknown) {
   const urls: string[] = [];
   const observed: Json[][] = [];
   let account = "u-self";
@@ -70,7 +70,9 @@ function fixture(dir: string) {
       urls.push(url);
       if (url.endsWith("tab_on.png")) return Promise.resolve(new Response(png));
       if (url.endsWith("meta.json")) {
-        return Promise.resolve(Response.json({ orders: ["001", "002"] }));
+        return Promise.resolve(
+          Response.json({ orders: ["001", "002"], version }),
+        );
       }
       return Promise.resolve(new Response("", { status: 404 }));
     }) as typeof fetch,
@@ -110,6 +112,24 @@ Deno.test("所有パックの一覧とアイコンを取得し、同じアカウ
   }
 });
 
+Deno.test("emoji pack versions reach the reaction picker", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const f = fixture(dir, "7");
+    const expected = {
+      emojis: [
+        { key: `${A}_001`, resourceType: 1, version: 7 },
+        { key: `${A}_002`, resourceType: 1, version: 7 },
+      ],
+    };
+    assertEquals(await f.service.pack(A), expected);
+    assertEquals(await f.service.pack(A), expected);
+    assertEquals(f.urls.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("取得に失敗すると明示的なエラーにする", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -131,8 +151,8 @@ Deno.test("パックを開いた時だけ絵文字を取得し、画像の取得
     const f = fixture(dir);
     assertEquals(await f.service.pack(A), {
       emojis: [
-        { key: `${A}_001`, resourceType: 1 },
-        { key: `${A}_002`, resourceType: 1 },
+        { key: `${A}_001`, resourceType: 1, version: 1 },
+        { key: `${A}_002`, resourceType: 1, version: 1 },
       ],
     });
     assertEquals(f.observed, [[{
