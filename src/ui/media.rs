@@ -1,7 +1,11 @@
 use super::*;
 
 pub(super) fn suggest_media_name(msg: &MessageInfo) -> String {
-    if let Some(n) = msg.file_name.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(n) = msg
+        .file_name
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "[File]")
+    {
         return n.to_string();
     }
     let ct = msg.content_type.to_ascii_uppercase();
@@ -168,12 +172,12 @@ pub(super) fn request_media_download(state: &AppState, msg: &MessageInfo, action
         );
         return;
     }
-    state.status.set_text(&crate::i18n::t("media_downloading"));
     match state
         .sidecar
         .download_media(&chat_mid, &msg.id, &msg.content_type)
     {
         Ok(id) => {
+            begin_download_progress(state);
             state.pending.borrow_mut().insert(
                 id,
                 Pending::DownloadMedia {
@@ -200,6 +204,7 @@ pub(super) fn finish_media_action(
 ) {
     match action {
         "open_viewer" => open_media_viewer(state, path, content_type, suggest_name),
+        "show_folder" => show_in_folder(path),
         "save_dialog" => save_media_as(state, path, suggest_name, content_type),
         "play_audio" => {
             if let Err(e) = play_audio_file(path, &state.config.borrow().audio_output) {
@@ -560,6 +565,22 @@ pub(super) fn format_bytes(n: u64) -> String {
     } else {
         format!("{n} B")
     }
+}
+
+pub(super) fn show_in_folder(path: &str) {
+    let file = gio::File::for_path(path);
+    let fallback = path.to_string();
+    gtk::FileLauncher::new(Some(&file)).open_containing_folder(
+        None::<&gtk::Window>,
+        gio::Cancellable::NONE,
+        move |result| {
+            if result.is_err()
+                && let Some(dir) = std::path::Path::new(&fallback).parent()
+            {
+                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+            }
+        },
+    );
 }
 
 pub(super) fn open_path_externally(path: &str) {
@@ -1758,6 +1779,83 @@ pub(super) fn show_upload_progress(state: &AppState, progress: f64, label: &str)
     state.upload_label.set_text(&text);
     state.upload_revealer.set_reveal_child(true);
     state.status.set_text(&text);
+}
+
+thread_local! {
+    static ACTIVE_DOWNLOADS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Show the progress strip in pulsing mode: the sidecar fetches a file in one
+/// call, so there is no byte-level progress to report.
+pub(super) fn begin_download_progress(state: &AppState) {
+    let first = ACTIVE_DOWNLOADS.with(|n| {
+        n.set(n.get() + 1);
+        n.get() == 1
+    });
+    let text = crate::i18n::t("media_downloading");
+    state.upload_label.set_text(&text);
+    state.upload_revealer.set_reveal_child(true);
+    state.status.set_text(&text);
+    if first {
+        let bar = state.upload_bar.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+            if ACTIVE_DOWNLOADS.with(|n| n.get()) == 0 {
+                return glib::ControlFlow::Break;
+            }
+            bar.pulse();
+            glib::ControlFlow::Continue
+        });
+    }
+}
+
+fn download_percent_label(bubble: &gtk::Box) -> Option<gtk::Label> {
+    let mut child = bubble.first_child();
+    while let Some(w) = child {
+        if w.css_classes().iter().any(|c| c == "line-download-percent") {
+            return w.downcast::<gtk::Label>().ok();
+        }
+        child = w.next_sibling();
+    }
+    None
+}
+
+/// Show "NN%" under the media bubble that is being downloaded.
+pub(super) fn show_message_download_percent(state: &AppState, message_id: &str, progress: f64) {
+    let Some(bubble) = state.media_slots.borrow().get(message_id).cloned() else {
+        return;
+    };
+    let label = download_percent_label(&bubble).unwrap_or_else(|| {
+        let label = gtk::Label::builder()
+            .xalign(0.0)
+            .css_classes(["caption", "dim-label", "line-download-percent"])
+            .build();
+        bubble.append(&label);
+        label
+    });
+    let percent = (progress.clamp(0.0, 1.0) * 100.0).floor() as u32;
+    label.set_text(&format!(
+        "{} {percent}%",
+        crate::i18n::t("media_downloading")
+    ));
+}
+
+pub(super) fn clear_message_download_percent(state: &AppState, message_id: &str) {
+    let Some(bubble) = state.media_slots.borrow().get(message_id).cloned() else {
+        return;
+    };
+    if let Some(label) = download_percent_label(&bubble) {
+        bubble.remove(&label);
+    }
+}
+
+pub(super) fn end_download_progress(state: &AppState) {
+    let remaining = ACTIVE_DOWNLOADS.with(|n| {
+        n.set(n.get().saturating_sub(1));
+        n.get()
+    });
+    if remaining == 0 {
+        hide_upload_progress(state);
+    }
 }
 
 pub(super) fn hide_upload_progress(state: &AppState) {

@@ -698,11 +698,79 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     return "bin";
   }
 
+  // Downloads share one patched `fetch`, so they run one at a time to keep
+  // byte counts attributed to the right message.
+  let downloadChain: Promise<unknown> = Promise.resolve();
+
+  /** Count response bytes of the client's fetches and emit download_progress. */
+  async function withDownloadProgress<T>(
+    chatMid: string,
+    messageId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const base = runtime.getClient()?.base as
+      | { fetch: typeof fetch }
+      | undefined;
+    if (!base) return await run();
+    const original = base.fetch;
+    let lastEmit = 0;
+    const emit = (progress: number) => {
+      emitEvent("download_progress", { chatMid, messageId, progress });
+    };
+    base.fetch = async (...args: Parameters<typeof fetch>) => {
+      const res = await original(...args);
+      const total = Number(res.headers.get("content-length") ?? 0);
+      if (!res.body || !res.ok || !(total > 0)) return res;
+      let received = 0;
+      const counted = res.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            received += chunk.length;
+            const now = Date.now();
+            if (now - lastEmit >= 100) {
+              lastEmit = now;
+              emit(Math.min(received / total, 0.99));
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+      );
+      return new Response(counted, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
+    };
+    try {
+      emit(0);
+      return await run();
+    } finally {
+      base.fetch = original;
+    }
+  }
+
   /**
    * Download full media bytes for a message (E2EE-aware) into the local cache.
    * Used for save-as / full-view video / file open.
    */
-  async function doDownloadMedia(
+  function doDownloadMedia(
+    id: number | string | null,
+    chatMid: string,
+    messageId: string,
+    contentTypeHint = "",
+  ) {
+    const job = downloadChain.then(() =>
+      withDownloadProgress(
+        chatMid,
+        messageId,
+        () => downloadMediaNow(id, chatMid, messageId, contentTypeHint),
+      )
+    );
+    downloadChain = job.catch(() => {});
+    return job;
+  }
+
+  async function downloadMediaNow(
     id: number | string | null,
     chatMid: string,
     messageId: string,

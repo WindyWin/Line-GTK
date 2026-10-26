@@ -667,6 +667,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 _ => {}
             }
         }
+        ProtocolEvent::DownloadProgress {
+            message_id,
+            progress,
+        } => show_message_download_percent(state, &message_id, progress),
         ProtocolEvent::UploadProgress {
             chat_mid,
             progress,
@@ -997,6 +1001,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     message_id,
                     ..
                 }) => {
+                    end_download_progress(state);
+                    clear_message_download_percent(state, &message_id);
                     if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
                         if let Some(meta) = state.media_msgs.borrow_mut().get_mut(&message_id) {
                             meta.file_path = Some(path.to_string());

@@ -395,6 +395,10 @@ pub enum ProtocolEvent {
         state: String,
         error: Option<String>,
     },
+    DownloadProgress {
+        message_id: String,
+        progress: f64,
+    },
     UploadProgress {
         chat_mid: String,
         progress: f64,

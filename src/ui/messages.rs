@@ -1093,7 +1093,7 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     let name = msg
         .file_name
         .clone()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && s != "[File]")
         .unwrap_or_else(|| {
             if msg.text.is_empty() || msg.text == "[File]" {
                 crate::i18n::t("preview_file")
@@ -1136,10 +1136,34 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     row.set_child(Some(&inner));
     let s = state.clone();
     let msg = msg.clone();
-    row.connect_clicked(move |_| {
-        request_media_download(&s, &msg, "open_viewer");
-    });
+    {
+        let s = s.clone();
+        let msg = msg.clone();
+        row.connect_clicked(move |_| {
+            request_media_download(&s, &msg, "open_viewer");
+        });
+    }
     bubble.append(&row);
+
+    let actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .css_classes(["line-file-actions"])
+        .build();
+    for (label_key, action) in [
+        ("file_action_open", "open_viewer"),
+        ("file_action_show_folder", "show_folder"),
+    ] {
+        let button = gtk::Button::builder()
+            .label(crate::i18n::t(label_key))
+            .css_classes(["flat", "caption"])
+            .build();
+        let s = s.clone();
+        let msg = msg.clone();
+        button.connect_clicked(move |_| request_media_download(&s, &msg, action));
+        actions.append(&button);
+    }
+    bubble.append(&actions);
 }
 
 pub(super) fn format_voice_duration(ms: u64) -> String {

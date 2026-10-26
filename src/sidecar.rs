@@ -1020,6 +1020,19 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
+                        "download_progress" => ProtocolEvent::DownloadProgress {
+                            message_id: resp
+                                .extra
+                                .get("messageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            progress: resp
+                                .extra
+                                .get("progress")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0),
+                        },
                         "upload_progress" => ProtocolEvent::UploadProgress {
                             chat_mid: resp
                                 .extra
