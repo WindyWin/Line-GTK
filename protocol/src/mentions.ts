@@ -72,10 +72,18 @@ export function mentionMetadata(
       !entry || !Number.isSafeInteger(entry.start) ||
       !Number.isSafeInteger(entry.end) || entry.start < previous ||
       entry.end <= entry.start || entry.end > chars.length ||
-      typeof entry.mid !== "string" || !MID.test(entry.mid) || entry.all
+      (entry.all !== undefined && typeof entry.all !== "boolean") ||
+      (entry.all === true
+        ? entry.mid !== ""
+        : typeof entry.mid !== "string" || !MID.test(entry.mid))
     ) throw new Error("invalid_mentions");
     previous = entry.end;
-    return { start: entry.start, end: entry.end, mid: entry.mid };
+    return {
+      start: entry.start,
+      end: entry.end,
+      mid: entry.mid,
+      ...(entry.all === true ? { all: true } : {}),
+    };
   });
   return {
     mentions,
@@ -85,7 +93,7 @@ export function mentionMetadata(
           MENTIONEES: mentions.map((m) => ({
             S: String(chars.slice(0, m.start).join("").length),
             E: String(chars.slice(0, m.end).join("").length),
-            M: m.mid,
+            ...(m.all ? { A: "1" } : { M: m.mid }),
           })),
         }),
       }

@@ -4,7 +4,9 @@ In a group chat, type `@` followed by a member's name. Select a result with
 Up/Down and Enter or Tab, or click it. Escape dismisses the picker. Duplicate
 names include member IDs so they can be distinguished. Failed member requests
 show a clickable retry row. Typing a name without selecting a member sends
-ordinary text.
+ordinary text. Select **All members** (also found by typing `@all`) to tag
+everyone in the group. The selected label is `@all`; typing it without selecting
+the picker result sends ordinary text.
 
 Selected mentions use the theme accent color, bold text, and an underline. Editing inside a selected name drops
 its mention identity; edits before or after it retain and adjust the range.
@@ -15,9 +17,10 @@ composer. Replies retain their quote alongside the mentions.
 The sidecar converts Unicode scalar offsets from GTK to LINE's UTF-16 offsets,
 encodes `contentMetadata.MENTION`, and preserves it through all send fallback
 paths. Received mention metadata is bounded and validated before rendering.
-Individual mentions can be sent; received `@all` metadata is recognized, but
-sending `@all` is not offered. Member lists are fetched lazily for the current
-group and discarded when switching chats or accounts.
+Individual and all-member mentions can be sent and received. The all-member
+picker result remains available while member lookup is loading or has failed.
+Member lists are fetched lazily for the current group and discarded when
+switching chats or accounts.
 
 Incoming mentions of the signed-in account use the normal desktop notification
 pipeline with “{sender} mentioned you in {group}” as the title. Notification and

@@ -5,8 +5,30 @@ use crate::protocol::Mention;
 struct Member {
     mid: String,
     name: String,
+    #[serde(default)]
+    all: bool,
     #[serde(rename = "avatarPath", default)]
     avatar_path: Option<String>,
+}
+
+// The all-member target is local and does not depend on a member lookup.
+fn candidates(members: &[Member], account: Option<&str>, term: &str) -> Vec<Member> {
+    let all_name = crate::i18n::t("mention_all");
+    let all = ("all".contains(term) || all_name.to_lowercase().contains(term)).then(|| Member {
+        mid: String::new(),
+        name: all_name,
+        all: true,
+        avatar_path: None,
+    });
+    all.into_iter()
+        .chain(
+            members
+                .iter()
+                .filter(|m| account != Some(m.mid.as_str()) && m.name.to_lowercase().contains(term))
+                .cloned(),
+        )
+        .take(30)
+        .collect()
 }
 
 pub(super) fn avatar_ready(state: &AppState, mid: &str, path: &str) {
@@ -263,18 +285,11 @@ fn refresh(state: &AppState) {
         let Some(list) = data.list.clone() else {
             return;
         };
-        data.candidates = data
-            .members
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|m| {
-                state.self_mid.borrow().as_deref() != Some(&m.mid)
-                    && m.name.to_lowercase().contains(&term)
-            })
-            .take(30)
-            .cloned()
-            .collect();
+        data.candidates = candidates(
+            data.members.as_deref().unwrap_or_default(),
+            state.self_mid.borrow().as_deref(),
+            &term,
+        );
         let status = if data.loading {
             "mention_loading"
         } else if data.failed {
@@ -287,7 +302,85 @@ fn refresh(state: &AppState) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    if candidates.is_empty() {
+    let show_status = candidates.is_empty() || status != "mention_no_members";
+    for member in candidates {
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        row_box.set_margin_top(6);
+        row_box.set_margin_bottom(6);
+        row_box.set_margin_start(12);
+        row_box.set_margin_end(12);
+        let avatar_frame = gtk::Box::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(["line-avatar-frame", "line-avatar-sm"])
+            .build();
+        let avatar = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Cover)
+            .width_request(40)
+            .height_request(40)
+            .css_classes(["line-avatar", "line-avatar-sm"])
+            .build();
+        if let Some(path) = member.avatar_path.as_deref()
+            && std::path::Path::new(path).exists()
+        {
+            attach_texture_async(avatar.clone(), path.to_string(), 80);
+        }
+        if member.all {
+            avatar_frame.append(
+                &gtk::Image::builder()
+                    .icon_name("system-users-symbolic")
+                    .pixel_size(32)
+                    .width_request(40)
+                    .height_request(40)
+                    .build(),
+            );
+        } else {
+            avatar_frame.append(&avatar);
+        }
+        row_box.append(&avatar_frame);
+        let row_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        row_content.set_hexpand(true);
+        row_content.set_valign(gtk::Align::Center);
+        row_box.append(&row_content);
+        let label = gtk::Label::builder()
+            .label(&member.name)
+            .xalign(0.0)
+            .hexpand(true)
+            .max_width_chars(32)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        // Distinguish members with identical display names.
+        if !member.all {
+            label.set_tooltip_text(Some(&member.mid));
+        }
+        row_content.append(&label);
+        let same_name = state
+            .mentions
+            .borrow()
+            .members
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|m| m.name == member.name)
+            .count()
+            > 1;
+        if same_name && !member.all {
+            row_content.append(
+                &gtk::Label::builder()
+                    .label(&member.mid)
+                    .xalign(0.0)
+                    .css_classes(["dim-label", "caption"])
+                    .build(),
+            );
+        }
+        let row = gtk::ListBoxRow::builder()
+            .focusable(false)
+            .child(&row_box)
+            .build();
+        list.append(&row);
+    }
+    list.select_row(list.row_at_index(0).as_ref());
+    if show_status {
         let label = gtk::Label::builder()
             .label(crate::i18n::t(status))
             .wrap(true)
@@ -302,71 +395,6 @@ fn refresh(state: &AppState) {
             .child(&label)
             .build();
         list.append(&row);
-    } else {
-        for member in candidates {
-            let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            row_box.set_margin_top(6);
-            row_box.set_margin_bottom(6);
-            row_box.set_margin_start(12);
-            row_box.set_margin_end(12);
-            let avatar_frame = gtk::Box::builder()
-                .halign(gtk::Align::Center)
-                .valign(gtk::Align::Center)
-                .css_classes(["line-avatar-frame", "line-avatar-sm"])
-                .build();
-            let avatar = gtk::Picture::builder()
-                .content_fit(gtk::ContentFit::Cover)
-                .width_request(40)
-                .height_request(40)
-                .css_classes(["line-avatar", "line-avatar-sm"])
-                .build();
-            if let Some(path) = member.avatar_path.as_deref()
-                && std::path::Path::new(path).exists()
-            {
-                attach_texture_async(avatar.clone(), path.to_string(), 80);
-            }
-            avatar_frame.append(&avatar);
-            row_box.append(&avatar_frame);
-            let row_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
-            row_content.set_hexpand(true);
-            row_content.set_valign(gtk::Align::Center);
-            row_box.append(&row_content);
-            let label = gtk::Label::builder()
-                .label(&member.name)
-                .xalign(0.0)
-                .hexpand(true)
-                .max_width_chars(32)
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .build();
-            // Distinguish members with identical display names.
-            label.set_tooltip_text(Some(&member.mid));
-            row_content.append(&label);
-            let same_name = state
-                .mentions
-                .borrow()
-                .members
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|m| m.name == member.name)
-                .count()
-                > 1;
-            if same_name {
-                row_content.append(
-                    &gtk::Label::builder()
-                        .label(&member.mid)
-                        .xalign(0.0)
-                        .css_classes(["dim-label", "caption"])
-                        .build(),
-                );
-            }
-            let row = gtk::ListBoxRow::builder()
-                .focusable(false)
-                .child(&row_box)
-                .build();
-            list.append(&row);
-        }
-        list.select_row(list.row_at_index(0).as_ref());
     }
     if state.composer.is_mapped() {
         popover.popup();
@@ -387,7 +415,11 @@ fn choose(state: &AppState, index: usize) {
         (member, start, data.spans.clone())
     };
     let chars: Vec<char> = text.chars().collect();
-    let label = format!("@{}", member.name);
+    let label = if member.all {
+        "@all".to_string()
+    } else {
+        format!("@{}", member.name)
+    };
     let inserted = format!("{} ", label);
     let updated = format!(
         "{}{}{}",
@@ -400,7 +432,7 @@ fn choose(state: &AppState, index: usize) {
         start,
         end: start + label.chars().count(),
         mid: member.mid,
-        all: false,
+        all: member.all,
     });
     spans.sort_by_key(|span| span.start);
     state.mentions.borrow_mut().replacing = true;
@@ -460,7 +492,9 @@ pub(super) fn wire(state: &AppState) {
     });
     let s = state.clone();
     list.connect_row_activated(move |_, row| {
-        if s.mentions.borrow().failed {
+        if row.index() as usize >= s.mentions.borrow().candidates.len()
+            && s.mentions.borrow().failed
+        {
             s.mentions.borrow_mut().failed = false;
             refresh(&s);
         } else {
@@ -678,6 +712,42 @@ pub(super) fn mentions_account(message: &MessageInfo, account: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn all_candidate_is_available_without_members_and_matches_all() {
+        let options = candidates(&[], Some("u-me"), "");
+        assert_eq!(options.len(), 1);
+        assert!(options[0].all);
+        assert!(options[0].mid.is_empty());
+        assert_eq!(candidates(&[], Some("u-me"), "all").len(), 1);
+        assert!(candidates(&[], Some("u-me"), "nobody").is_empty());
+    }
+
+    #[test]
+    fn edits_preserve_all_identity_and_notifications_include_every_account() {
+        let all = Mention {
+            start: 2,
+            end: 6,
+            mid: String::new(),
+            all: true,
+        };
+        let shifted = edited_spans("😀 @all", "hi 😀 @all", std::slice::from_ref(&all));
+        assert_eq!(
+            shifted,
+            vec![Mention {
+                start: 5,
+                end: 9,
+                ..all.clone()
+            }]
+        );
+        assert!(edited_spans("😀 @all", "😀 @axl", &[all]).is_empty());
+        let msg: MessageInfo = serde_json::from_value(serde_json::json!({
+            "text": "@all", "mentions": [{"start":0,"end":4,"mid":"","all":true}]
+        }))
+        .unwrap();
+        assert!(mentions_account(&msg, Some("u-anyone")));
+        assert!(!mentions_account(&msg, None));
+    }
+
     fn mention(start: usize, end: usize) -> Mention {
         Mention {
             start,

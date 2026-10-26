@@ -625,8 +625,19 @@ for (const route of ["plain", "encrypted", "chat"] as const) {
           return Promise.resolve({ raw: { id: "99" } });
         },
       })) as unknown as typeof client.getChat;
-    const mentions = [{ start: 2, end: 5, mid: "u-me" }];
-    await fixture.commands.sendMessage(1, "c-group", "😀 @Me", "42", mentions);
+    const mentions = [{ start: 2, end: 5, mid: "u-me" }, {
+      start: 6,
+      end: 10,
+      mid: "",
+      all: true,
+    }];
+    await fixture.commands.sendMessage(
+      1,
+      "c-group",
+      "😀 @Me @all",
+      "42",
+      mentions,
+    );
     assertEquals(
       calls.length,
       route === "plain" ? 1 : route === "encrypted" ? 2 : 3,
@@ -635,7 +646,13 @@ for (const route of ["plain", "encrypted", "chat"] as const) {
       assertEquals(call.relatedMessageId, "42");
       assertEquals(
         JSON.parse((call.contentMetadata as Record<string, string>).MENTION),
-        { MENTIONEES: [{ S: "3", E: "6", M: "u-me" }] },
+        {
+          MENTIONEES: [{ S: "3", E: "6", M: "u-me" }, {
+            S: "7",
+            E: "11",
+            A: "1",
+          }],
+        },
       );
     }
     assertEquals(
@@ -743,4 +760,21 @@ Deno.test("保存済みの本文がないときだけ読み込み中を知らせ
   await fixture.commands.fetchMessages(1, fixture.chat.mid, 40);
   const progress = fixture.events.filter((e) => e.event === "progress");
   assertEquals(progress.map((e) => e.state), ["loading", "ready"]);
+});
+
+Deno.test("all-member mentions cannot be sent to direct chats", async () => {
+  const fixture = commandFixture("メモリ");
+  const failures: string[] = [];
+  fixture.runtime.fail = (_id, error) => failures.push(error);
+  await createCommandService(fixture.runtime).sendMessage(
+    1,
+    "u-peer",
+    "@all",
+    undefined,
+    [
+      { start: 0, end: 4, mid: "", all: true },
+    ],
+  );
+  assertEquals(failures, ["invalid_group"]);
+  assertEquals(fixture.okResults, []);
 });
