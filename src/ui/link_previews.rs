@@ -1,7 +1,9 @@
 use super::*;
 use std::io::{Cursor, Read};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+#[derive(Clone)]
 struct Preview {
     title: String,
     description: String,
@@ -19,7 +21,8 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
         let domain = parsed.host_str().unwrap_or(&url).to_string();
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(3)
+            .spacing(6)
+            .halign(gtk::Align::Start)
             .css_classes(["line-link-preview"])
             .build();
         let picture = gtk::Picture::builder()
@@ -29,7 +32,14 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
             .visible(false)
             .css_classes(["line-link-preview-image"])
             .build();
-        card.append(&picture);
+        let thumbnail_link = gtk::LinkButton::builder()
+            .uri(&url)
+            .halign(gtk::Align::Start)
+            .visible(false)
+            .css_classes(["flat", "line-link-preview-thumbnail"])
+            .build();
+        thumbnail_link.set_child(Some(&picture));
+        card.append(&thumbnail_link);
         let domain_label = gtk::Label::builder()
             .label(&domain)
             .xalign(0.0)
@@ -47,6 +57,8 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
             .max_width_chars(42)
+            .lines(2)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
             .css_classes(["line-link-preview-title"])
             .build();
         card.append(&title);
@@ -54,7 +66,7 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
             .xalign(0.0)
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
-            .lines(3)
+            .lines(2)
             .ellipsize(gtk::pango::EllipsizeMode::End)
             .max_width_chars(42)
             .css_classes(["line-link-preview-description"])
@@ -66,7 +78,8 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
             .css_classes(["line-link-preview-actions"])
             .build();
         let load = gtk::Button::builder()
-            .label(crate::i18n::t("link_preview_load"))
+            .label(crate::i18n::t("link_preview_retry"))
+            .visible(false)
             .css_classes(["flat"])
             .build();
         let open = gtk::LinkButton::builder()
@@ -82,55 +95,144 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
         let title_c = title.clone();
         let description_c = description.clone();
         let picture_c = picture.clone();
+        let thumbnail_link_c = thumbnail_link.clone();
         load.connect_clicked(move |button| {
             button.set_sensitive(false);
             button.set_label(&crate::i18n::t("link_preview_loading"));
+            description_c.set_text(&crate::i18n::t("link_preview_loading"));
             let (tx, rx) = async_channel::bounded(1);
             let url = url.clone();
             let domain = domain.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send_blocking(fetch(&url, &domain));
-            });
+            queue_preview(url, domain, tx);
             let button = button.clone();
             let title = title_c.clone();
             let description = description_c.clone();
             let picture = picture_c.clone();
+            let thumbnail_link = thumbnail_link_c.clone();
             glib::spawn_future_local(async move {
                 match rx.recv().await {
                     Ok(Ok(preview)) => {
+                        picture.set_alternative_text(Some(&preview.title));
                         title.set_text(&preview.title);
-                        description.set_text(&preview.description);
+                        description.set_text(&compact_text(&preview.description, 160));
+                        description.set_visible(!preview.description.is_empty());
                         if let Some(bytes) = preview.image
                             && let Ok(pixbuf) = Pixbuf::from_read(Cursor::new(bytes))
                         {
+                            picture.set_size_request(pixbuf.width(), pixbuf.height());
+                            title.set_max_width_chars(if pixbuf.height() > pixbuf.width() {
+                                26
+                            } else {
+                                42
+                            });
                             picture.set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
                             picture.set_visible(true);
+                            thumbnail_link.set_visible(true);
+                            description.set_visible(false);
                         }
-                        button.set_visible(false);
+                        button.set_visible(picture.paintable().is_none());
+                        button.set_label(&crate::i18n::t("link_preview_retry"));
+                        button.set_sensitive(true);
                     }
                     _ => {
+                        description.set_visible(true);
                         description.set_text(&crate::i18n::t("link_preview_unavailable"));
                         button.set_label(&crate::i18n::t("link_preview_retry"));
                         button.set_sensitive(true);
+                        button.set_visible(true);
                     }
                 }
             });
         });
+        // Mapping happens when the message enters the widget tree. Start only once,
+        // including when GTK remaps the card after scrolling or switching tabs.
+        let started = std::cell::Cell::new(false);
+        let load_c = load.clone();
+        card.connect_map(move |_| {
+            if !started.replace(true) {
+                description.set_text(&crate::i18n::t("link_preview_loading"));
+                load_c.emit_clicked();
+            }
+        });
     }
+}
+
+type PreviewJob = (String, String, async_channel::Sender<Result<Preview, ()>>);
+
+fn queue_preview(url: String, domain: String, reply: async_channel::Sender<Result<Preview, ()>>) {
+    static QUEUE: OnceLock<async_channel::Sender<PreviewJob>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (tx, rx) = async_channel::bounded::<PreviewJob>(256);
+        // Bound network concurrency while keeping all I/O off the GTK thread.
+        let cache = Arc::new(Mutex::new(HashMap::<String, (Instant, Preview)>::new()));
+        for _ in 0..4 {
+            let rx = rx.clone();
+            let cache = cache.clone();
+            std::thread::spawn(move || {
+                while let Ok((url, domain, reply)) = rx.recv_blocking() {
+                    if reply.is_closed() {
+                        continue;
+                    }
+                    let cached = cache.lock().unwrap().get(&url).cloned();
+                    let result = match cached {
+                        Some((saved, preview)) if saved.elapsed() < Duration::from_secs(900) => {
+                            Ok(preview)
+                        }
+                        _ => fetch(&url, &domain),
+                    };
+                    if let Ok(preview) = &result
+                        && preview.image.is_some()
+                    {
+                        let mut cache = cache.lock().unwrap();
+                        if cache.len() >= 128 {
+                            cache.clear();
+                        }
+                        cache.insert(url, (Instant::now(), preview.clone()));
+                    }
+                    let _ = reply.send_blocking(result);
+                }
+            });
+        }
+        tx
+    });
+    // A full queue drops the reply sender, so the card exposes Retry.
+    let _ = queue.try_send((url, domain, reply));
 }
 
 fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
     let client = reqwest::blocking::Client::builder()
+        .user_agent("Line-GTK/0.1 (link preview)")
         .timeout(Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::limited(3))
         .build()
         .map_err(|_| ())?;
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|_| ())?
-        .error_for_status()
-        .map_err(|_| ())?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| ())?;
+    if let Some(preview) = fetch_oembed(&client, &parsed) {
+        return Ok(preview);
+    }
+    // YouTube pages can require consent or JavaScript; their public thumbnail
+    // still works when page metadata and oEmbed are unavailable.
+    if let Some(id) = youtube_id(url) {
+        let thumbnail = reqwest::Url::parse(&format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
+            .map_err(|_| ())?;
+        if let Some(image) = fetch_image(&client, &thumbnail) {
+            return Ok(Preview {
+                title: crate::i18n::t("youtube_video"),
+                description: String::new(),
+                image: Some(image),
+            });
+        }
+    }
+    let response = client.get(url).send().map_err(|_| ())?;
+    let page_url = response.url().clone();
+    // TikTok short share links redirect to the canonical video URL required by
+    // oEmbed. Try that even when the page itself returns a challenge/error.
+    if page_url != parsed
+        && let Some(preview) = fetch_oembed(&client, &page_url)
+    {
+        return Ok(preview);
+    }
+    let response = response.error_for_status().map_err(|_| ())?;
     let html_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -138,22 +240,16 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
         .is_some_and(|value| {
             value.contains("text/html") || value.contains("application/xhtml+xml")
         });
-    if !html_type
-        || response
-            .content_length()
-            .is_some_and(|size| size > 256 * 1024)
-    {
+    if !html_type {
         return Err(());
     }
-    let page_url = response.url().clone();
+    // Metadata is in the page head. Read a bounded prefix rather than rejecting
+    // large video pages just because their entire document exceeds the limit.
     let mut bytes = Vec::new();
     response
-        .take(256 * 1024 + 1)
+        .take(1024 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
-    if bytes.len() > 256 * 1024 {
-        return Err(());
-    }
     let html = String::from_utf8_lossy(&bytes);
     let title = meta(&html, "og:title")
         .or_else(|| meta(&html, "twitter:title"))
@@ -164,8 +260,10 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
         .or_else(|| meta(&html, "description"))
         .or_else(|| meta(&html, "twitter:description"))
         .unwrap_or_default();
-    let image = meta(&html, "og:image")
+    let image = meta(&html, "og:image:secure_url")
+        .or_else(|| meta(&html, "og:image"))
         .or_else(|| meta(&html, "twitter:image"))
+        .or_else(|| meta(&html, "twitter:image:src"))
         .and_then(|url| page_url.join(&url).ok())
         .filter(|url| {
             matches!(url.scheme(), "http" | "https")
@@ -173,9 +271,51 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
         })
         .and_then(|url| fetch_image(&client, &url));
     Ok(Preview {
-        title: truncate(&title, 140),
+        title: compact_text(&title, 100),
         description: truncate(&description, 280),
         image,
+    })
+}
+
+fn oembed_url(url: &reqwest::Url) -> Option<reqwest::Url> {
+    let host = url.host_str()?;
+    let endpoint = if youtube_id(url.as_str()).is_some() {
+        "https://www.youtube.com/oembed"
+    } else if host == "tiktok.com" || host.ends_with(".tiktok.com") {
+        "https://www.tiktok.com/oembed"
+    } else {
+        return None;
+    };
+    let mut endpoint = reqwest::Url::parse(endpoint).ok()?;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("url", url.as_str())
+        .append_pair("format", "json");
+    Some(endpoint)
+}
+
+fn fetch_oembed(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option<Preview> {
+    let endpoint = oembed_url(url)?;
+    let response = client.get(endpoint).send().ok()?.error_for_status().ok()?;
+    let mut bytes = Vec::new();
+    response.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 64 * 1024 {
+        return None;
+    }
+    let data: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let thumbnail = reqwest::Url::parse(data.get("thumbnail_url")?.as_str()?).ok()?;
+    if thumbnail.scheme() != "https" {
+        return None;
+    }
+    Some(Preview {
+        title: compact_text(data.get("title")?.as_str()?, 100),
+        description: truncate(
+            data.get("author_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            280,
+        ),
+        image: Some(fetch_image(client, &thumbnail)?),
     })
 }
 
@@ -218,7 +358,7 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option
     {
         return None;
     }
-    let thumbnail = image::load_from_memory(&bytes).ok()?.thumbnail(320, 180);
+    let thumbnail = image::load_from_memory(&bytes).ok()?.thumbnail(320, 360);
     let mut png = Cursor::new(Vec::new());
     thumbnail.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(png.into_inner())
@@ -316,19 +456,46 @@ fn attribute(tag: &str, wanted: &str) -> Option<String> {
 }
 
 fn entities(value: &str) -> String {
-    let mut result = value.to_string();
-    for (encoded, decoded) in [
-        ("&amp;", "&"),
-        ("&quot;", "\""),
-        ("&#39;", "'"),
-        ("&apos;", "'"),
-        ("&lt;", "<"),
-        ("&gt;", ">"),
-        ("&nbsp;", " "),
-    ] {
-        result = result.replace(encoded, decoded);
+    let mut result = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + 1..];
+        let decoded = rest.find(';').filter(|end| *end <= 12).and_then(|end| {
+            let entity = &rest[..end];
+            let character = match entity {
+                "amp" => Some('&'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "nbsp" => Some(' '),
+                _ => entity
+                    .strip_prefix("#x")
+                    .or_else(|| entity.strip_prefix("#X"))
+                    .and_then(|digits| u32::from_str_radix(digits, 16).ok())
+                    .or_else(|| {
+                        entity
+                            .strip_prefix('#')
+                            .and_then(|digits| digits.parse().ok())
+                    })
+                    .and_then(char::from_u32),
+            }?;
+            Some((end, character))
+        });
+        if let Some((end, character)) = decoded {
+            result.push(character);
+            rest = &rest[end + 1..];
+        } else {
+            result.push('&');
+        }
     }
+    result.push_str(rest);
     result.trim().to_string()
+}
+
+fn compact_text(value: &str, max: usize) -> String {
+    truncate(&value.split_whitespace().collect::<Vec<_>>().join(" "), max)
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -343,6 +510,119 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn social_metadata_decodes_numeric_entities_and_keeps_invalid_ones() {
+        assert_eq!(
+            entities("4,8&#xa0;tri&#x1ec7;u l&#x1b0;&#x1ee3;t xem"),
+            "4,8\u{a0}triệu lượt xem"
+        );
+        assert_eq!(
+            entities("I wasn&#x2019;t &#128578; &#39;ready&#39;"),
+            "I wasn’t 🙂 'ready'"
+        );
+        assert_eq!(
+            entities("&amp;#39; &#x110000; &#xD800; &unknown; &end"),
+            "&#39; &#x110000; &#xD800; &unknown; &end"
+        );
+        assert_eq!(
+            compact_text("  Have you...\n\nAd | Promotion. ", 100),
+            "Have you... Ad | Promotion."
+        );
+    }
+
+    #[test]
+    fn youtube_video_urls_use_valid_ids_and_trusted_hosts() {
+        for url in [
+            "https://youtu.be/jNQXAC9IVRw?si=share",
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw&t=1",
+            "https://youtube.com/shorts/jNQXAC9IVRw",
+            "https://m.youtube.com/live/jNQXAC9IVRw",
+            "https://www.youtube.com/embed/jNQXAC9IVRw",
+        ] {
+            assert_eq!(youtube_id(url).as_deref(), Some("jNQXAC9IVRw"));
+            let endpoint = oembed_url(&reqwest::Url::parse(url).unwrap()).unwrap();
+            assert_eq!(endpoint.host_str(), Some("www.youtube.com"));
+            assert_eq!(
+                endpoint
+                    .query_pairs()
+                    .find(|(key, _)| key == "url")
+                    .unwrap()
+                    .1,
+                url
+            );
+        }
+        for url in [
+            "https://youtube.com.evil.example/watch?v=jNQXAC9IVRw",
+            "https://example.com/youtu.be/jNQXAC9IVRw",
+            "https://youtube.com/watch?v=../image",
+            "https://youtube.com/watch?v=short",
+            "https://youtube.com/playlist?list=abc",
+        ] {
+            assert!(youtube_id(url).is_none(), "{url}");
+            assert!(
+                oembed_url(&reqwest::Url::parse(url).unwrap()).is_none(),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn tiktok_oembed_accepts_share_urls_and_rejects_lookalike_hosts() {
+        for url in [
+            "https://www.tiktok.com/@creator/video/123456789",
+            "https://vm.tiktok.com/share/",
+            "https://vt.tiktok.com/share/",
+        ] {
+            let endpoint = oembed_url(&reqwest::Url::parse(url).unwrap()).unwrap();
+            assert_eq!(endpoint.host_str(), Some("www.tiktok.com"));
+        }
+        for url in [
+            "https://tiktok.com.evil.example/video/123",
+            "https://faketiktok.com/video/123",
+            "https://www.facebook.com/reel/123",
+        ] {
+            assert!(oembed_url(&reqwest::Url::parse(url).unwrap()).is_none());
+        }
+    }
+
+    #[test]
+    fn large_video_pages_still_load_relative_open_graph_thumbnails() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut image_bytes = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(640, 360)
+                .write_to(&mut image_bytes, image::ImageFormat::Png)
+                .unwrap();
+            let html = format!(
+                r#"<head><meta property="og:title" content="Video &amp; title">
+                <meta property="og:image" content="/thumbnail.png"></head>{}"#,
+                " ".repeat(300 * 1024)
+            );
+            for (content_type, body) in [
+                ("text/html", html.into_bytes()),
+                ("image/png", image_bytes.into_inner()),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let preview = fetch(&url, "localhost").unwrap();
+        assert_eq!(preview.title, "Video & title");
+        let thumbnail = image::load_from_memory(&preview.image.unwrap()).unwrap();
+        assert_eq!((thumbnail.width(), thumbnail.height()), (320, 180));
+        server.join().unwrap();
+    }
 
     #[test]
     fn reads_open_graph_metadata_with_attribute_order_and_quotes() {

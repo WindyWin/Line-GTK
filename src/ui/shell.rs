@@ -1245,6 +1245,7 @@ pub fn load_css() {
         .line-flex-title { font-weight: 700; }
         .line-flex-action { margin-top: 4px; }
         .line-link-preview { border-radius: 10px; padding: 8px; background: alpha(@card_bg_color, 0.75); border: 1px solid alpha(@borders, 0.5); max-width: 360px; }
+        .line-link-preview-thumbnail { padding: 0; margin: 0; border-radius: 6px; }
         .line-link-preview-title { font-weight: 700; }
         .line-link-preview-description { font-size: 0.9em; opacity: 0.8; }
         .line-link-preview-domain { font-size: 0.8em; opacity: 0.7; }

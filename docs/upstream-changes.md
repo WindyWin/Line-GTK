@@ -25,7 +25,8 @@ commit authors preserved, and subsequent work in
 - Conversation albums and original photo downloads; shared media browsing with
   navigation back to source messages.
 - Video playback and saving, sticker hover previews, attachment drafts with
-  removable previews, and link preview cards loaded on request.
+  removable previews, and link preview cards that automatically load thumbnails,
+  with YouTube and TikTok oEmbed support.
 - Desktop autostart and an option to start in the background.
 
 ## Reliability and behavior changes

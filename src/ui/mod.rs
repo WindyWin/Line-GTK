@@ -1331,31 +1331,33 @@ fn open_uri(url: &str) {
 }
 
 fn youtube_id(url: &str) -> Option<String> {
-    let lower = url.to_ascii_lowercase();
-    if !(lower.contains("youtube.com") || lower.contains("youtu.be")) {
+    let url = reqwest::Url::parse(url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
-    if let Some(idx) = url.find("v=") {
-        let rest = &url[idx + 2..];
-        let id = rest.split('&').next().unwrap_or("");
-        if !id.is_empty() {
-            return Some(id.to_string());
+    let host = url.host_str()?;
+    let mut segments = url.path_segments()?;
+    let first = segments.next()?;
+    let id = if host == "youtu.be" {
+        first.to_string()
+    } else if host == "youtube.com" || host.ends_with(".youtube.com") {
+        match first {
+            "watch" => url
+                .query_pairs()
+                .find(|(key, _)| key == "v")?
+                .1
+                .into_owned(),
+            "shorts" | "embed" | "live" => segments.next()?.to_string(),
+            _ => return None,
         }
-    }
-    if let Some(idx) = url.find("youtu.be/") {
-        let rest = &url[idx + 9..];
-        let id = rest
-            .split('?')
-            .next()
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-    None
+    } else {
+        return None;
+    };
+    (id.len() == 11
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+    .then_some(id)
 }
 
 fn extract_urls(text: &str) -> Vec<String> {
