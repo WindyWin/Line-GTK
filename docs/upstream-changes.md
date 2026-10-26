@@ -72,6 +72,7 @@ Checked on 2026-10-26:
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --all-targets --all-features -- -D warnings`: passed.
+- `cargo build --release`: passed.
 - `cargo test --all-targets --all-features`: 125 passed, one display-dependent test
   ignored.
 - `deno task --config protocol/deno.json check`: format, lint, type checking, and
