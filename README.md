@@ -118,6 +118,9 @@ deno task --config protocol/deno.json check
 
 ## Fork integration
 
+See the [upstream change list](docs/upstream-changes.md) for added features,
+protocol and packaging impacts, validation results, and remaining limitations.
+
 This branch integrates documented changes from [shirafukayayoi/Line-GTK](https://github.com/shirafukayayoi/Line-GTK) through `personal/features` commit `0907007`, while keeping Vietnamese as the app's default language. See the [Vietnamese integration notes](docs/fork-shirafukayayoi.md) for features and limits.
 
 ## Message decryption and group information
