@@ -738,6 +738,10 @@ const listener = createListener({
   },
   refreshMessageSender: messageSenders.refresh,
   isListening: () => listening,
+  receiverStalled: () => {
+    console.error("[receiver] PUSH heartbeat or event consumer stopped");
+    emitEvent("connection_lost", { kind: "network" });
+  },
   setListening: (next) => {
     listening = next;
   },
@@ -937,6 +941,33 @@ function patchE2eeGuards() {
       "[e2ee] メッセージを復号できません。暗号鍵の再取得が必要です。",
     );
   });
+}
+
+const e2eeFileNames = new Map<string, string>();
+
+async function e2eeFileName(
+  tm: TalkMessage,
+  id: string,
+): Promise<string | null> {
+  const known = e2eeFileNames.get(id);
+  if (known) return known;
+  const raw = (tm as unknown as { raw?: { chunks?: unknown[] } }).raw;
+  if (!client || !raw?.chunks?.length) return null;
+  try {
+    const e2ee = client.base.e2ee as unknown as {
+      decryptE2EEDataMessage: (
+        m: unknown,
+      ) => Promise<{ fileName?: unknown }>;
+    };
+    const { fileName } = await e2ee.decryptE2EEDataMessage(raw);
+    if (typeof fileName === "string" && fileName) {
+      e2eeFileNames.set(id, fileName);
+      return fileName;
+    }
+  } catch (e) {
+    console.error("[e2ee file name]", id, e);
+  }
+  return null;
 }
 
 async function refetchMessageData(
@@ -1453,7 +1484,10 @@ async function summarizeTalkMessage(
       }
     }
   } else if (contentType === "FILE") {
-    text = text || fileName || "[File]";
+    // E2EE chats keep the file name inside the encrypted payload.
+    if (!fileName && text && text !== "[File]") fileName = text;
+    if (!fileName) fileName = await e2eeFileName(tm, id);
+    text = fileName || text || "[File]";
     fileName = fileName || text;
     if (withMedia) {
       try {
