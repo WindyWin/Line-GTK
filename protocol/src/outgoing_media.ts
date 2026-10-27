@@ -164,7 +164,11 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
 
   async function makeImagePreviewBlob(filePath: string): Promise<Blob | null> {
     try {
-      const dest = join(mediaDir, `preview-${Date.now()}.jpg`);
+      const transparent = filePath.toLowerCase().endsWith(".png");
+      const dest = join(
+        mediaDir,
+        `preview-${Date.now()}.${transparent ? "png" : "jpg"}`,
+      );
       const p = new Deno.Command("ffmpeg", {
         args: [
           "-y",
@@ -189,7 +193,9 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       try {
         await Deno.remove(dest);
       } catch { /* ignore */ }
-      return new Blob([buf], { type: "image/jpeg" });
+      return new Blob([buf], {
+        type: transparent ? "image/png" : "image/jpeg",
+      });
     } catch {
       return null;
     }

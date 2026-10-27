@@ -52,24 +52,83 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
         .cloned()
         .unwrap_or_default();
 
+    let root = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(0)
+        .css_classes(["line-sticker-chooser"])
+        .build();
+
+    let import_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(10)
+        .margin_bottom(6)
+        .build();
+    let import_label = gtk::Label::builder()
+        .label(crate::i18n::t("sticker_import_label"))
+        .xalign(0.0)
+        .build();
+    let import_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let entry = gtk::Entry::builder()
+        .placeholder_text(crate::i18n::t("sticker_import_placeholder"))
+        .hexpand(true)
+        .build();
+    entry.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
+        "sticker_import_label",
+    ))]);
+    import_label.set_mnemonic_widget(Some(&entry));
+    let download = gtk::Button::with_label(&crate::i18n::t("sticker_import_download"));
+    let s = state.clone();
+    let entry_c = entry.clone();
+    download.connect_clicked(move |button| {
+        let link = entry_c.text();
+        if link.trim().is_empty() {
+            entry_c.grab_focus();
+            return;
+        }
+        match s.sidecar.import_sticker_pack(link.trim()) {
+            Ok(id) => {
+                button.set_sensitive(false);
+                button.set_label(&crate::i18n::t("loading_stickers"));
+                s.pending
+                    .borrow_mut()
+                    .insert(id, Pending::ImportStickerPack(button.clone()));
+            }
+            Err(e) => toast(&s, &e.to_string()),
+        }
+    });
+    let download_c = download.clone();
+    entry.connect_activate(move |_| {
+        if download_c.is_sensitive() {
+            download_c.emit_clicked();
+        }
+    });
+    import_row.append(&entry);
+    import_row.append(&download);
+    let store = gtk::LinkButton::with_label(
+        "https://store.line.me/stickershop/home/general/en",
+        &crate::i18n::t("sticker_import_browse"),
+    );
+    store.set_halign(gtk::Align::Start);
+    import_box.append(&import_label);
+    import_box.append(&import_row);
+    import_box.append(&store);
+    root.append(&import_box);
+
     if packs.is_empty() {
         let empty = gtk::Label::builder()
             .label(crate::i18n::t("stickers_empty"))
             .css_classes(["dim-label"])
             .margin_top(24)
             .margin_bottom(24)
-            .margin_start(20)
-            .margin_end(20)
+            .wrap(true)
             .build();
-        state.sticker_popover.set_child(Some(&empty));
+        root.append(&empty);
+        state.sticker_popover.set_child(Some(&root));
         return;
     }
-
-    let root = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(0)
-        .css_classes(["line-sticker-chooser"])
-        .build();
 
     let title = gtk::Label::builder()
         .xalign(0.0)
@@ -125,8 +184,14 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
             || pack_id == "__recent__";
+        let image_only = pack
+            .get("imageOnly")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let display_name = if is_recent {
             crate::i18n::t("stickers_recent")
+        } else if image_only {
+            crate::i18n::tf("sticker_image_pack", &[("pack", &pack_name)])
         } else {
             pack_name.clone()
         };
@@ -206,12 +271,25 @@ pub(super) fn fill_sticker_popover(state: &AppState, result: &serde_json::Value)
             }
             btn.set_child(Some(&pic));
             hover_preview.wire(&btn, path.clone(), display_name.clone());
+            if image_only {
+                btn.set_sensitive(path.is_some());
+                btn.set_tooltip_text(Some(&crate::i18n::t("sticker_image_click_hint")));
+                if let Some(path) = path.as_ref() {
+                    sticker_image_editor::wire_menu(state, &btn, PathBuf::from(path));
+                }
+            }
 
             let s = state.clone();
             let pop = state.sticker_popover.clone();
             let image_path = path.clone();
             btn.connect_clicked(move |_| {
                 pop.popdown();
+                if image_only {
+                    if let Some(path) = image_path.as_ref() {
+                        sticker_image_editor::send_last(&s, std::path::Path::new(path));
+                    }
+                    return;
+                }
                 send_sticker_now(
                     &s,
                     &sticker_id,

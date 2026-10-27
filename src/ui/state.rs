@@ -292,6 +292,7 @@ pub(super) enum Pending {
         mention_draft: Option<super::mentions::MentionDraft>,
     },
     ListStickers,
+    ImportStickerPack(gtk::Button),
     DownloadMedia {
         message_id: String,
         action: String,

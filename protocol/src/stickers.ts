@@ -2,6 +2,7 @@ import type { Client } from "@evex/linejs";
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "./storage.ts";
 import type { CachePolicy } from "./cache_policy.ts";
+import { stickerPackageId } from "./sticker_import.ts";
 
 type Json = Record<string, unknown>;
 
@@ -296,11 +297,87 @@ export function createStickerService(runtime: StickerRuntime) {
     return await ensureStickerStatic(stickerId);
   }
 
-  async function doListStickers(id: number | string | null) {
+  type ImagePack = {
+    id: string;
+    name: string;
+    version: string;
+    stickers: StickerEntry[];
+  };
+  const imagePacksPath = join(stickerDir, "image-packs.json");
+
+  async function imagePackStickers(pack: ImagePack) {
+    const stickers: (StickerEntry & { imagePath: string | null })[] = [];
+    for (let offset = 0; offset < pack.stickers.length; offset += 8) {
+      stickers.push(
+        ...await Promise.all(
+          pack.stickers.slice(offset, offset + 8).map(async (s) => ({
+            ...s,
+            imagePath: await ensureStickerStatic(s.stickerId),
+          })),
+        ),
+      );
+    }
+    return stickers;
+  }
+
+  async function loadImagePacks(): Promise<ImagePack[]> {
+    try {
+      const raw = JSON.parse(await Deno.readTextFile(imagePacksPath));
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((pack) =>
+        pack && stickerPackageId(String(pack.id)) === pack.id &&
+        typeof pack.name === "string" && typeof pack.version === "string" &&
+        Array.isArray(pack.stickers) && pack.stickers.every((s: StickerEntry) =>
+          s && stickerPackageId(s.stickerId) === s.stickerId &&
+          s.packageId === pack.id
+        )
+      ).slice(0, 24);
+    } catch {
+      return [];
+    }
+  }
+
+  async function doListStickers(
+    id: number | string | null,
+    importPack?: string,
+  ) {
     const client = runtime.getClient();
     if (!client) {
       fail(id, "not_logged_in");
       return;
+    }
+
+    let imagePacks = await loadImagePacks();
+    if (importPack !== undefined) {
+      const packageId = stickerPackageId(importPack);
+      if (!packageId) {
+        fail(id, "sticker_import_invalid");
+        return;
+      }
+      const detail = await stickersForOwnedPackage({
+        id: packageId,
+        name: packageId,
+        version: "1",
+      }, 200);
+      detail.stickers = detail.stickers.filter((s) =>
+        stickerPackageId(s.stickerId) === s.stickerId
+      );
+      if (!detail.stickers.length) {
+        fail(id, "sticker_import_unavailable");
+        return;
+      }
+      // Download public PNG assets as local images. Never send STICKER metadata.
+      const imported = { id: packageId, ...detail };
+      const images = await imagePackStickers(imported);
+      if (!images.some((s) => s.imagePath)) {
+        fail(id, "sticker_import_unavailable");
+        return;
+      }
+      imagePacks = [
+        imported,
+        ...imagePacks.filter((pack) => pack.id !== packageId),
+      ].slice(0, 24);
+      await atomicWriteTextFile(imagePacksPath, JSON.stringify(imagePacks));
     }
 
     const ownedPkgs = await fetchOwnedPackages();
@@ -323,6 +400,17 @@ export function createStickerService(runtime: StickerRuntime) {
     }
 
     const packs: Json[] = [];
+
+    for (const pack of imagePacks) {
+      const stickers = await imagePackStickers(pack);
+      packs.push({
+        ...pack,
+        id: `image-${pack.id}`,
+        imageOnly: true,
+        iconPath: stickers.find((s) => s.imagePath)?.imagePath ?? null,
+        stickers,
+      });
+    }
 
     if (recentEntries.length) {
       const stickers: Json[] = [];

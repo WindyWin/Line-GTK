@@ -915,6 +915,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
+                if let Some(Pending::ImportStickerPack(button)) = pending.as_ref() {
+                    button.set_sensitive(true);
+                    button.set_label(&crate::i18n::t("sticker_import_download"));
+                }
+                if err == "sticker_import_invalid" || err == "sticker_import_unavailable" {
+                    toast(state, &crate::i18n::t(err));
+                    return;
+                }
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
                 } else if err.contains("contact_blocked_send") {
@@ -991,7 +999,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     | Pending::FetchOlder { .. }
                     | Pending::FetchNewer { .. },
                 ) => {}
-                Some(Pending::ListStickers) => {
+                Some(Pending::ListStickers | Pending::ImportStickerPack(_)) => {
                     fill_sticker_popover(state, &result);
                 }
                 Some(Pending::DownloadMedia {

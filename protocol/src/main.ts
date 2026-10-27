@@ -2603,7 +2603,10 @@ async function handle(req: Json) {
         );
         break;
       case "list_stickers":
-        await stickers.list(id);
+        await stickers.list(
+          id,
+          typeof params.importPack === "string" ? params.importPack : undefined,
+        );
         break;
       case "mark_read":
         await commands.markRead(

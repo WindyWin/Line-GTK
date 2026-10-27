@@ -35,6 +35,7 @@ mod settings;
 mod shared_media;
 mod shell;
 mod state;
+mod sticker_image_editor;
 mod sticker_preview;
 mod unread_sync;
 mod unsend;

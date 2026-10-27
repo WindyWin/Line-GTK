@@ -460,6 +460,10 @@ impl Sidecar {
         self.request("list_stickers", None)
     }
 
+    pub fn import_sticker_pack(&self, link: &str) -> Result<u64> {
+        self.request("list_stickers", Some(json!({ "importPack": link })))
+    }
+
     pub fn mark_read(&self, chat_mid: &str, last_message_id: &str) -> Result<u64> {
         self.request(
             "mark_read",
