@@ -621,7 +621,7 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     // リアクションは吹き出しの外に置く。画像の差し替えで子要素が入れ替わるため。
     let bubble_column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
+        .spacing(0)
         .halign(bubble.halign())
         .build();
     bubble_column.append(&bubble);

@@ -230,6 +230,15 @@ pub(super) fn strip(state: &AppState, message: &MessageInfo, anchor: &gtk::Box) 
                 }
             }
         });
+        strip.connect_unrealize(|strip| {
+            let mut child = strip.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if widget.is::<gtk::Popover>() {
+                    widget.unparent();
+                }
+            }
+        });
         state.reactions.borrow_mut().slots.insert(
             message.id.clone(),
             Slot {
@@ -244,7 +253,11 @@ pub(super) fn strip(state: &AppState, message: &MessageInfo, anchor: &gtk::Box) 
 
 fn render(state: &AppState, strip: &gtk::Box, message: &MessageInfo) {
     while let Some(child) = strip.first_child() {
-        strip.remove(&child);
+        if child.is::<gtk::Popover>() {
+            child.unparent();
+        } else {
+            strip.remove(&child);
+        }
     }
     let account = self_mid(state);
     let groups = groups(&message.reactions);
@@ -311,7 +324,7 @@ fn render(state: &AppState, strip: &gtk::Box, message: &MessageInfo) {
     if strip.first_child().is_some() {
         let label = crate::i18n::t("reaction_list");
         let details = gtk::Button::builder()
-            .icon_name("view-more-symbolic")
+            .icon_name("system-users-symbolic")
             .tooltip_text(&label)
             .action_name("win.show-reactions")
             .action_target(&message.id.to_variant())
@@ -553,7 +566,11 @@ fn popover_for(anchor: &gtk::Box, css: &str) -> gtk::Popover {
     popover.connect_closed(|popover| {
         // 項目のアクションが終わるまで、親との接続を残す。
         let popover = popover.clone();
-        glib::idle_add_local_once(move || popover.unparent());
+        glib::idle_add_local_once(move || {
+            if popover.parent().is_some() {
+                popover.unparent();
+            }
+        });
     });
     popover
 }
@@ -1046,18 +1063,25 @@ fn show_list(state: &AppState, id: &str) {
     if reactions.is_empty() {
         return;
     }
-    let Some(anchor) = anchor(state, id) else {
+    let Some(anchor) = state
+        .reactions
+        .borrow()
+        .slots
+        .get(id)
+        .map(|slot| slot.strip.clone())
+    else {
         return;
     };
     reactions.sort_by_key(|r| std::cmp::Reverse(r.at));
     let popover = popover_for(&anchor, "line-reaction-list");
+    popover.set_position(gtk::PositionType::Bottom);
     let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .margin_top(4)
-        .margin_bottom(4)
-        .margin_start(4)
-        .margin_end(4)
+        .spacing(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     root.append(
         &gtk::Label::builder()
@@ -1071,23 +1095,27 @@ fn show_list(state: &AppState, id: &str) {
     );
     let list = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
+        .spacing(8)
         .build();
     for reaction in &reactions {
-        let row = gtk::Box::builder().spacing(8).build();
-        row.append(&icon(state, &reaction.kind, reaction.emoji.as_deref(), 22));
+        let row = gtk::Box::builder().spacing(12).build();
+        row.append(&user_profile::row_avatar(state, &reaction.from));
         let name = person(state, &reaction.from);
         let label = gtk::Label::builder()
             .label(&name)
+            .tooltip_text(&name)
             .xalign(0.0)
             .hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .max_width_chars(28)
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .width_chars(20)
+            .max_width_chars(24)
             .build();
         if reaction.from != self_mid(state) {
             message_senders::register(state, &reaction.from, &label);
         }
         row.append(&label);
+        row.append(&icon(state, &reaction.kind, reaction.emoji.as_deref(), 28));
         row.update_property(&[gtk::accessible::Property::Label(&format!(
             "{name}: {}",
             label_of(reaction)
@@ -1099,7 +1127,7 @@ fn show_list(state: &AppState, id: &str) {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
             .max_content_height(280)
-            .min_content_width(200)
+            .min_content_width(280)
             .child(&list)
             .build(),
     );

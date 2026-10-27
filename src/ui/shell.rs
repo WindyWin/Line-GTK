@@ -828,12 +828,12 @@ pub fn load_css() {
 .line-message-action:hover, .line-message-action:focus-visible { color: @accent_color; background: alpha(@accent_bg_color, 0.12); }
 .line-album-photo { border-radius: 12px; padding: 4px; }
 .line-emoji-text, .line-emoji-text text { background: transparent; color: inherit; padding: 0; }
-.line-reaction-strip { margin: 2px 4px 0; }
-.line-reaction-chip { min-height: 28px; padding: 1px 8px; border-radius: 999px; background: @card_bg_color; border: 1px solid alpha(@borders, 0.6); font-size: 0.85em; }
-.line-reaction-chip:hover { background: alpha(@accent_bg_color, 0.12); border-color: alpha(@accent_bg_color, 0.5); }
+.line-reaction-strip { margin: 0; }
+.line-reaction-chip { min-height: 24px; padding: 0 4px; border-radius: 6px; background: transparent; border: none; box-shadow: none; font-size: 0.85em; }
+.line-reaction-chip:hover { background: alpha(@accent_bg_color, 0.12); }
 .line-reaction-count { font-weight: 600; }
-.line-reaction-chip.line-reaction-mine { background: alpha(@accent_bg_color, 0.18); border-color: alpha(@accent_bg_color, 0.65); }
-.line-reaction-details { min-width: 28px; min-height: 28px; padding: 0; }
+.line-reaction-chip.line-reaction-mine { background: alpha(@accent_bg_color, 0.18); }
+.line-reaction-details { min-width: 24px; min-height: 24px; padding: 0; border: none; box-shadow: none; }
 .line-reaction-tab { min-width: 36px; min-height: 36px; padding: 2px; border-radius: 8px; border-bottom: 2px solid transparent; }
 .line-reaction-tab.line-reaction-selected { background: alpha(@accent_bg_color, 0.16); border-bottom-color: @accent_bg_color; }
 .line-reaction-option { min-width: 40px; min-height: 40px; padding: 2px; border-radius: 10px; }
