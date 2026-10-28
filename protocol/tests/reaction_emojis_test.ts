@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import { createEmojiService } from "../src/emojis.ts";
 import {
   createReactionEmojiPacks,
   ownedPacks,
@@ -19,6 +20,60 @@ const png = new Uint8Array([
   10,
   ...new Array(20).fill(0),
 ]);
+
+Deno.test("opening a large pack loads every image, including emoji after the first 100", async () => {
+  const directory = await Deno.makeTempDir();
+  const ids = Array.from(
+    { length: 211 },
+    (_, i) => String(i + 1).padStart(3, "0"),
+  );
+  const image = Uint8Array.from(
+    atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK1sAAAAASUVORK5CYII=",
+    ),
+    (c) => c.charCodeAt(0),
+  );
+  const ready = new Set<string>();
+  const downloads: string[] = [];
+  const images = createEmojiService({
+    directory,
+    emit: (key) => {
+      ready.add(key);
+    },
+    fetch: (input) => {
+      downloads.push(String(input));
+      return Promise.resolve(new Response(image));
+    },
+  });
+  const packs = createReactionEmojiPacks({
+    directory,
+    accountMid: () => "u-self",
+    ownedProducts: () => Promise.resolve({ productList: [] }),
+    observe: (messages) => images.observe(messages),
+    fetch: () => Promise.resolve(Response.json({ orders: ids })),
+  });
+  try {
+    assertEquals((await packs.pack(A)).emojis.length, ids.length);
+    const deadline = Date.now() + 5000;
+    // Wait for the loader to drain before cleaning up its temporary directory.
+    while (ready.size < ids.length && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assertEquals([...ready].sort(), ids.map((id) => `${A}_${id}`));
+    assertEquals(downloads.length, ids.length);
+    // Reopening a pack should also load all images from disk without a fetch.
+    ready.clear();
+    await packs.pack(A);
+    const cachedDeadline = Date.now() + 5000;
+    while (ready.size < ids.length && Date.now() < cachedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assertEquals([...ready].sort(), ids.map((id) => `${A}_${id}`));
+    assertEquals(downloads.length, ids.length);
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
 
 Deno.test("所有している絵文字パックを重複なく読み取り、不正なIDを捨てる", () => {
   assertEquals(

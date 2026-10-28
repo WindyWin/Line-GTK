@@ -8,6 +8,7 @@ mod protocol;
 mod read_receipts;
 mod sidecar;
 mod sticker_anim;
+mod sticker_image;
 mod tray;
 mod ui;
 

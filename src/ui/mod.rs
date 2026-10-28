@@ -1,6 +1,7 @@
 mod albums;
 mod auto_login;
 mod cache_boot;
+mod cache_limit;
 mod call_history;
 mod call_window;
 mod calls;
@@ -8,6 +9,7 @@ mod chat_events;
 mod chat_filter;
 mod chat_snapshots;
 mod chats;
+mod composer;
 mod composer_drafts;
 mod composer_media;
 mod contact_blocks;
@@ -20,21 +22,26 @@ mod hidden_chats;
 mod history;
 mod link_previews;
 mod login;
+mod markdown;
 mod media;
 mod mentions;
 mod message_copy;
+mod message_search;
 mod message_senders;
 mod messages;
 mod notifications;
 mod pinned_chats;
 mod reactions;
 mod read_pause;
+mod read_position;
 mod replies;
 mod resume_sync;
 mod settings;
 mod shared_media;
 mod shell;
 mod state;
+mod sticker_image_editor;
+mod sticker_library;
 mod sticker_preview;
 mod unread_sync;
 mod unsend;
@@ -48,6 +55,7 @@ use crate::sidecar::Sidecar;
 use anyhow::Result;
 use calls::*;
 use chats::*;
+use composer::ComposerExt;
 use composer_media::*;
 use events::*;
 use gdk_pixbuf::Pixbuf;
@@ -106,7 +114,7 @@ fn build_ui(
     repo_root: PathBuf,
     data_dir: PathBuf,
     background: bool,
-) -> Result<()> {
+) -> Result<AppState> {
     shell::load_css();
     register_app_icons(&repo_root);
     let config = Rc::new(RefCell::new(AppConfig::load(&data_dir)));
@@ -176,6 +184,8 @@ fn build_ui(
         auto_login: Rc::new(RefCell::new(auto_login::State::default())),
         contact_blocks: Rc::new(RefCell::new(contact_blocks::BlockState::default())),
         read_once_btn: shell.read_once_btn,
+        last_read_btn: shell.last_read_btn,
+        last_read_position: Rc::new(RefCell::new(read_position::ReadPosition::default())),
         app: app.clone(),
         sidecar: sidecar.clone(),
         window: window.clone(),
@@ -185,6 +195,8 @@ fn build_ui(
         message_list: shell.message_list,
         message_scroll: shell.message_scroll,
         composer: shell.composer,
+        composer_placeholder: shell.composer_placeholder,
+        composer_emoji: shell.composer_emoji,
         attachment_preview: shell.attachment_preview,
         composer_drafts: Rc::new(RefCell::new(composer_drafts::Drafts::default())),
         reply_preview: shell.reply_preview,
@@ -264,6 +276,8 @@ fn build_ui(
         friends_btn: shell.friends_btn,
         album_btn: shell.album_btn,
         album_ui: Rc::new(RefCell::new(None)),
+        message_search_btn: shell.message_search_btn,
+        message_search_ui: Rc::new(RefCell::new(None)),
         shared_media_btn: shell.shared_media_btn,
         shared_media_ui: Rc::new(RefCell::new(None)),
         hidden_chats_ui: Rc::new(RefCell::new(None)),
@@ -287,6 +301,7 @@ fn build_ui(
         attach_btn: shell.attach_btn,
         sticker_btn: shell.sticker_btn,
         sticker_popover: shell.sticker_popover,
+        sticker_dialogs: Rc::new(RefCell::new(Vec::new())),
         call_btn: shell.call_btn,
         mute_btn: shell.mute_btn,
         composer_stack: shell.composer_stack,
@@ -331,6 +346,7 @@ fn build_ui(
     };
 
     read_pause::wire(&state);
+    read_position::wire(&state);
     albums::wire(&state);
     {
         let s = state.clone();
@@ -338,6 +354,7 @@ fn build_ui(
             .shared_media_btn
             .connect_clicked(move |_| shared_media::open(&s));
     }
+    message_search::wire(&state);
     chat_filter::wire(&state);
     hidden_chats::wire(&state);
     contact_blocks::wire(&state);
@@ -372,8 +389,8 @@ fn build_ui(
         });
     }
     pump_tray_actions(state.clone(), tray_rx);
-    pump_events(state);
-    Ok(())
+    pump_events(state.clone());
+    Ok(state)
 }
 
 const SIDEBAR_MIN_PX: i32 = 80;
@@ -1215,6 +1232,7 @@ fn begin_optimistic_send(state: &AppState, req_id: u64, chat_mid: &str, mut msg:
 fn apply_ui_language(state: &AppState) {
     crate::i18n::set_lang(&state.repo_root, &state.config.borrow().language);
     read_pause::apply_language(state);
+    read_position::refresh(state);
     // 再ログインせず、プレビュー生成側にも選択した言語を反映する。
     if let Err(error) = state.sidecar.request(
         "set_language",
@@ -1231,6 +1249,9 @@ fn apply_ui_language(state: &AppState) {
             "type_message",
         ))]);
     chat_filter::apply_language(state);
+    state
+        .message_search_btn
+        .set_tooltip_text(Some(&crate::i18n::t("message_search")));
     state.album_btn.set_label(&crate::i18n::t("albums"));
     state
         .shared_media_btn
@@ -1240,12 +1261,11 @@ fn apply_ui_language(state: &AppState) {
         .set_tooltip_text(Some(&crate::i18n::t("albums")));
     state.side_title.set_text(&crate::i18n::t("chats"));
     state
-        .composer
-        .set_placeholder_text(Some(&crate::i18n::t("type_message")));
-    state.composer.set_icon_tooltip_text(
-        gtk::EntryIconPosition::Secondary,
-        Some(&crate::i18n::t("insert_emoji")),
-    );
+        .composer_placeholder
+        .set_label(&crate::i18n::t("type_message"));
+    state
+        .composer_emoji
+        .set_tooltip_text(Some(&crate::i18n::t("insert_emoji")));
     if *state.composer_narrow.borrow() {
         state.send_btn.set_label("");
         state.send_btn.set_icon_name("mail-send-symbolic");
@@ -1331,31 +1351,33 @@ fn open_uri(url: &str) {
 }
 
 fn youtube_id(url: &str) -> Option<String> {
-    let lower = url.to_ascii_lowercase();
-    if !(lower.contains("youtube.com") || lower.contains("youtu.be")) {
+    let url = reqwest::Url::parse(url).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
         return None;
     }
-    if let Some(idx) = url.find("v=") {
-        let rest = &url[idx + 2..];
-        let id = rest.split('&').next().unwrap_or("");
-        if !id.is_empty() {
-            return Some(id.to_string());
+    let host = url.host_str()?;
+    let mut segments = url.path_segments()?;
+    let first = segments.next()?;
+    let id = if host == "youtu.be" {
+        first.to_string()
+    } else if host == "youtube.com" || host.ends_with(".youtube.com") {
+        match first {
+            "watch" => url
+                .query_pairs()
+                .find(|(key, _)| key == "v")?
+                .1
+                .into_owned(),
+            "shorts" | "embed" | "live" => segments.next()?.to_string(),
+            _ => return None,
         }
-    }
-    if let Some(idx) = url.find("youtu.be/") {
-        let rest = &url[idx + 9..];
-        let id = rest
-            .split('?')
-            .next()
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        if !id.is_empty() {
-            return Some(id.to_string());
-        }
-    }
-    None
+    } else {
+        return None;
+    };
+    (id.len() == 11
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+    .then_some(id)
 }
 
 fn extract_urls(text: &str) -> Vec<String> {
@@ -1425,7 +1447,7 @@ fn wire_drop_attachments(state: &AppState) {
 
 fn wire_actions(state: &AppState) {
     let s = state.clone();
-    state.composer.connect_activate(move |_| send_current(&s));
+    composer::wire_send(&state.composer, move || send_current(&s));
 
     let s = state.clone();
     state.send_btn.connect_clicked(move |_| send_current(&s));
@@ -1541,6 +1563,8 @@ fn wire_actions(state: &AppState) {
                     auto_login::manual_logout(&s2);
                     albums::close(&s2);
                     shared_media::close(&s2);
+                    sticker_library::close(&s2);
+                    message_search::close(&s2);
                     hidden_chats::close(&s2);
                     contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
@@ -1582,6 +1606,8 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
                     shared_media::close(&s2);
+                    sticker_library::close(&s2);
+                    message_search::close(&s2);
                     hidden_chats::close(&s2);
                     contact_blocks::reset(&s2);
                     resume_sync::cancel(&s2);
@@ -1797,6 +1823,9 @@ fn request_friends_list(state: &AppState) {
 /// Prepare an explicit history destination without fetching latest messages or
 /// sending read receipts. The anchored history request owns the next render.
 fn open_chat_for_history(state: &AppState, chat: &ChatInfo) -> bool {
+    if state.current_chat.borrow().as_deref() != Some(chat.mid.as_str()) {
+        message_search::close(state);
+    }
     if !*state.session_ready.borrow() || hidden_chats::is_hidden(state, &chat.mid) {
         return false;
     }
@@ -1812,6 +1841,7 @@ fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
+    read_position::open(state, chat);
     composer_drafts::sync(state);
     mentions::reset(state);
     read_pause::refresh_once_button(state);
@@ -1865,6 +1895,7 @@ fn open_chat(state: &AppState, chat: &ChatInfo) {
         return;
     }
 
+    message_search::close(state);
     prepare_chat_header(state, chat);
     let snapshot = chat_snapshots::take(state, &chat.mid);
     if snapshot.is_none() {
@@ -1980,6 +2011,8 @@ fn restart_login(state: &AppState) {
     resume_sync::cancel(state);
     albums::close(state);
     shared_media::close(state);
+    sticker_library::close(state);
+    message_search::close(state);
     hidden_chats::close(state);
     *state.restarting.borrow_mut() = true;
     state.pending.borrow_mut().clear();

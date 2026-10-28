@@ -32,6 +32,7 @@ pkgver() {
 
 prepare() {
   cd Line-GTK
+  python3 scripts/vendor-protocol.py --ensure
   export RUSTUP_TOOLCHAIN=stable
   # Prefer lockfile when present; otherwise resolve deps for this snapshot.
   if [[ -f Cargo.lock ]]; then

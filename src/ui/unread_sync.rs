@@ -74,6 +74,9 @@ pub(super) fn apply(state: &AppState, account: &str, mid: &str, through: &str, u
         return;
     }
     // スマホ等ですでに読んだ結果を反映する。PCから既読は送らない。
+    if unread == 0 {
+        read_position::record(state, account, mid, through);
+    }
     if let Some(chat) = state
         .chats
         .borrow_mut()

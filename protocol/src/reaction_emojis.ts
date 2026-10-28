@@ -146,7 +146,15 @@ export function createReactionEmojiPacks(runtime: Runtime) {
       resourceType: 1,
       version: meta.version,
     }));
-    runtime.observe([{ emojis: emojis.map(({ key }) => ({ key })) }]);
+    // The message image loader accepts at most 100 emoji per message. Packs
+    // can be larger, so submit every image in bounded batches.
+    const batches: Json[] = [];
+    for (let i = 0; i < emojis.length; i += 100) {
+      batches.push({
+        emojis: emojis.slice(i, i + 100).map(({ key }) => ({ key })),
+      });
+    }
+    runtime.observe(batches);
     return { emojis };
   }
 

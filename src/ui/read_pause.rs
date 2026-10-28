@@ -155,6 +155,7 @@ pub(super) fn once_response(
     {
         // 新着が残っている場合も、遅れて再配信された既読済み本文は未読に戻さない。
         state.unread_sync.borrow_mut().note_read(mid, through);
+        read_position::record(state, account, mid, through);
     }
     toast(
         state,

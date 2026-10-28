@@ -522,6 +522,7 @@ pub(super) fn build_chat_row(
         .label(chat_preview_text(chat))
         .xalign(0.0)
         .hexpand(true)
+        .single_line_mode(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["line-chat-preview"])
         .build();
@@ -574,7 +575,19 @@ pub(super) fn mark_chat_read(state: &AppState, chat_mid: &str) {
     if last_id.is_empty() {
         return;
     }
-    let _ = state.sidecar.mark_read(chat_mid, &last_id);
+    let Some(account) = state.self_mid.borrow().clone() else {
+        return;
+    };
+    if let Ok(id) = state.sidecar.mark_read(chat_mid, &last_id) {
+        state.pending.borrow_mut().insert(
+            id,
+            Pending::MarkRead {
+                account,
+                chat_mid: chat_mid.into(),
+                message_id: last_id,
+            },
+        );
+    }
 }
 
 pub(super) fn clear_unread_badge(state: &AppState, chat_mid: &str) {
@@ -702,4 +715,37 @@ pub(super) fn receipt_status(
         tooltip,
         count > 0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display; run with --ignored --test-threads=1"]
+    fn multiline_previews_keep_conversation_rows_one_line_high() {
+        gtk::init().unwrap();
+        let mut chat: ChatInfo = serde_json::from_value(serde_json::json!({
+            "mid": "u-test", "name": "Test", "preview": "First line"
+        }))
+        .unwrap();
+        let (row, _, preview, _) = build_chat_row(&chat, false);
+        let height = |widget: &gtk::Widget| widget.measure(gtk::Orientation::Vertical, 280);
+        let row_height = height(row.upcast_ref());
+        let preview_height = height(preview.upcast_ref());
+        for text in [
+            "First line\nSecond line\n\nFourth line\nFifth line",
+            "First line\r\nSecond line\r\nThird line",
+            "First line\u{2028}Second line\u{2029}Third line",
+        ] {
+            // Live updates and newly built rows must both keep their height.
+            preview.set_text(text);
+            assert_eq!(height(preview.upcast_ref()), preview_height);
+            assert_eq!(height(row.upcast_ref()), row_height);
+            assert_eq!(preview.text(), text);
+            chat.preview = text.to_string();
+            let (rebuilt, _, _, _) = build_chat_row(&chat, false);
+            assert_eq!(height(rebuilt.upcast_ref()), row_height);
+        }
+    }
 }

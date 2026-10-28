@@ -42,7 +42,18 @@ impl ChatCategory {
     }
 }
 
+// Bind text immediately. Mirroring from `search-changed` can replay a stale
+// query from the hidden entry while the user is already typing the next one.
+fn bind_search_entries(normal: &gtk::SearchEntry, compact: &gtk::SearchEntry) {
+    normal
+        .bind_property("text", compact, "text")
+        .bidirectional()
+        .sync_create()
+        .build();
+}
+
 pub(super) fn wire(state: &AppState) {
+    bind_search_entries(&state.search_entry, &state.compact_search_entry);
     let action = gio::SimpleAction::new_stateful(
         "chat-category",
         Some(glib::VariantTy::STRING),
@@ -90,14 +101,13 @@ pub(super) fn apply_language(state: &AppState) {
 }
 
 pub(super) fn set_query(state: &AppState, query: &str) {
-    *state.chat_query.borrow_mut() = query.trim().to_lowercase();
-    // 幅を切り替えても、通常の検索欄と省幅時の検索欄で条件を共有する。
-    if state.search_entry.text() != query {
-        state.search_entry.set_text(query);
+    let query = query.trim().to_lowercase();
+    if *state.chat_query.borrow() == query {
+        return;
     }
-    if state.compact_search_entry.text() != query {
-        state.compact_search_entry.set_text(query);
-    }
+    *state.chat_query.borrow_mut() = query;
+    // SearchEntry already debounces `search-changed`. Only filter here; never
+    // write back into either entry from a delayed callback (including IME input).
     refresh(state);
 }
 
@@ -141,6 +151,32 @@ pub(super) fn refresh(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display; run with --ignored --test-threads=1"]
+    fn search_entries_share_unicode_edits_in_both_directions() {
+        gtk::test_synced(|| {
+            let normal = gtk::SearchEntry::new();
+            let compact = gtk::SearchEntry::new();
+            bind_search_entries(&normal, &compact);
+
+            for (source, mirror) in [(&normal, &compact), (&compact, &normal)] {
+                source.set_text("");
+                let mut position = 0;
+                for ch in "Alice tiếng Việt 日本語".chars() {
+                    source.insert_text(&ch.to_string(), &mut position);
+                    assert_eq!(source.text(), mirror.text());
+                    assert_eq!(position as usize, source.text().chars().count());
+                }
+                // Preserve raw input; normalization belongs to filtering.
+                source.set_text("  Tiếng Việt 日本語  ");
+                assert_eq!(source.text(), "  Tiếng Việt 日本語  ");
+                assert_eq!(source.text(), mirror.text());
+                source.set_text("");
+                assert!(mirror.text().is_empty());
+            }
+        });
+    }
 
     #[test]
     fn contacts_without_messages_have_their_own_category() {

@@ -26,8 +26,15 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             unsend::apply(state, &account_mid, &chat_mid, &message_id);
             if state.self_mid.borrow().as_deref() == Some(account_mid.as_str()) {
                 shared_media::unsent(state, &chat_mid, &message_id);
+                message_search::unsent(state, &chat_mid);
             }
         }
+        ProtocolEvent::MessageCacheLimit {
+            chat_mid,
+            count,
+            limit,
+            full,
+        } => cache_limit::warn(state, &chat_mid, count, limit, full),
         ProtocolEvent::MessageReaction {
             account_mid,
             chat_mid,
@@ -88,6 +95,9 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             avatar_path,
             picture_url,
         } => {
+            if state.self_mid.borrow().as_deref() != Some(mid.as_str()) {
+                message_search::close(state);
+            }
             // A restored profile does not yet prove that linejs polling stays
             // alive. Reset only after a stable period, so a crashing listener
             // cannot create an endless restore/crash loop.
@@ -440,6 +450,14 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 set_syncing(state, refreshing);
             }
         }
+        ProtocolEvent::StickerImportProgress {
+            request_id,
+            account_mid,
+            done,
+            total,
+        } => {
+            sticker_library::progress(state, request_id, &account_mid, done, total);
+        }
         ProtocolEvent::SharedMediaChanged {
             account_mid,
             chat_mid,
@@ -667,6 +685,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 _ => {}
             }
         }
+        ProtocolEvent::DownloadProgress {
+            message_id,
+            progress,
+        } => show_message_download_percent(state, &message_id, progress),
         ProtocolEvent::UploadProgress {
             chat_mid,
             progress,
@@ -706,6 +728,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             error,
         } => {
             let pending = state.pending.borrow_mut().remove(&id);
+            if let Some(Pending::StickerLibrary(request)) = pending {
+                sticker_library::response(state, &request, ok, &result, error.as_deref());
+                return;
+            }
             if let Some(Pending::MentionMembers {
                 account,
                 chat_mid,
@@ -801,6 +827,12 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 return;
             }
+            if let Some(Pending::MessageSearch { ui, generation }) = pending {
+                if let Some(ui) = ui.upgrade() {
+                    message_search::response(state, &ui, generation, ok, &result);
+                }
+                return;
+            }
             if let Some(context @ Pending::SharedMessageContext { .. }) = pending {
                 history::shared_context_response(state, context, ok, &result);
                 return;
@@ -827,6 +859,23 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             }) = pending
             {
                 cache_boot::cached_messages(state, &chat_mid, generation, ok, &result);
+                return;
+            }
+            if let Some(Pending::MarkRead {
+                account,
+                chat_mid,
+                message_id,
+            }) = pending.as_ref()
+            {
+                if ok
+                    && result.get("marked").and_then(|value| value.as_bool()) == Some(true)
+                    && result.get("chatMid").and_then(|value| value.as_str())
+                        == Some(chat_mid.as_str())
+                    && result.get("lastMessageId").and_then(|value| value.as_str())
+                        == Some(message_id.as_str())
+                {
+                    read_position::record(state, account, chat_mid, message_id);
+                }
                 return;
             }
             if let Some(Pending::FetchMessages { generation, .. }) = pending.as_ref()
@@ -911,6 +960,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     }
                 }
                 let err = error.as_deref().unwrap_or("request failed");
+                if err == "sticker_import_invalid" || err == "sticker_import_unavailable" {
+                    toast(state, &crate::i18n::t(err));
+                    return;
+                }
                 if err.contains("sticker_not_owned") || err.contains("USER_NOT_STICKER_OWNER") {
                     toast(state, &crate::i18n::t("sticker_not_owned"));
                 } else if err.contains("contact_blocked_send") {
@@ -951,6 +1004,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                             .cloned()
                             .and_then(|v| serde_json::from_value(v).ok())
                             .unwrap_or_default();
+                        read_position::loaded(state, &messages);
                         if !same_message_list(state, &chat_mid, &messages) {
                             apply_messages(state, messages);
                         }
@@ -987,9 +1041,6 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     | Pending::FetchOlder { .. }
                     | Pending::FetchNewer { .. },
                 ) => {}
-                Some(Pending::ListStickers) => {
-                    fill_sticker_popover(state, &result);
-                }
                 Some(Pending::DownloadMedia {
                     action,
                     content_type,
@@ -997,6 +1048,8 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     message_id,
                     ..
                 }) => {
+                    end_download_progress(state);
+                    clear_message_download_percent(state, &message_id);
                     if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
                         if let Some(meta) = state.media_msgs.borrow_mut().get_mut(&message_id) {
                             meta.file_path = Some(path.to_string());
@@ -1013,8 +1066,10 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 }
                 Some(
                     Pending::MentionMembers { .. }
+                    | Pending::StickerLibrary(_)
                     | Pending::Album { .. }
                     | Pending::SharedMedia { .. }
+                    | Pending::MessageSearch { .. }
                     | Pending::SharedMessageContext { .. }
                     | Pending::Unsend { .. }
                     | Pending::UserProfile { .. }
@@ -1023,6 +1078,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                     | Pending::ReactionPacks { .. }
                     | Pending::ReactionPack { .. }
                     | Pending::ResumeSync { .. }
+                    | Pending::MarkRead { .. }
                     | Pending::MarkReadOnce { .. }
                     | Pending::ContactBlocks { .. },
                 )
@@ -1034,6 +1090,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
             resume_sync::cancel(state);
             albums::close(state);
             shared_media::close(state);
+            sticker_library::close(state);
             hidden_chats::close(state);
             user_profile::close();
             user_profile::update_header(state, None);
@@ -1107,6 +1164,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     state.sender_names.borrow_mut().clear();
     albums::close(state);
     shared_media::close(state);
+    sticker_library::close(state);
     hidden_chats::close(state);
     match serde_json::from_value::<Profile>(result.clone()) {
         Ok(profile) => {
@@ -1131,6 +1189,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
                     .as_deref()
                     .or(profile.picture_path.as_deref()),
             );
+            read_position::refresh(state);
             state.profile_label.set_tooltip_text(
                 (!profile.status_message.is_empty()).then_some(profile.status_message.as_str()),
             );
@@ -1194,6 +1253,7 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    read_position::reset(state);
     cache_boot::abort(state);
     state.shared_media_btn.set_sensitive(false);
     chat_snapshots::clear();
@@ -1204,6 +1264,7 @@ pub(super) fn show_login(state: &AppState, hint: &str) {
     state.sender_names.borrow_mut().clear();
     albums::close(state);
     shared_media::close(state);
+    sticker_library::close(state);
     hidden_chats::close(state);
     state.stack.set_visible_child_name("login");
     login::show_method_stage(&state.login);

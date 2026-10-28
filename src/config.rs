@@ -20,6 +20,23 @@ fn legacy_font_family() -> String {
     "Noto Sans Thai".into()
 }
 
+pub const DEFAULT_MESSAGE_CACHE_LIMIT: u32 = 2000;
+const MAX_MESSAGE_CACHE_LIMIT: u32 = 1_000_000;
+/// Choices offered in Settings; 0 means unlimited.
+pub const MESSAGE_CACHE_LIMITS: [u32; 4] = [2000, 5000, 10_000, 0];
+
+/// The next preset above `current`, or unlimited once the presets run out.
+pub fn next_message_cache_limit(current: u32) -> u32 {
+    if current == 0 {
+        return 0;
+    }
+    MESSAGE_CACHE_LIMITS
+        .iter()
+        .copied()
+        .find(|&limit| limit > current)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -35,6 +52,8 @@ pub struct AppConfig {
     pub animations: bool,
     /// Cache retention: smart | day | week | month | forever
     pub cache_retention: String,
+    /// Messages kept per chat on disk; 0 = unlimited.
+    pub message_cache_limit: u32,
     pub notifications: bool,
     /// Play the desktop/system notification sound with alerts.
     pub notification_sound: bool,
@@ -47,6 +66,8 @@ pub struct AppConfig {
     pub read_receipts_paused_chats: BTreeMap<String, BTreeSet<String>>,
     /// Last opened chat mid (restored on launch).
     pub last_chat_mid: String,
+    /// Last confirmed read message, isolated by account and chat.
+    pub last_read_messages: BTreeMap<String, BTreeMap<String, String>>,
     /// アカウントごとの非表示トーク（トークID → 復元画面用の名前）。
     pub hidden_chats: BTreeMap<String, BTreeMap<String, String>>,
     /// このPCで一覧の上部に固定するトーク。アカウントごとに保存する。
@@ -102,6 +123,7 @@ impl Default for AppConfig {
             font_family: default_font_family("vi").into(),
             animations: true,
             cache_retention: "smart".into(),
+            message_cache_limit: DEFAULT_MESSAGE_CACHE_LIMIT,
             notifications: true,
             notification_sound: true,
             notification_sound_volume: 1.0,
@@ -109,6 +131,7 @@ impl Default for AppConfig {
             pause_read_receipts: false,
             read_receipts_paused_chats: BTreeMap::new(),
             last_chat_mid: String::new(),
+            last_read_messages: BTreeMap::new(),
             hidden_chats: BTreeMap::new(),
             pinned_chats: BTreeMap::new(),
             audio_input: String::new(),
@@ -137,6 +160,44 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn last_read_message(&self, account: &str, chat: &str) -> Option<&str> {
+        self.last_read_messages
+            .get(account)?
+            .get(chat)
+            .map(String::as_str)
+    }
+
+    pub fn set_last_read_message(
+        &mut self,
+        data_dir: &Path,
+        account: &str,
+        chat: &str,
+        message: &str,
+    ) -> std::io::Result<()> {
+        let Some(id) = message.parse::<u128>().ok().filter(|id| *id > 0) else {
+            return Ok(());
+        };
+        if account.is_empty()
+            || chat.is_empty()
+            || self
+                .last_read_message(account, chat)
+                .and_then(|previous| previous.parse::<u128>().ok())
+                .is_some_and(|previous| previous >= id)
+        {
+            return Ok(());
+        }
+        let previous = self.last_read_messages.clone();
+        self.last_read_messages
+            .entry(account.into())
+            .or_default()
+            .insert(chat.into(), message.into());
+        if let Err(error) = self.save_atomic(data_dir) {
+            self.last_read_messages = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn is_chat_pinned(&self, account: &str, mid: &str) -> bool {
         self.pinned_chats
             .get(account)
@@ -357,6 +418,9 @@ impl AppConfig {
         ) {
             self.cache_retention = "smart".into();
         }
+        if self.message_cache_limit != 0 {
+            self.message_cache_limit = self.message_cache_limit.clamp(100, MAX_MESSAGE_CACHE_LIMIT);
+        }
         self.font_scale = finite_or(self.font_scale, 1.0).clamp(0.60, 1.40);
         self.notification_sound_volume =
             finite_or(self.notification_sound_volume, 1.0).clamp(0.0, 2.0);
@@ -459,6 +523,39 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn last_read_positions_persist_per_account_and_only_advance() {
+        let dir =
+            std::env::temp_dir().join(format!("line-gtk-read-position-{}", std::process::id()));
+        let mut cfg: super::AppConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.last_read_message("self", "chat").is_none());
+        cfg.set_last_read_message(&dir, "self", "chat", "9007199254740993")
+            .unwrap();
+        cfg.set_last_read_message(&dir, "self", "chat", "99")
+            .unwrap();
+        cfg.set_last_read_message(&dir, "other", "chat", "100")
+            .unwrap();
+        cfg.set_last_read_message(&dir, "self", "other-chat", "200")
+            .unwrap();
+        cfg.set_last_read_message(&dir, "self", "chat", "pending-1")
+            .unwrap();
+        let loaded = super::AppConfig::load(&dir);
+        assert_eq!(
+            loaded.last_read_message("self", "chat"),
+            Some("9007199254740993")
+        );
+        assert_eq!(loaded.last_read_message("other", "chat"), Some("100"));
+        assert_eq!(loaded.last_read_message("self", "other-chat"), Some("200"));
+        let blocked = dir.join("not-a-directory");
+        std::fs::write(&blocked, "file").unwrap();
+        assert!(
+            cfg.set_last_read_message(&blocked, "other", "chat", "101")
+                .is_err()
+        );
+        assert_eq!(cfg.last_read_message("other", "chat"), Some("100"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
 
     #[test]
@@ -541,6 +638,27 @@ mod tests {
         assert_eq!(cfg.call_mic_volume, 0.0);
         assert_eq!(cfg.sidebar_width, 520);
         assert_eq!(cfg.notifications_muted_until, 0);
+    }
+
+    #[test]
+    fn message_cache_limit_is_normalized_and_stepped() {
+        let mut cfg = AppConfig {
+            message_cache_limit: 7,
+            ..AppConfig::default()
+        };
+        cfg.normalize();
+        assert_eq!(cfg.message_cache_limit, 100);
+        cfg.message_cache_limit = u32::MAX;
+        cfg.normalize();
+        assert_eq!(cfg.message_cache_limit, 1_000_000);
+        cfg.message_cache_limit = 0;
+        cfg.normalize();
+        assert_eq!(cfg.message_cache_limit, 0);
+        assert_eq!(next_message_cache_limit(2000), 5000);
+        assert_eq!(next_message_cache_limit(5000), 10_000);
+        assert_eq!(next_message_cache_limit(10_000), 0);
+        assert_eq!(next_message_cache_limit(3000), 5000);
+        assert_eq!(next_message_cache_limit(0), 0);
     }
 
     #[test]

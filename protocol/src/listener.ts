@@ -2,6 +2,7 @@ import { type Client, TalkMessage } from "@evex/linejs";
 import type * as calls from "./calls.ts";
 import { conversationMid } from "./messages.ts";
 import type { ReadOperation } from "./read_receipts.ts";
+import { createReceiverWatchdog } from "./receiver_watchdog.ts";
 
 type Json = Record<string, unknown>;
 
@@ -15,6 +16,7 @@ export type ListenerRuntime = {
   refreshMessageSender?: (mid: string) => void;
   isListening: () => boolean;
   setListening: (listening: boolean) => void;
+  receiverStalled?: () => void;
   appendMessage: (chatMid: string, message: Json) => void;
   summarizeTalkMessage: (
     message: TalkMessage,
@@ -37,6 +39,7 @@ export type ListenerRuntime = {
 
 export function createListener(runtime: ListenerRuntime) {
   const delivered = new Set<string>();
+  let stopWatchdog: (() => void) | undefined;
   const {
     summarizeTalkMessage,
     storeBoxCursor,
@@ -149,6 +152,24 @@ export function createListener(runtime: ListenerRuntime) {
     );
 
     client.listen({ talk: true, square: false });
+    if (runtime.receiverStalled) {
+      stopWatchdog?.();
+      const watchdog = createReceiverWatchdog(client);
+      const timer = setInterval(() => {
+        if (runtime.getClient() !== client || !client.base.authToken) {
+          stop();
+        } else if (watchdog.stalled()) {
+          stop();
+          runtime.setListening(false);
+          runtime.receiverStalled?.();
+        }
+      }, 5_000);
+      const stop = () => {
+        clearInterval(timer);
+        watchdog.stop();
+      };
+      stopWatchdog = stop;
+    }
     emitEvent("listening");
   }
 

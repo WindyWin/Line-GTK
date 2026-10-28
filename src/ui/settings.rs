@@ -943,6 +943,51 @@ pub fn open_settings(parent: &impl IsA<gtk::Window>, deps: SettingsDeps) {
     retention_grp.add(&retention_row);
     cache_page.add(&retention_grp);
 
+    let limit_grp = libadwaita::PreferencesGroup::builder()
+        .title(i18n::t("message_cache_limit"))
+        .description(i18n::t("message_cache_limit_desc"))
+        .build();
+    let limit_row = libadwaita::ComboRow::builder()
+        .title(i18n::t("message_cache_limit"))
+        .subtitle(i18n::t("message_cache_limit_subtitle"))
+        .build();
+    let limit_labels: Vec<String> = crate::config::MESSAGE_CACHE_LIMITS
+        .iter()
+        .map(|&limit| super::cache_limit::limit_label(limit))
+        .collect();
+    let limit_refs: Vec<&str> = limit_labels.iter().map(String::as_str).collect();
+    limit_row.set_model(Some(&gtk::StringList::new(&limit_refs)));
+    // A custom value from settings.json shows as the first preset above it.
+    let current_limit = deps.config.borrow().message_cache_limit;
+    limit_row.set_selected(
+        crate::config::MESSAGE_CACHE_LIMITS
+            .iter()
+            .position(|&limit| limit == current_limit)
+            .unwrap_or(0) as u32,
+    );
+    {
+        let cfg = deps.config.clone();
+        let data_dir = deps.data_dir.clone();
+        let toast = deps.toast.clone();
+        limit_row.connect_selected_notify(move |row| {
+            let Some(&limit) = crate::config::MESSAGE_CACHE_LIMITS.get(row.selected() as usize)
+            else {
+                return;
+            };
+            if cfg.borrow().message_cache_limit == limit {
+                return;
+            }
+            cfg.borrow_mut().message_cache_limit = limit;
+            cfg.borrow().save(&data_dir);
+            toast(&i18n::tf(
+                "cache_limit_raised",
+                &[("limit", &super::cache_limit::limit_label(limit))],
+            ));
+        });
+    }
+    limit_grp.add(&limit_row);
+    cache_page.add(&limit_grp);
+
     let make_clear = |title_key: &str, kind: &str| {
         let row = libadwaita::ActionRow::builder()
             .title(i18n::t(title_key))

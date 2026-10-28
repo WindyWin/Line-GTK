@@ -16,6 +16,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 fn request_timeout(method: &str) -> Duration {
     if method.starts_with("login_") {
         Duration::from_secs(420)
+    } else if matches!(
+        method,
+        "import_sticker_pack"
+            | "import_sticker_pngs"
+            | "sticker_owned_pack"
+            | "list_stickers"
+            | "adopt_sticker_library"
+    ) {
+        Duration::from_secs(600)
+    } else if matches!(method, "preview_sticker_pack" | "prepare_sticker_image") {
+        Duration::from_secs(120)
     } else {
         REQUEST_TIMEOUT
     }
@@ -73,6 +84,10 @@ impl Sidecar {
         crate::config::ensure_private_dir(&self.data_dir)?;
         let cfg = crate::config::AppConfig::load(&self.data_dir);
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let cache_key = crate::credentials::cache_key();
+        if cache_key.is_none() {
+            tracing::warn!("no Secret Service key; message cache will not be encrypted");
+        }
 
         let (mut command, runtime) = if compiled.is_file() {
             (Command::new(&compiled), compiled)
@@ -90,7 +105,7 @@ impl Sidecar {
                 .arg("--allow-net")
                 .arg("--allow-run=ffmpeg,ffprobe")
                 .arg("--allow-sys")
-                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_SKIP_RESTORE,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
+                .arg("--allow-env=HOME,PATH,DENO_DIR,Q_DEBUG,NODE_DEBUG,NO_COLOR,LINE_GTK_DATA,LINE_GTK_SKIP_RESTORE,LINE_GTK_LANG,LINE_GTK_CACHE_RETENTION,LINE_GTK_CACHE_KEY,LINE_GTK_AUDIO_INPUT,LINE_GTK_AUDIO_OUTPUT,LINE_DEVICE,LINE_VERSION,LINE_CALL_DEVNAME,LINE_CALL_DEVICE_INFO,LINE_CALL_OPUS_SIGNAL,LINE_CALL_DEBUG")
                 .arg(&script);
             (command, deno)
         };
@@ -104,6 +119,7 @@ impl Sidecar {
             )
             .env("LINE_GTK_LANG", cfg.language.clone())
             .env("LINE_GTK_CACHE_RETENTION", cfg.cache_retention.clone())
+            .env("LINE_GTK_CACHE_KEY", cache_key.unwrap_or_default())
             .env("LINE_GTK_AUDIO_INPUT", {
                 if cfg.audio_input.is_empty() {
                     "default".into()
@@ -456,10 +472,6 @@ impl Sidecar {
         self.request("send_sticker", Some(params))
     }
 
-    pub fn list_stickers(&self) -> Result<u64> {
-        self.request("list_stickers", None)
-    }
-
     pub fn mark_read(&self, chat_mid: &str, last_message_id: &str) -> Result<u64> {
         self.request(
             "mark_read",
@@ -690,6 +702,29 @@ fn read_loop<R: std::io::Read>(
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
                         },
+                        "sticker_import_progress" => ProtocolEvent::StickerImportProgress {
+                            request_id: resp
+                                .extra
+                                .get("requestId")
+                                .and_then(Value::as_u64)
+                                .unwrap_or_default(),
+                            account_mid: resp
+                                .extra
+                                .get("accountMid")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            done: resp
+                                .extra
+                                .get("done")
+                                .and_then(Value::as_u64)
+                                .unwrap_or_default(),
+                            total: resp
+                                .extra
+                                .get("total")
+                                .and_then(Value::as_u64)
+                                .unwrap_or_default(),
+                        },
                         "shared_media_changed" => ProtocolEvent::SharedMediaChanged {
                             account_mid: resp
                                 .extra
@@ -784,6 +819,22 @@ fn read_loop<R: std::io::Read>(
                                 account_mid: field("accountMid"),
                                 chat_mid: field("chatMid"),
                                 message_id: field("messageId"),
+                            }
+                        }
+                        "message_cache_limit" => {
+                            let number =
+                                |key| resp.extra.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                            ProtocolEvent::MessageCacheLimit {
+                                chat_mid: resp
+                                    .extra
+                                    .get("chatMid")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                count: number("count"),
+                                limit: number("limit"),
+                                full: resp.extra.get("full").and_then(|v| v.as_bool())
+                                    == Some(true),
                             }
                         }
                         "message_reaction" => {
@@ -1019,6 +1070,19 @@ fn read_loop<R: std::io::Read>(
                                 .get("error")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.to_string()),
+                        },
+                        "download_progress" => ProtocolEvent::DownloadProgress {
+                            message_id: resp
+                                .extra
+                                .get("messageId")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            progress: resp
+                                .extra
+                                .get("progress")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0),
                         },
                         "upload_progress" => ProtocolEvent::UploadProgress {
                             chat_mid: resp
@@ -1377,6 +1441,19 @@ mod authentication_tests {
             account_mid, chat_mid
         } if account_mid == "u-self" && chat_mid == "c-group")
         );
+    }
+
+    #[test]
+    fn sticker_progress_keeps_the_request_and_account() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event = b"{\"event\":\"sticker_import_progress\",\"requestId\":42,\"accountMid\":\"u-one\",\"done\":3,\"total\":40}\n";
+        read_loop(event.as_slice(), tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::StickerImportProgress { request_id: 42, account_mid, done: 3, total: 40 } if account_mid == "u-one")
+        );
+        assert!(request_timeout("import_sticker_pack") >= Duration::from_secs(600));
     }
 
     #[test]

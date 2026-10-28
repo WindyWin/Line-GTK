@@ -66,6 +66,32 @@ pub(super) fn jump_to_shared_message(
     message_id: &str,
     created_time: i64,
 ) {
+    jump_to_context(
+        state,
+        chat_mid,
+        message_id,
+        created_time,
+        "fetch_shared_message_context",
+    );
+}
+
+pub(super) fn jump_to_search_message(state: &AppState, chat_mid: &str, message_id: &str) {
+    jump_to_context(
+        state,
+        chat_mid,
+        message_id,
+        0,
+        "fetch_search_message_context",
+    );
+}
+
+fn jump_to_context(
+    state: &AppState,
+    chat_mid: &str,
+    message_id: &str,
+    created_time: i64,
+    method: &str,
+) {
     if message_id.parse::<u128>().is_err() || !*state.session_ready.borrow() {
         toast(state, &crate::i18n::t("reply_original_unavailable"));
         return;
@@ -110,7 +136,7 @@ pub(super) fn jump_to_shared_message(
     set_msg_state(state, "loading", None);
     update_jump_banner(state);
     match state.sidecar.request(
-        "fetch_shared_message_context",
+        method,
         Some(serde_json::json!({
             "chatMid": chat_mid,
             "messageId": message_id,

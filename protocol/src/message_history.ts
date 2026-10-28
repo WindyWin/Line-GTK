@@ -1,7 +1,30 @@
 type Json = Record<string, unknown>;
 
-/** Most messages kept per chat in the on-disk history. */
+/** Default for messages kept per chat in the on-disk history. */
 export const MAX_STORED_MESSAGES = 2000;
+/** Share of the limit at which the user is warned. */
+export const CACHE_WARN_RATIO = 0.9;
+
+/** Settings value → limit; 0 means unlimited, anything invalid the default. */
+export function normalizeMessageLimit(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return MAX_STORED_MESSAGES;
+  return n === 0 ? 0 : Math.max(100, Math.floor(n));
+}
+
+/** "ok" below the warning line, "near" close to the limit, "full" at it. */
+export function cacheFill(
+  count: number,
+  limit: number,
+): "ok" | "near" | "full" {
+  if (limit <= 0) return "ok";
+  if (count >= limit) return "full";
+  return count >= limit * CACHE_WARN_RATIO ? "near" : "ok";
+}
+
+function keepNewest(messages: Json[], max: number): Json[] {
+  return max > 0 ? messages.slice(-max) : messages;
+}
 export const HISTORY_PAGE_DEFAULT = 50;
 export const HISTORY_PAGE_MAX = 100;
 
@@ -28,11 +51,12 @@ export function sortMessages(messages: Json[]): Json[] {
 export function mergeMessages(
   existing: Json[],
   incoming: Json[],
+  /** `max` 0 keeps everything. */
   opts: { contiguous?: boolean; max?: number } = {},
 ): Json[] {
   const max = opts.max ?? MAX_STORED_MESSAGES;
-  if (!incoming.length) return sortMessages(existing).slice(-max);
-  if (!existing.length) return sortMessages(incoming).slice(-max);
+  if (!incoming.length) return keepNewest(sortMessages(existing), max);
+  if (!existing.length) return keepNewest(sortMessages(incoming), max);
 
   const known = new Set(existing.map((m) => String(m.id)));
   const overlaps = incoming.some((m) => known.has(String(m.id)));
@@ -43,7 +67,7 @@ export function mergeMessages(
   const combined = new Map<string, Json>();
   if (!hole) { for (const m of existing) combined.set(String(m.id), m); }
   for (const m of incoming) combined.set(String(m.id), m);
-  return sortMessages([...combined.values()]).slice(-max);
+  return keepNewest(sortMessages([...combined.values()]), max);
 }
 
 /** Index of the anchor in a time-sorted list, or the nearest position. */

@@ -40,7 +40,13 @@ Nhấp chuột phải để ghim hoặc bỏ ghim cuộc trò chuyện với b�
 
 Chọn **Thu hồi** trên tin đã gửi và xác nhận để yêu cầu LINE thu hồi. Nội dung chỉ được thay bằng thông báo thu hồi sau khi LINE xác nhận thành công; nếu thất bại, tin gốc được giữ. LINE quyết định giới hạn thời gian và điều kiện, và hiển thị thông báo chuẩn cho người nhận. Sự kiện thu hồi từ thiết bị khác cũng được áp dụng và lưu ID theo tài khoản để tải lại lịch sử hoặc khởi động lại không khôi phục nội dung. Ảnh và tệp đã tải về máy không bị xóa.
 
-Bộ chọn sticker hiển thị ảnh tĩnh 160 px khi rê chuột, lấy từ bộ nhớ đệm. Nút emoji trong ô nhập chèn emoji Unicode tại vị trí con trỏ dưới dạng văn bản, dùng phông emoji hệ thống (`noto-fonts-emoji` trên Arch). Emoji LINE nhận được hiển thị dưới dạng ảnh tĩnh trong nội dung; tối đa bốn ảnh được tải nền đồng thời vào bộ nhớ đệm. Nếu ảnh không tải được, văn bản thay thế vẫn hiện; phần trích dẫn và bản xem trước cũng dùng văn bản thay thế. Chưa hỗ trợ gửi bộ emoji LINE đã mua hoặc phát emoji động.
+Bộ chọn sticker hiển thị bản xem trước 160 px khi rê chuột, có thể phát ảnh động đã lưu trong bộ nhớ đệm. Nút emoji trong ô nhập chèn emoji Unicode tại vị trí con trỏ dưới dạng văn bản, dùng phông emoji hệ thống (`noto-fonts-emoji` trên Arch). Emoji LINE nhận được hiển thị dưới dạng ảnh tĩnh trong nội dung; tối đa bốn ảnh được tải nền đồng thời vào bộ nhớ đệm. Nếu ảnh không tải được, văn bản thay thế vẫn hiện; phần trích dẫn và bản xem trước cũng dùng văn bản thay thế. Chưa hỗ trợ gửi bộ emoji LINE đã mua hoặc phát emoji động.
+
+Trong bộ chọn sticker, dùng **Từ LINE STORE** để xem trước và tải bộ của nhà sáng tạo qua liên kết hoặc ID. **Nhập tệp PNG** cho phép xem trước, chọn ảnh và lưu vào bộ mới hoặc bộ cá nhân hiện có (tối đa 100 tệp mỗi lần, 10 MiB và 2048 × 2048 pixel mỗi ảnh; PNG và APNG). Ứng dụng lưu bản sao riêng theo tài khoản, nên di chuyển tệp gốc hoặc xóa bộ nhớ đệm không làm mất bộ ảnh. Có thể đổi tên, thêm ảnh, chỉnh kích thước/nền và xóa ảnh hoặc bộ. Bộ LINE đã sở hữu gửi sticker gốc; ảnh nhập gửi dưới dạng ảnh thông thường. Ảnh cá nhân mặc định giữ nguyên kích thước và nền.
+
+Ảnh APNG động được giữ nguyên bản gốc và chuyển sang GIF khi gửi. Chọn **Tối ưu ảnh** để xem dung lượng trước/sau, tùy chọn giảm kích thước, tốc độ khung hình và số màu GIF. Ảnh tĩnh dùng nén PNG không mất dữ liệu; thiết lập được lưu cho từng ảnh. GIF có thể lớn hơn bản APNG và không giữ được mức trong suốt trung gian.
+
+Sticker động chưa lưu thiết lập mặc định dùng **128 px, 10 fps, 64 màu** để giảm dung lượng bên nhận. Với ảnh đã có thiết lập cũ, chọn **GIF nhẹ** để xem trước cấu hình này rồi lưu hoặc gửi. Có thể giảm tiếp xuống 96 px, 5–8 fps hoặc 32 màu; ảnh tĩnh vẫn giữ kích thước gốc theo mặc định.
 
 ### Nhóm, thông báo và khôi phục kết nối
 
@@ -105,7 +111,7 @@ cargo build --release
 LINE_GTK_ROOT="$PWD" ./target/release/line-gtk
 ```
 
-Các thư viện JSR, gồm linejs, được ghim trong `protocol/vendor/deps`, nên quá trình build không liên hệ JSR. Phụ thuộc npm được kiểm tra với `protocol/deno.lock`; lần build đầu vẫn cần npm registry và runtime biên dịch Deno. Sau khi lưu cache, dùng `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` để chặn tải phụ thuộc. Xem [ghi chú về phụ thuộc và khôi phục kết nối](docs/protocol-reliability.md).
+Quá trình build tự tải thư viện đã ghim phiên bản và checksum, gồm linejs, từ GitHub vào `protocol/vendor/deps` (không lưu mã thư viện trong Git). Manifest và `protocol/deno.lock` vẫn được lưu trong Git; không liên hệ JSR. Lần build đầu cần GitHub, npm registry và runtime biên dịch Deno. Sau khi lưu cache, dùng `DENO_OFFLINE=1 ./scripts/build-sidecar.sh` để chặn tải phụ thuộc. Xem [ghi chú về phụ thuộc và khôi phục kết nối](docs/protocol-reliability.md).
 
 ## Kiểm tra khi phát triển
 

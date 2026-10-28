@@ -559,7 +559,8 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     if has_image {
         if let Some(path) = msg.image_path.as_deref() {
             let pic = make_media_picture_placeholder(is_sticker);
-            let animate = is_sticker && state.config.borrow().animations;
+            let animate = state.config.borrow().animations
+                && (is_sticker || path.to_ascii_lowercase().ends_with(".gif"));
             attach_texture_async_anim(
                 pic.clone(),
                 path.to_string(),
@@ -621,7 +622,7 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     // リアクションは吹き出しの外に置く。画像の差し替えで子要素が入れ替わるため。
     let bubble_column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(2)
+        .spacing(0)
         .halign(bubble.halign())
         .build();
     bubble_column.append(&bubble);
@@ -1093,7 +1094,7 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     let name = msg
         .file_name
         .clone()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && s != "[File]")
         .unwrap_or_else(|| {
             if msg.text.is_empty() || msg.text == "[File]" {
                 crate::i18n::t("preview_file")
@@ -1104,7 +1105,7 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     let kind = viewer_kind_for("FILE", "", &name);
     let icon_name = match kind {
         ViewerKind::Pdf => "application-pdf-symbolic",
-        ViewerKind::Text => "text-x-generic-symbolic",
+        ViewerKind::Text | ViewerKind::Markdown => "text-x-generic-symbolic",
         ViewerKind::Image => "image-x-generic-symbolic",
         ViewerKind::Video => "video-x-generic-symbolic",
         ViewerKind::Audio => "audio-x-generic-symbolic",
@@ -1136,10 +1137,34 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     row.set_child(Some(&inner));
     let s = state.clone();
     let msg = msg.clone();
-    row.connect_clicked(move |_| {
-        request_media_download(&s, &msg, "open_viewer");
-    });
+    {
+        let s = s.clone();
+        let msg = msg.clone();
+        row.connect_clicked(move |_| {
+            request_media_download(&s, &msg, "open_viewer");
+        });
+    }
     bubble.append(&row);
+
+    let actions = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .css_classes(["line-file-actions"])
+        .build();
+    for (label_key, action) in [
+        ("file_action_open", "open_viewer"),
+        ("file_action_show_folder", "show_folder"),
+    ] {
+        let button = gtk::Button::builder()
+            .label(crate::i18n::t(label_key))
+            .css_classes(["flat", "caption"])
+            .build();
+        let s = s.clone();
+        let msg = msg.clone();
+        button.connect_clicked(move |_| request_media_download(&s, &msg, action));
+        actions.append(&button);
+    }
+    bubble.append(&actions);
 }
 
 pub(super) fn format_voice_duration(ms: u64) -> String {

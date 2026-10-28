@@ -1,4 +1,5 @@
 import type { Client } from "@evex/linejs";
+import { InternalError } from "@evex/linejs/base";
 import { join } from "@std/path";
 import { Buffer } from "node:buffer";
 
@@ -164,7 +165,13 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
 
   async function makeImagePreviewBlob(filePath: string): Promise<Blob | null> {
     try {
-      const dest = join(mediaDir, `preview-${Date.now()}.jpg`);
+      // GIF previews must retain alpha too: recipients may display this still
+      // before downloading the original animation.
+      const transparent = /\.(png|gif)$/i.test(filePath);
+      const dest = join(
+        mediaDir,
+        `preview-${Date.now()}.${transparent ? "png" : "jpg"}`,
+      );
       const p = new Deno.Command("ffmpeg", {
         args: [
           "-y",
@@ -173,7 +180,7 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
           "-i",
           filePath,
           "-vf",
-          "scale=640:640:force_original_aspect_ratio=decrease",
+          "scale=w='min(iw,640)':h='min(ih,640)':force_original_aspect_ratio=decrease",
           "-frames:v",
           "1",
           "-q:v",
@@ -189,7 +196,9 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       try {
         await Deno.remove(dest);
       } catch { /* ignore */ }
-      return new Blob([buf], { type: "image/jpeg" });
+      return new Blob([buf], {
+        type: transparent ? "image/png" : "image/jpeg",
+      });
     } catch {
       return null;
     }
@@ -392,13 +401,6 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       }
     }
 
-    report(0.78, "Sending…");
-    const chunks = await e2ee.encryptE2EEMessage(
-      opts.to,
-      { keyMaterial, fileName: opts.filename || `line.${ext}` },
-      contentTypeNum,
-    );
-
     const meta: Record<string, string> = {
       SID: obsNamespace,
       OID: objId,
@@ -424,14 +426,36 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       });
     }
 
-    report(0.92, "Finishing…");
-    return await client.base.talk.sendMessage({
-      to: opts.to,
-      chunks,
-      // deno-lint-ignore no-explicit-any
-      contentType: contentTypeNum as any,
-      contentMetadata: meta,
-    }) as { id?: unknown; createdTime?: unknown; contentType?: unknown };
+    for (let attempt = 0;; attempt++) {
+      report(0.78, "Sending…");
+      // linejs fetches the current group key on each encryption. If membership
+      // changed during the send, rebuild the envelope without reuploading media.
+      const chunks = await e2ee.encryptE2EEMessage(
+        opts.to,
+        { keyMaterial, fileName: opts.filename || `line.${ext}` },
+        contentTypeNum,
+      );
+      report(0.92, "Finishing…");
+      try {
+        return await client.base.talk.sendMessage({
+          to: opts.to,
+          chunks,
+          // deno-lint-ignore no-explicit-any
+          contentType: contentTypeNum as any,
+          contentMetadata: meta,
+          // Suppress linejs's implicit retry with these same encrypted chunks.
+          e2ee: true,
+        }) as { id?: unknown; createdTime?: unknown; contentType?: unknown };
+      } catch (error) {
+        const code = error instanceof InternalError
+          ? error.data.code
+          : undefined;
+        if (
+          attempt !== 0 || !opts.to.startsWith("c") ||
+          ![99, "99", "E2EE_RECREATE_GROUP_KEY"].includes(code)
+        ) throw error;
+      }
+    }
   }
 
   async function doSendMedia(
@@ -509,52 +533,18 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
       let sent:
         | { id?: unknown; createdTime?: unknown; contentType?: unknown }
         | null = null;
-      let lastErr: unknown = null;
-
       if (supportsE2EEMedia(chatMid)) {
-        try {
-          sent = await sendE2EEMedia({
-            to: chatMid,
-            oType,
-            data: blob,
-            filename: name,
-            durationMs: dur,
-            preview,
-            onProgress: report,
-          });
-        } catch (e1) {
-          lastErr = e1;
-          console.error("[send_media e2ee]", e1);
-          report(0.4, "Retrying upload…");
-          try {
-            sent = await client.base.obs.uploadMediaByE2EE({
-              to: chatMid,
-              oType,
-              data: blob,
-              filename: name,
-              preview,
-            }) as typeof sent;
-            report(0.9, "Finishing…");
-          } catch (e2) {
-            lastErr = e2;
-            console.error("[send_media uploadMediaByE2EE]", e2);
-          }
-        }
-        if (!sent) {
-          emitEvent("upload_progress", {
-            chatMid,
-            progress: 0,
-            label: "",
-            done: true,
-          });
-          fail(
-            id,
-            lastErr instanceof Error
-              ? lastErr.message
-              : String(lastErr ?? "e2ee_media_failed"),
-          );
-          return;
-        }
+        // A timeout may arrive after LINE accepted the message. Starting a
+        // second upload here can send a duplicate, so propagate uncertain errors.
+        sent = await sendE2EEMedia({
+          to: chatMid,
+          oType,
+          data: blob,
+          filename: name,
+          durationMs: dur,
+          preview,
+          onProgress: report,
+        });
       } else {
         try {
           report(0.4, "Uploading…");
@@ -698,11 +688,79 @@ export function createOutgoingMedia(runtime: OutgoingMediaRuntime) {
     return "bin";
   }
 
+  // Downloads share one patched `fetch`, so they run one at a time to keep
+  // byte counts attributed to the right message.
+  let downloadChain: Promise<unknown> = Promise.resolve();
+
+  /** Count response bytes of the client's fetches and emit download_progress. */
+  async function withDownloadProgress<T>(
+    chatMid: string,
+    messageId: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const base = runtime.getClient()?.base as
+      | { fetch: typeof fetch }
+      | undefined;
+    if (!base) return await run();
+    const original = base.fetch;
+    let lastEmit = 0;
+    const emit = (progress: number) => {
+      emitEvent("download_progress", { chatMid, messageId, progress });
+    };
+    base.fetch = async (...args: Parameters<typeof fetch>) => {
+      const res = await original(...args);
+      const total = Number(res.headers.get("content-length") ?? 0);
+      if (!res.body || !res.ok || !(total > 0)) return res;
+      let received = 0;
+      const counted = res.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            received += chunk.length;
+            const now = Date.now();
+            if (now - lastEmit >= 100) {
+              lastEmit = now;
+              emit(Math.min(received / total, 0.99));
+            }
+            controller.enqueue(chunk);
+          },
+        }),
+      );
+      return new Response(counted, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
+    };
+    try {
+      emit(0);
+      return await run();
+    } finally {
+      base.fetch = original;
+    }
+  }
+
   /**
    * Download full media bytes for a message (E2EE-aware) into the local cache.
    * Used for save-as / full-view video / file open.
    */
-  async function doDownloadMedia(
+  function doDownloadMedia(
+    id: number | string | null,
+    chatMid: string,
+    messageId: string,
+    contentTypeHint = "",
+  ) {
+    const job = downloadChain.then(() =>
+      withDownloadProgress(
+        chatMid,
+        messageId,
+        () => downloadMediaNow(id, chatMid, messageId, contentTypeHint),
+      )
+    );
+    downloadChain = job.catch(() => {});
+    return job;
+  }
+
+  async function downloadMediaNow(
     id: number | string | null,
     chatMid: string,
     messageId: string,

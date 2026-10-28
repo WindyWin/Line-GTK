@@ -1,5 +1,6 @@
-import { join } from "@std/path";
+import type { Buffer } from "node:buffer";
 import { atomicWriteJson } from "./storage.ts";
+import { readMessageFile } from "./message_store.ts";
 
 type Json = Record<string, unknown>;
 
@@ -71,12 +72,11 @@ export async function loadBootMessages(
   chatMid: string,
   accountMid: string,
   maxAge: number,
+  key: Buffer | null = null,
 ): Promise<Json[] | null> {
   if (!accountMid || !CHAT_MID.test(chatMid)) return null;
   try {
-    const raw = JSON.parse(
-      await Deno.readTextFile(join(directory, `${chatMid}.json`)),
-    );
+    const raw = await readMessageFile(directory, chatMid, key);
     if (
       raw?.accountMid !== accountMid || !Array.isArray(raw.messages) ||
       Date.now() - Number(raw.at || 0) > maxAge

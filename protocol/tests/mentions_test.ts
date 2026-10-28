@@ -51,7 +51,7 @@ Deno.test("incoming mentions ignore malformed metadata, split surrogate pairs, o
   );
 });
 
-Deno.test("outgoing mentions reject invalid ranges, overlaps, all mentions and identities", () => {
+Deno.test("outgoing mentions reject invalid ranges, overlaps and ambiguous identities", () => {
   for (
     const input of [
       {},
@@ -61,6 +61,9 @@ Deno.test("outgoing mentions reject invalid ranges, overlaps, all mentions and i
       [{ start: 3, end: 3, mid: "u-me" }],
       [{ start: 0, end: 3, mid: "c-group" }],
       [{ start: 0, end: 3, mid: "u-me", all: true }],
+      [{ start: 0, end: 3, mid: "", all: "1" }],
+      [{ start: 0, end: 3, mid: "", all: false }],
+      [{ start: 0, end: 3, all: true }],
       [{ start: 0, end: 3, mid: "u-me" }, { start: 2, end: 4, mid: "u-other" }],
       Array(101).fill({ start: 0, end: 3, mid: "u-me" }),
     ]
@@ -118,4 +121,22 @@ Deno.test("member lookup includes nonfriends, excludes invitees and unrelated ch
     Error,
     "invalid_group",
   );
+});
+
+Deno.test("all-member mentions round trip alongside individual mentions with Unicode offsets", () => {
+  const text = "😀 @all @Me";
+  const spans = [
+    { start: 2, end: 6, mid: "", all: true },
+    { start: 7, end: 10, mid: "u-me" },
+  ];
+  const encoded = mentionMetadata(text, spans);
+  assertEquals(JSON.parse(encoded.contentMetadata.MENTION), {
+    MENTIONEES: [
+      { S: "3", E: "7", A: "1" },
+      { S: "8", E: "11", M: "u-me" },
+    ],
+  });
+  assertEquals(encoded.mentions, spans);
+  assertEquals(lineMentions(text, encoded.contentMetadata), spans);
+  assertEquals(mentionMetadata("@all", []).contentMetadata, {});
 });

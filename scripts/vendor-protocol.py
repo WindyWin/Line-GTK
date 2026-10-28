@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Restore the pinned JSR sources from GitHub, or verify the checked-in copies.
+"""Prepare pinned protocol sources from GitHub, or verify the local cache.
 
-No network is used by --verify. npm dependencies remain pinned in deno.lock.
+No network is used by --verify or --offline. npm dependencies remain pinned in deno.lock.
 """
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import tarfile
@@ -27,6 +28,10 @@ def digest(path):
 
 def verify():
     manifest = json.loads((DEST / "manifest.json").read_text())
+    expected_sources = {k: {"repository": v[0], "ref": v[1], "archive_sha256": v[2]}
+                        for k, v in SOURCES.items()}
+    if manifest["sources"] != expected_sources:
+        raise SystemExit("Dependency source pins differ from manifest; run scripts/update-protocol.sh")
     for name, expected in manifest["files"].items():
         path = DEST / name
         if not path.is_file() or digest(path) != expected:
@@ -34,19 +39,40 @@ def verify():
     print(f"Verified {len(manifest['files'])} vendored dependency files")
 
 
-def restore(archives):
+def ensure(archives, *, offline=False):
+    manifest = json.loads((DEST / "manifest.json").read_text())
+    missing = False
+    for name, expected in manifest["files"].items():
+        path = DEST / name
+        if not path.is_file():
+            missing = True
+        elif digest(path) != expected:
+            raise SystemExit(f"Vendored dependency modified: {path}")
+    if missing:
+        restore(archives, offline=offline, locked=True)
+    else:
+        verify()
+
+
+def restore(archives, *, offline=False, locked=False):
     imports = {}
     packages = []
     with tempfile.TemporaryDirectory(prefix="line-gtk-vendor-") as directory:
         work = Path(directory)
+        prepared = work / "prepared"
         for name, (repo, ref, expected) in SOURCES.items():
             archive = archives / f"{name}.tar.gz"
             if not archive.exists():
+                if offline:
+                    raise SystemExit(f"Offline dependency archive missing: {archive}. Run python3 scripts/vendor-protocol.py --ensure online first.")
                 archives.mkdir(parents=True, exist_ok=True)
                 url = f"https://api.github.com/repos/{repo}/tarball/{ref}"
                 request = urllib.request.Request(url, headers={"User-Agent": "line-gtk-vendor"})
                 with urllib.request.urlopen(request, timeout=60) as response:
-                    archive.write_bytes(response.read())
+                    payload = response.read()
+                if hashlib.sha256(payload).hexdigest() != expected:
+                    raise SystemExit(f"Archive checksum mismatch: {archive}")
+                archive.write_bytes(payload)
             if digest(archive) != expected:
                 raise SystemExit(f"Archive checksum mismatch: {archive}")
             extracted = work / name
@@ -63,7 +89,7 @@ def restore(archives):
                 source_dir = upstream / subdir
                 config = json.loads((source_dir / "deno.json").read_text())
                 packages.append((target, config))
-                target_dir = DEST / target
+                target_dir = prepared / target
                 if target_dir.exists():
                     shutil.rmtree(target_dir)
                 target_dir.mkdir(parents=True)
@@ -76,41 +102,61 @@ def restore(archives):
                     shutil.copyfile(file, output)
                 shutil.copyfile(upstream / "LICENSE", target_dir / "LICENSE")
 
-    # Explicit npm versions prevent a vendored package's original import map
-    # from resolving a newer dependency. Deno's lockfile checks their integrity.
-    imports.update({
-        "thrift-types": "npm:@types/thrift@0.10.17",
-        "crypto-js": "npm:crypto-js@4.2.0",
-        "curve25519-js": "npm:curve25519-js@0.0.4",
-        "node-bignumber": "npm:node-bignumber@1.2.2",
-        "thrift": "npm:thrift@0.20.0",
-        "tweetnacl": "npm:tweetnacl@1.0.3",
-        "node-int64": "npm:node-int64@0.4.0",
-        "undici": "npm:undici@7.29.0",
-        "@noble/ciphers/aes.js": "npm:@noble/ciphers@2.2.0/aes.js",
-        "opusscript": "npm:opusscript@0.1.1",
-    })
-    for target, config in packages:
-        for export, value in config["exports"].items():
-            key = config["name"] + ("" if export == "." else export[1:])
-            imports[key] = f"./vendor/deps/{target}/{value.removeprefix('./')}"
-    imports["@linegtk/shop"] = "./vendor/deps/linejs/base/service/shop/mod.ts"
-    import_map = ROOT / "protocol/dependencies.json"
-    import_map.write_text(json.dumps({"imports": imports}, indent=2, ensure_ascii=False) + "\n")
-    files = {str(p.relative_to(DEST)): digest(p) for p in sorted(DEST.rglob("*"))
-             if p.is_file() and p.name != "manifest.json"}
-    # Include the import map in the verification so a build cannot silently
-    # switch back to JSR or a different version.
-    files["../../dependencies.json"] = digest(import_map)
-    manifest = {"sources": {k: {"repository": v[0], "ref": v[1], "archive_sha256": v[2]}
-                            for k, v in SOURCES.items()}, "files": files}
-    (DEST / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    verify()
+        # Explicit npm versions prevent a vendored package's original import map
+        # from resolving a newer dependency. Deno's lockfile checks their integrity.
+        imports.update({
+            "thrift-types": "npm:@types/thrift@0.10.17",
+            "crypto-js": "npm:crypto-js@4.2.0",
+            "curve25519-js": "npm:curve25519-js@0.0.4",
+            "node-bignumber": "npm:node-bignumber@1.2.2",
+            "thrift": "npm:thrift@0.20.0",
+            "tweetnacl": "npm:tweetnacl@1.0.3",
+            "node-int64": "npm:node-int64@0.4.0",
+            "undici": "npm:undici@7.29.0",
+            "@noble/ciphers/aes.js": "npm:@noble/ciphers@2.2.0/aes.js",
+            "opusscript": "npm:opusscript@0.1.1",
+        })
+        for target, config in packages:
+            for export, value in config["exports"].items():
+                key = config["name"] + ("" if export == "." else export[1:])
+                imports[key] = f"./vendor/deps/{target}/{value.removeprefix('./')}"
+        imports["@linegtk/shop"] = "./vendor/deps/linejs/base/service/shop/mod.ts"
+        import_map = ROOT / "protocol/dependencies.json"
+        import_bytes = (json.dumps({"imports": imports}, indent=2, ensure_ascii=False) + "\n").encode()
+        files = {str(p.relative_to(prepared)): digest(p) for p in sorted(prepared.rglob("*"))
+                 if p.is_file()}
+        files["../../dependencies.json"] = hashlib.sha256(import_bytes).hexdigest()
+        manifest = {"sources": {k: {"repository": v[0], "ref": v[1], "archive_sha256": v[2]}
+                                for k, v in SOURCES.items()}, "files": files}
+        manifest_path = DEST / "manifest.json"
+        if locked:
+            if manifest != json.loads(manifest_path.read_text()) or import_bytes != import_map.read_bytes():
+                raise SystemExit("Downloaded sources differ from pinned manifest/import map; refusing to update pins")
+        # Verify the entire download before replacing any local library files.
+        DEST.mkdir(parents=True, exist_ok=True)
+        for package in prepared.iterdir():
+            target = DEST / package.name
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(package, target)
+        if not locked:
+            import_map.write_bytes(import_bytes)
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        verify()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--verify", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--verify", action="store_true")
+    mode.add_argument("--ensure", action="store_true", help="Prepare missing sources without changing pins")
+    parser.add_argument("--offline", action="store_true", help="Use only cached archives")
     parser.add_argument("--archives", type=Path, default=ROOT / "target/protocol-archives")
     args = parser.parse_args()
-    verify() if args.verify else restore(args.archives)
+    offline = args.offline or os.environ.get("DENO_OFFLINE") == "1"
+    if args.verify:
+        verify()
+    elif args.ensure:
+        ensure(args.archives, offline=offline)
+    else:
+        restore(args.archives, offline=offline)
