@@ -71,6 +71,7 @@ fn read_options(data_dir: &Path) -> Result<BTreeMap<String, serde_json::Value>> 
 }
 
 // Downloaded stickers use their globally unique sticker ID as the file name.
+#[cfg(test)]
 fn image_key(path: &Path) -> String {
     path.file_name()
         .unwrap_or(path.as_os_str())
@@ -78,17 +79,46 @@ fn image_key(path: &Path) -> String {
         .into_owned()
 }
 
+#[cfg(test)]
 pub fn options_for(data_dir: &Path, image: &Path) -> ImageOptions {
-    read_options(data_dir)
-        .ok()
-        .and_then(|mut saved| saved.remove(&image_key(image)))
-        .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default()
+    options_for_key(data_dir, &image_key(image), ImageOptions::default())
 }
 
+pub fn options_for_key(data_dir: &Path, key: &str, fallback: ImageOptions) -> ImageOptions {
+    read_options(data_dir)
+        .ok()
+        .and_then(|mut saved| saved.remove(key))
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or(fallback)
+}
+
+/// Adopt legacy numeric sticker keys once, preserving newer per-item choices.
+pub fn migrate_options(
+    data_dir: &Path,
+    aliases: &serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let saved = read_options(data_dir)?;
+    for (key, old) in aliases {
+        if saved.contains_key(key) {
+            continue;
+        }
+        if let Some(value) = old.as_str().and_then(|old| saved.get(old))
+            && let Ok(options) = serde_json::from_value(value.clone())
+        {
+            remember_options_key(data_dir, key, options)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub fn remember_options(data_dir: &Path, image: &Path, options: ImageOptions) -> Result<()> {
+    remember_options_key(data_dir, &image_key(image), options)
+}
+
+pub fn remember_options_key(data_dir: &Path, key: &str, options: ImageOptions) -> Result<()> {
     let mut saved = read_options(data_dir)?;
-    saved.insert(image_key(image), serde_json::to_value(options)?);
+    saved.insert(key.to_string(), serde_json::to_value(options)?);
     crate::config::ensure_private_dir(data_dir)?;
     let temporary = data_dir.join(format!(".sticker-image-options.{}.tmp", std::process::id()));
     let result = (|| -> Result<()> {
@@ -177,6 +207,13 @@ pub struct PreparedImage {
 }
 
 pub fn prepare(path: &Path, size: Option<i32>, remove_background: bool) -> Result<PreparedImage> {
+    // Probe size before allocating the decoded pixel buffer.
+    let (_, probe_width, probe_height) =
+        Pixbuf::file_info(path).context("could not inspect image")?;
+    ensure!(
+        probe_width > 0 && probe_height > 0 && probe_width <= 2048 && probe_height <= 2048,
+        "sticker image is too large to edit"
+    );
     let source = Pixbuf::from_file(path)?;
     let width = source.width();
     let height = source.height();
@@ -267,6 +304,40 @@ pub fn save(image: &PreparedImage, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn library_settings_are_independent_and_migration_does_not_overwrite_them() {
+        let directory =
+            std::env::temp_dir().join(format!("line-gtk-library-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let original = ImageOptions {
+            size: ImageSize::Original,
+            remove_background: false,
+        };
+        let small = ImageOptions {
+            size: ImageSize::Small,
+            remove_background: true,
+        };
+        remember_options_key(&directory, "10.png", small).unwrap();
+        remember_options_key(&directory, "account/pack-a/item", original).unwrap();
+        let aliases =
+            serde_json::json!({ "account/pack-a/item": "10.png", "account/pack-b/item": "10.png" });
+        migrate_options(&directory, aliases.as_object().unwrap()).unwrap();
+        assert_eq!(
+            options_for_key(&directory, "account/pack-a/item", small),
+            original
+        );
+        assert_eq!(
+            options_for_key(&directory, "account/pack-b/item", original),
+            small
+        );
+        migrate_options(&directory, aliases.as_object().unwrap()).unwrap();
+        assert_eq!(
+            options_for_key(&directory, "account/pack-a/item", small),
+            original
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]

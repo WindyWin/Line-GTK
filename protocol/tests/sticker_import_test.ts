@@ -3,6 +3,7 @@ import type { Client } from "@evex/linejs";
 import { stickerPackageId } from "../src/sticker_import.ts";
 import { createStickerService } from "../src/stickers.ts";
 import { policyFor } from "../src/cache_policy.ts";
+import { libraryFixture } from "./fixtures/sticker_library.ts";
 
 Deno.test("sticker pack input accepts official links and rejects arbitrary URLs", () => {
   for (
@@ -26,106 +27,63 @@ Deno.test("sticker pack input accepts official links and rejects arbitrary URLs"
   ) assertEquals(stickerPackageId(input), null, input);
 });
 
-function fixture(directory: string) {
-  const results: Record<string, unknown>[] = [];
-  const errors: string[] = [];
-  const downloads: string[] = [];
-  const images = new Set<string>();
-  const policy = policyFor("smart");
-  const service = createStickerService({
-    getClient: () =>
-      ({
-        base: {
-          request: { request: () => Promise.resolve({ productList: [] }) },
+Deno.test("all owned creator packs are enumerated without downloading their grids", async () => {
+  const f = await libraryFixture();
+  try {
+    const results: Record<string, unknown>[] = [];
+    const errors: string[] = [];
+    const offsets: number[] = [];
+    const client = {
+      base: {
+        request: {
+          request: (args: unknown[][]) => {
+            const offset = Number(args.find((a) => a[1] === 3)?.[2]);
+            offsets.push(offset);
+            return Promise.resolve({
+              productList: Array.from(
+                { length: Math.min(80, 100 - offset) },
+                (_, i) => ({
+                  id: String(offset + i + 1),
+                  name: `Creator ${offset + i + 1}`,
+                }),
+              ),
+              totalSize: 100,
+            });
+          },
         },
-      }) as unknown as Client,
-    dataDir: directory,
-    stickerDir: directory,
-    refreshCachePolicy: () => Promise.resolve(policy),
-    cachePolicy: () => policy,
-    existingImage: (path) => Promise.resolve(images.has(path) ? path : null),
-    cacheUrl: (url, path) => {
-      downloads.push(url);
-      images.add(path);
-      return Promise.resolve(path);
-    },
-    sentMessagePayload: () => ({}),
-    invalidateMessages: () => {},
-    invalidateChats: () => {},
-    touchChatPreviewFromMessage: () => {},
-    ok: (_id, result) => results.push(result as Record<string, unknown>),
-    fail: (_id, error) => errors.push(error),
-  });
-  return { service, results, errors, downloads };
-}
-
-Deno.test("imported packs persist without ownership and reuse cached static PNGs", async () => {
-  const directory = await Deno.makeTempDir();
-  const originalFetch = globalThis.fetch;
-  let metadataRequests = 0;
-  globalThis.fetch = (() => {
-    metadataRequests++;
-    return Promise.resolve(Response.json({
-      title: "Brown",
-      version: "3",
-      stickers: [{ id: 10 }, { id: 11 }, { id: "../invalid" }],
-    }));
-  }) as typeof fetch;
-  try {
-    const { service, results, errors, downloads } = fixture(directory);
-    await service.list(1, "https://store.line.me/stickershop/product/2/en");
+      },
+    } as unknown as Client;
+    const policy = policyFor("smart");
+    const service = createStickerService({
+      getClient: () => client,
+      library: f.library,
+      dataDir: f.dataDir,
+      stickerDir: f.stickerDir,
+      refreshCachePolicy: () => Promise.resolve(policy),
+      cachePolicy: () => policy,
+      existingImage: () => Promise.resolve(null),
+      cacheUrl: () => {
+        throw new Error("grid eagerly downloaded");
+      },
+      sentMessagePayload: () => ({}),
+      invalidateMessages() {},
+      invalidateChats() {},
+      touchChatPreviewFromMessage() {},
+      ok: (_id, result) => results.push(result as Record<string, unknown>),
+      fail: (_id, error) => errors.push(error),
+    });
+    await service.list(1);
     assertEquals(errors, []);
+    assertEquals(offsets, [0, 80]);
     const packs = results[0].packs as Record<string, unknown>[];
-    assertEquals(packs[0].name, "Brown");
-    assertEquals(packs[0].imageOnly, true);
-    assertEquals((packs[0].stickers as unknown[]).length, 2);
-    assertEquals(downloads.length, 2);
-    assertEquals(
-      downloads.every((url) => url.endsWith("/android/sticker.png")),
-      true,
-    );
+    assertEquals(packs.length, 100);
+    assertEquals(packs.every((p) => p.lazy === true), true);
+    assertEquals(packs[99].name, "Creator 100");
     await service.list(2);
-    assertEquals(downloads.length, 2);
-    assertEquals(metadataRequests, 1);
-    // A fresh service restores the pack manifest without another metadata fetch.
-    const restored = fixture(directory);
-    await restored.service.list(3);
-    const restoredPacks = restored.results[0].packs as Record<
-      string,
-      unknown
-    >[];
-    assertEquals(restoredPacks[0].name, "Brown");
-    assertEquals(restoredPacks[0].imageOnly, true);
-    assertEquals(metadataRequests, 1);
+    assertEquals(offsets, [0, 80]);
+    await service.ownedPack(3, "999");
+    assertEquals(errors, ["sticker_not_owned"]);
   } finally {
-    globalThis.fetch = originalFetch;
-    await Deno.remove(directory, { recursive: true });
-  }
-});
-
-Deno.test("invalid or unavailable pack imports leave the saved library intact", async () => {
-  const directory = await Deno.makeTempDir();
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch =
-    (() =>
-      Promise.resolve(new Response(null, { status: 404 }))) as typeof fetch;
-  try {
-    const saved = JSON.stringify([]);
-    await Deno.writeTextFile(`${directory}/image-packs.json`, saved);
-    const { service, errors, downloads } = fixture(directory);
-    await service.list(1, "https://example.com/2");
-    await service.list(2, "123");
-    assertEquals(errors, [
-      "sticker_import_invalid",
-      "sticker_import_unavailable",
-    ]);
-    assertEquals(downloads, []);
-    assertEquals(
-      await Deno.readTextFile(`${directory}/image-packs.json`),
-      saved,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-    await Deno.remove(directory, { recursive: true });
+    await Deno.remove(f.root, { recursive: true });
   }
 });

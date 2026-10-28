@@ -1,7 +1,11 @@
 use super::*;
 use crate::sticker_image::{ImageOptions, ImageSize};
 
-fn send_prepared(state: &AppState, image: &crate::sticker_image::PreparedImage) -> bool {
+fn send_prepared(
+    state: &AppState,
+    image: &crate::sticker_image::PreparedImage,
+    source: &Source,
+) -> bool {
     let result = (|| -> anyhow::Result<PathBuf> {
         let directory = state.data_dir.join("cache/media");
         std::fs::create_dir_all(&directory)?;
@@ -10,7 +14,14 @@ fn send_prepared(state: &AppState, image: &crate::sticker_image::PreparedImage) 
         Ok(path)
     })();
     match result {
-        Ok(path) => try_send_local_media_path(state, path),
+        Ok(path) => {
+            if source.optimized {
+                sticker_library::send_optimized(state, source, Some(path));
+                true
+            } else {
+                try_send_local_media_path(state, path)
+            }
+        }
         Err(error) => {
             toast(
                 state,
@@ -21,11 +32,48 @@ fn send_prepared(state: &AppState, image: &crate::sticker_image::PreparedImage) 
     }
 }
 
-pub(super) fn send_last(state: &AppState, path: &std::path::Path) {
-    let options = crate::sticker_image::options_for(&state.data_dir, path);
+#[derive(Clone)]
+pub(super) struct Source {
+    pub path: PathBuf,
+    pub key: String,
+    pub personal: bool,
+    pub animated: bool,
+    pub optimized: bool,
+    pub optimization: serde_json::Value,
+}
+
+impl Source {
+    fn options(&self, state: &AppState) -> ImageOptions {
+        let fallback = if self.personal {
+            ImageOptions {
+                size: ImageSize::Original,
+                remove_background: false,
+            }
+        } else {
+            ImageOptions::default()
+        };
+        crate::sticker_image::options_for_key(&state.data_dir, &self.key, fallback)
+    }
+}
+
+pub(super) fn send_last(state: &AppState, source: &Source) {
+    if source.animated {
+        sticker_library::send_optimized(state, source, None);
+        return;
+    }
+    let path = &source.path;
+    let options = source.options(state);
+    if options.size == ImageSize::Original && !options.remove_background {
+        if source.optimized {
+            sticker_library::send_optimized(state, source, None);
+        } else {
+            try_send_local_media_path(state, path.clone());
+        }
+        return;
+    }
     match crate::sticker_image::prepare(path, options.size.pixels(), options.remove_background) {
         Ok(image) => {
-            send_prepared(state, &image);
+            send_prepared(state, &image, source);
         }
         Err(error) => toast(
             state,
@@ -34,75 +82,44 @@ pub(super) fn send_last(state: &AppState, path: &std::path::Path) {
     }
 }
 
-pub(super) fn wire_menu(state: &AppState, button: &gtk::Button, path: PathBuf) {
-    let actions = gio::SimpleActionGroup::new();
-    let edit = gio::SimpleAction::new("edit", None);
-    let s = state.clone();
-    let scope = composer_drafts::scope(state);
-    edit.connect_activate(move |_, _| {
-        if composer_drafts::scope(&s) == scope {
-            s.sticker_popover.popdown();
-            open(&s, path.clone());
-        }
-    });
-    actions.add_action(&edit);
-    button.insert_action_group("sticker-image", Some(&actions));
-    let menu = gio::Menu::new();
-    menu.append(
-        Some(&crate::i18n::t("sticker_image_edit")),
-        Some("sticker-image.edit"),
-    );
-    let popup = Rc::new(move |button: &gtk::Button, x: f64, y: f64| {
-        let popover = gtk::PopoverMenu::from_model(Some(&menu));
-        popover.set_parent(button);
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popover.connect_closed(|popover| {
-            let popover = popover.clone();
-            glib::idle_add_local_once(move || popover.unparent());
-        });
-        popover.popup();
-        popover.grab_focus();
-    });
-    button.connect_unrealize(|button| {
-        let mut child = button.first_child();
-        while let Some(widget) = child {
-            child = widget.next_sibling();
-            if widget.is::<gtk::Popover>() {
-                widget.unparent();
-            }
-        }
-    });
-    let click = gtk::GestureClick::new();
-    click.set_button(3);
-    click.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let weak = button.downgrade();
-    let popup_c = popup.clone();
-    click.connect_pressed(move |gesture, _, x, y| {
-        if let Some(button) = weak.upgrade() {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            popup_c(&button, x, y);
-        }
-    });
-    button.add_controller(click);
-    let keys = gtk::EventControllerKey::new();
-    let weak = button.downgrade();
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
-        if key == gdk::Key::Menu
-            || (key == gdk::Key::F10 && modifiers.contains(gdk::ModifierType::SHIFT_MASK))
-        {
-            if let Some(button) = weak.upgrade() {
-                popup(&button, 10.0, 10.0);
-            }
-            return glib::Propagation::Stop;
-        }
-        glib::Propagation::Proceed
-    });
-    button.add_controller(keys);
+pub(super) fn optimization_input(
+    state: &AppState,
+    source: &Source,
+) -> anyhow::Result<Option<PathBuf>> {
+    if source.animated {
+        return Ok(None);
+    }
+    let options = source.options(state);
+    if options.size == ImageSize::Original && !options.remove_background {
+        return Ok(None);
+    }
+    let image = crate::sticker_image::prepare(
+        &source.path,
+        options.size.pixels(),
+        options.remove_background,
+    )?;
+    let directory = state.data_dir.join("cache/media");
+    crate::config::ensure_private_dir(&directory)?;
+    let path = directory.join(format!("sticker-image-{}.png", now_ms()));
+    crate::sticker_image::save(&image, &path)?;
+    Ok(Some(path))
 }
 
-pub(super) fn open(state: &AppState, path: PathBuf) {
+pub(super) fn open(state: &AppState, source: Source) {
+    if source.animated {
+        sticker_library::optimize_dialog(state, source);
+        return;
+    }
     let scope = composer_drafts::scope(state);
-    let options = crate::sticker_image::options_for(&state.data_dir, &path);
+    let options = source.options(state);
+    // An editor keeps its own snapshot so library removal cannot invalidate it.
+    let path = match copy_into_media_cache(state, &source.path) {
+        Ok(path) => path,
+        Err(error) => {
+            toast(state, &error.to_string());
+            return;
+        }
+    };
     let dialog = libadwaita::Dialog::builder()
         .title(crate::i18n::t("sticker_send_as_image"))
         .content_width(400)
@@ -260,12 +277,13 @@ pub(super) fn open(state: &AppState, path: PathBuf) {
         let Some(image) = prepared.borrow().clone() else {
             return;
         };
-        if send_prepared(&s, &image) {
+        if send_prepared(&s, &image, &source) {
             let options = ImageOptions {
                 size: ImageSize::from_selection(size.selected()),
                 remove_background: remove.is_active(),
             };
-            if let Err(error) = crate::sticker_image::remember_options(&s.data_dir, &path, options)
+            if let Err(error) =
+                crate::sticker_image::remember_options_key(&s.data_dir, &source.key, options)
             {
                 tracing::warn!(%error, "could not save sticker image options");
             }
@@ -280,5 +298,6 @@ pub(super) fn open(state: &AppState, path: PathBuf) {
         .build();
     toolbar.set_content(Some(&scroll));
     dialog.set_child(Some(&toolbar));
+    sticker_library::track_dialog(state, &dialog);
     dialog.present(Some(&state.window));
 }

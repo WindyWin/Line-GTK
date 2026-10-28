@@ -10,7 +10,13 @@ struct Preview {
 }
 
 impl HoverPreview {
-    pub(super) fn wire(&self, button: &gtk::Button, path: Option<String>, title: String) {
+    pub(super) fn wire(
+        &self,
+        button: &gtk::Button,
+        path: Option<String>,
+        title: String,
+        animate: bool,
+    ) {
         button.set_has_tooltip(true);
         let cache = self.0.clone();
         button.connect_query_tooltip(move |button, _, _, _, tooltip| {
@@ -63,7 +69,11 @@ impl HoverPreview {
                         .justify(gtk::Justification::Center)
                         .build(),
                 );
-                attach_texture_async(picture, path.clone(), 160);
+                attach_texture_async(picture.clone(), path.clone(), 160);
+                let animation_path = path.clone();
+                picture.connect_map(move |pic| {
+                    attach_texture_async_anim(pic.clone(), animation_path.clone(), 160, animate);
+                });
                 *cache = Some(Preview {
                     path: path.clone(),
                     title: title.clone(),
