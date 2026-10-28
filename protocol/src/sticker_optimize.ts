@@ -223,7 +223,11 @@ export async function optimizeStickerImage(
         dir: workDir,
         prefix: ".sticker-optimize-",
       });
-      const palette = await ffmpeg(bytes, [
+      // Older APNG demuxers require seeking, which stdin cannot provide.
+      const sourcePath = join(temporary, "source.png");
+      await Deno.writeFile(sourcePath, bytes, { mode: 0o600 });
+      input[input.length - 1] = sourcePath;
+      const palette = await ffmpeg(new Uint8Array(), [
         ...input,
         "-vf",
         `fps=${options.fps},${scale},palettegen=max_colors=${options.colors}:reserve_transparent=1`,
@@ -237,7 +241,7 @@ export async function optimizeStickerImage(
       ], signal);
       const palettePath = join(temporary, "palette.png");
       await Deno.writeFile(palettePath, palette, { mode: 0o600 });
-      output = await ffmpeg(bytes, [
+      output = await ffmpeg(new Uint8Array(), [
         ...input,
         "-i",
         palettePath,
