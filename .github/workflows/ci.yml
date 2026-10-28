@@ -41,6 +41,8 @@ jobs:
       - name: Test dependency preparation
         working-directory: .
         run: python3 -m unittest discover -s scripts/tests -p '*_test.py'
+      - name: Install image conversion tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: deno task check
       - name: Compile offline sidecar
         working-directory: .

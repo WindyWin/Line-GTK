@@ -1,3 +1,8 @@
+import {
+  loadSearchHistory,
+  searchContext,
+  searchMessages,
+} from "./message_search.ts";
 import { lineMentions } from "./mentions.ts";
 /**
  * LINE protocol sidecar for line-gtk.
@@ -7,12 +12,20 @@ import { lineMentions } from "./mentions.ts";
 import { Client, TalkMessage } from "@evex/linejs";
 import { fromFileUrl, join } from "@std/path";
 import { atomicWriteJson, ensurePrivateDir } from "./storage.ts";
+import { parseCacheKey } from "./cache_crypto.ts";
+import { readMessageFile, writeMessageFile } from "./message_store.ts";
 import { AuthStore, LineDevice, restoreSession } from "./auth.ts";
 import { emailLoginError } from "./email_login.ts";
 import { CachePolicy, policyFor } from "./cache_policy.ts";
 import { contactKind, picturePathOf, profileUrl } from "./contacts.ts";
 import { coerceI64, conversationMid, normalizeRaw } from "./messages.ts";
-import { mergeMessages } from "./message_history.ts";
+import {
+  cacheFill,
+  MAX_STORED_MESSAGES,
+  mergeMessages,
+  normalizeMessageLimit,
+  sortMessages,
+} from "./message_history.ts";
 import { appendLive } from "./message_delta.ts";
 import { replyToOf } from "./replies.ts";
 import { groupProfile, setGroupMuted } from "./groups.ts";
@@ -26,6 +39,7 @@ import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
 import { patchMediaDecryption } from "./media_crypto.ts";
 import { createMediaCache } from "./media_cache.ts";
+import { createStickerLibrary } from "./sticker_library.ts";
 import { createStickerService } from "./stickers.ts";
 import { createCommandService } from "./commands.ts";
 import { createContactBlocks } from "./contact_blocks.ts";
@@ -105,6 +119,13 @@ let cacheRetention = (Deno.env.get("LINE_GTK_CACHE_RETENTION") || "smart")
   .toLowerCase();
 let cachePolicyState = policyFor(cacheRetention);
 let cachePolicyCheckedAt = 0;
+/** Key for the on-disk message cache; null falls back to plaintext. */
+const cacheKey = parseCacheKey(Deno.env.get("LINE_GTK_CACHE_KEY"));
+if (!cacheKey) {
+  console.error("[cache] no encryption key; messages stored in plaintext");
+}
+/** Per-chat message cap from settings; 0 = unlimited. */
+let messageLimit = MAX_STORED_MESSAGES;
 
 async function refreshCachePolicy() {
   if (Date.now() - cachePolicyCheckedAt < 3_000) return cachePolicyState;
@@ -112,6 +133,9 @@ async function refreshCachePolicy() {
   try {
     const raw = JSON.parse(
       await Deno.readTextFile(join(dataDir, "settings.json")),
+    );
+    messageLimit = normalizeMessageLimit(
+      raw.message_cache_limit ?? MAX_STORED_MESSAGES,
     );
     const next = String(raw.cache_retention || cacheRetention || "smart")
       .toLowerCase();
@@ -280,7 +304,14 @@ async function forUiMessages(messages: Json[], chatMid?: string) {
   return messageView.forUiMessages(messages);
 }
 
+const stickerLibrary = createStickerLibrary({
+  dataDir,
+  stickerDir,
+  session: sharedSession,
+  emitEvent,
+});
 const stickers = createStickerService({
+  library: stickerLibrary,
   getClient: () => client,
   dataDir,
   stickerDir,
@@ -645,13 +676,11 @@ async function sharedSeedMessages(chatMid: string): Promise<Json[]> {
   let disk: Json[] = [];
   try {
     // Shared browsing reuses retained content independently of refresh TTL.
-    const cached = JSON.parse(
-      await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
-    );
+    const cached = await readMessageFile(msgDiskDir, chatMid, cacheKey);
     if (
       cached.accountMid === session.accountMid && Array.isArray(cached.messages)
     ) {
-      disk = restoreCachedMessages(cached.messages);
+      disk = restoreCachedMessages(cached.messages as Json[]);
     }
   } catch { /* no existing cache */ }
   if (sharedSession()?.owner !== session.owner) {
@@ -1162,9 +1191,7 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
   if (!session) return null;
   try {
     await refreshCachePolicy();
-    const raw = JSON.parse(
-      await Deno.readTextFile(join(msgDiskDir, `${chatMid}.json`)),
-    );
+    const raw = await readMessageFile(msgDiskDir, chatMid, cacheKey);
     if (
       sharedSession()?.owner !== session.owner ||
       raw.accountMid !== session.accountMid
@@ -1183,6 +1210,25 @@ async function loadDiskMessages(chatMid: string): Promise<Json[] | null> {
   return null;
 }
 
+/** Chats already warned about reaching the message cap, per fill level. */
+const cacheWarned = new Map<string, string>();
+
+function warnIfNearLimit(chatMid: string, count: number) {
+  const fill = cacheFill(count, messageLimit);
+  if (fill === "ok") {
+    cacheWarned.delete(chatMid);
+    return;
+  }
+  if (cacheWarned.get(chatMid) === fill) return;
+  cacheWarned.set(chatMid, fill);
+  emitEvent("message_cache_limit", {
+    chatMid,
+    count,
+    limit: messageLimit,
+    full: fill === "full",
+  });
+}
+
 async function saveDiskMessages(
   chatMid: string,
   messages: Json[],
@@ -1191,10 +1237,9 @@ async function saveDiskMessages(
   const session = sharedSession();
   if (!session) return;
   try {
-    const file = join(msgDiskDir, `${chatMid}.json`);
     let stored: Json[] = [];
     try {
-      const raw = JSON.parse(await Deno.readTextFile(file));
+      const raw = await readMessageFile(msgDiskDir, chatMid, cacheKey);
       if (
         raw.accountMid === session.accountMid && Array.isArray(raw.messages)
       ) {
@@ -1204,17 +1249,37 @@ async function saveDiskMessages(
     const merged = mergeMessages(
       stored,
       await unsends.mask(chatMid, messages),
-      opts,
+      { ...opts, max: messageLimit },
     );
     if (sharedSession()?.owner !== session.owner) return;
-    await atomicWriteJson(file, {
+    await writeMessageFile(msgDiskDir, chatMid, cacheKey, {
       at: Date.now(),
       accountMid: session.accountMid,
       messages: merged,
     });
+    warnIfNearLimit(chatMid, merged.length);
   } catch (error) {
     console.error("[messages-cache]", chatMid, error);
   }
+}
+
+/** Keep only the newest `keep` messages of one chat's cache. */
+async function trimDiskMessages(chatMid: string, keep: number) {
+  const session = sharedSession();
+  if (!session) return 0;
+  const raw = await readMessageFile(msgDiskDir, chatMid, cacheKey);
+  if (
+    raw.accountMid !== session.accountMid || !Array.isArray(raw.messages)
+  ) return 0;
+  const kept = sortMessages(raw.messages as Json[]).slice(-Math.max(0, keep));
+  if (sharedSession()?.owner !== session.owner) return 0;
+  await writeMessageFile(msgDiskDir, chatMid, cacheKey, {
+    at: Date.now(),
+    accountMid: session.accountMid,
+    messages: kept,
+  });
+  cacheWarned.delete(chatMid);
+  return (raw.messages as Json[]).length - kept.length;
 }
 
 let contactsAt = 0;
@@ -2394,6 +2459,58 @@ async function handle(req: Json) {
         bootRestoreController?.abort();
         await commands.loginToken(id, params.token as string | undefined);
         break;
+      case "search_messages":
+      case "fetch_search_message_context": {
+        const chatMid = String(params.chatMid ?? "");
+        if (!/^[ucr][A-Za-z0-9_-]{1,128}$/.test(chatMid)) {
+          throw new Error("invalid_chat");
+        }
+        const owner = sharedSession();
+        if (!owner) throw new Error("not_logged_in");
+        const messages = await loadSearchHistory({
+          session: sharedSession,
+          disk: async () => {
+            const raw = await readMessageFile(msgDiskDir, chatMid, cacheKey);
+            return {
+              accountMid: raw.accountMid,
+              messages: Array.isArray(raw.messages)
+                ? restoreCachedMessages(raw.messages as Json[])
+                : [],
+            };
+          },
+          memory: () => msgCache.get(chatMid)?.messages ?? [],
+          mask: (messages) => unsends.mask(chatMid, messages),
+        });
+        let result: Json;
+        if (method === "search_messages") {
+          const page = searchMessages(
+            messages,
+            String(params.query ?? ""),
+            Number(params.offset ?? 0),
+          );
+          result = {
+            ...page,
+            chatMid,
+            messages: await messageView.forUiMessages(page.messages),
+          };
+        } else {
+          const target = String(params.messageId ?? "");
+          result = {
+            chatMid,
+            targetMessageId: target,
+            messages: await forUiMessages(
+              searchContext(messages, target),
+              chatMid,
+            ),
+            hasMoreOlder: true,
+          };
+        }
+        if (sharedSession()?.owner !== owner.owner) {
+          throw new Error("message_search_cancelled");
+        }
+        ok(id, result);
+        break;
+      }
       case "load_cached_messages": {
         const chatMid = String(params.chatMid ?? "");
         const limit = Math.max(1, Math.min(Number(params.limit ?? 40), 200));
@@ -2404,6 +2521,7 @@ async function handle(req: Json) {
           chatMid,
           myMid() || bootAccountMid,
           cachePolicy().diskMsg,
+          cacheKey,
         );
         ok(id, {
           chatMid,
@@ -2413,6 +2531,21 @@ async function handle(req: Json) {
             )
             : [],
         });
+        break;
+      }
+      case "trim_message_cache": {
+        const chatMid = String(params.chatMid ?? "");
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(chatMid)) {
+          fail(id, "invalid_chat");
+          break;
+        }
+        try {
+          const keep = Math.floor(Number(params.keep ?? 0));
+          if (!Number.isFinite(keep) || keep < 0) throw new Error("bad_keep");
+          ok(id, { chatMid, removed: await trimDiskMessages(chatMid, keep) });
+        } catch {
+          fail(id, "trim_failed");
+        }
         break;
       }
       case "list_chats":
@@ -2603,10 +2736,87 @@ async function handle(req: Json) {
         );
         break;
       case "list_stickers":
+        if (params.refreshOwned === true) stickers.resetOwnedCache();
         await stickers.list(
           id,
           typeof params.importPack === "string" ? params.importPack : undefined,
         );
+        break;
+      case "list_sticker_library":
+        ok(id, await stickerLibrary.list());
+        break;
+      case "prepare_sticker_image":
+        ok(
+          id,
+          await stickerLibrary.prepareImage(
+            String(id),
+            String(params.optionKey ?? ""),
+            params.options,
+            typeof params.inputPath === "string" ? params.inputPath : undefined,
+          ),
+        );
+        break;
+      case "set_sticker_optimization":
+        ok(
+          id,
+          await stickerLibrary.setOptimization(
+            String(params.optionKey ?? ""),
+            params.options,
+          ),
+        );
+        break;
+      case "preview_sticker_pack":
+        ok(id, await stickerLibrary.preview(String(params.link ?? "")));
+        break;
+      case "inspect_sticker_pngs":
+        ok(
+          id,
+          await stickerLibrary.inspectPngs(
+            Array.isArray(params.paths) ? params.paths.map(String) : [],
+          ),
+        );
+        break;
+      case "import_sticker_pack":
+        ok(
+          id,
+          await stickerLibrary.importStore(
+            String(id),
+            String(params.link ?? ""),
+          ),
+        );
+        break;
+      case "import_sticker_pngs":
+        ok(
+          id,
+          await stickerLibrary.importPngs(
+            String(id),
+            Array.isArray(params.paths) ? params.paths.map(String) : [],
+            String(params.name ?? ""),
+            typeof params.packId === "string" ? params.packId : undefined,
+            Array.isArray(params.digests)
+              ? params.digests.map(String)
+              : undefined,
+          ),
+        );
+        break;
+      case "update_sticker_library":
+        ok(
+          id,
+          await stickerLibrary.update(
+            String(params.packId ?? ""),
+            String(params.action ?? ""),
+            String(params.value ?? ""),
+          ),
+        );
+        break;
+      case "cancel_sticker_import":
+        ok(id, stickerLibrary.cancel(String(params.requestId ?? "")));
+        break;
+      case "adopt_sticker_library":
+        ok(id, await stickerLibrary.adoptLegacy());
+        break;
+      case "sticker_owned_pack":
+        await stickers.ownedPack(id, String(params.packageId ?? ""));
         break;
       case "mark_read":
         await commands.markRead(
@@ -2697,6 +2907,9 @@ async function handle(req: Json) {
         const kind = String(params.kind ?? "all");
         // Settle/invalidate writers before the existing cache files are wiped.
         await sharedMedia.clear(kind);
+        if (kind === "stickers" || kind === "all") {
+          await stickerLibrary.clearPreviews();
+        }
         const wipe = async (dir: string) => {
           try {
             for await (const e of Deno.readDir(dir)) {
@@ -2713,6 +2926,7 @@ async function handle(req: Json) {
         if (kind === "avatars" || kind === "all") await wipe(avatarDir);
         if (kind === "messages" || kind === "all") {
           await wipe(msgDiskDir);
+          cacheWarned.clear();
           chatEvents.reset();
         }
         if (kind === "chats" || kind === "all") {
