@@ -133,7 +133,7 @@ pub(super) fn reset(state: &AppState) {
     data.generation = data.generation.wrapping_add(1);
     data.text = state.composer.text().to_string();
     data.spans.clear();
-    state.composer.set_attributes(&gtk::pango::AttrList::new());
+    style_composer(&state.composer, &[]);
     data.members = None;
     data.candidates.clear();
     data.loading = false;
@@ -148,9 +148,7 @@ pub(super) fn restore(state: &AppState, spans: &[Mention]) {
     let mut data = state.mentions.borrow_mut();
     data.text = state.composer.text().to_string();
     data.spans = spans.to_vec();
-    state
-        .composer
-        .set_attributes(&attributes(&state.composer, &data.text, &data.spans));
+    style_composer(&state.composer, &data.spans);
 }
 
 pub(super) fn restore_failed(state: &AppState, draft: &MentionDraft) {
@@ -444,9 +442,7 @@ fn choose(state: &AppState, index: usize) {
         let mut data = state.mentions.borrow_mut();
         data.text = updated;
         data.spans = spans;
-        state
-            .composer
-            .set_attributes(&attributes(&state.composer, &data.text, &data.spans));
+        style_composer(&state.composer, &data.spans);
         data.replacing = false;
         data.dismissed = true;
         if let Some(popover) = &data.popover {
@@ -502,16 +498,16 @@ pub(super) fn wire(state: &AppState) {
         }
     });
     let s = state.clone();
-    state.composer.connect_changed(move |entry| {
+    state.composer.buffer().connect_changed(move |_| {
         {
             let mut data = s.mentions.borrow_mut();
             if data.replacing {
                 return;
             }
-            let text = entry.text().to_string();
+            let text = s.composer.text().to_string();
             data.spans = edited_spans(&data.text, &text, &data.spans);
             data.text = text;
-            entry.set_attributes(&attributes(entry, &data.text, &data.spans));
+            style_composer(&s.composer, &data.spans);
             data.dismissed = false;
         }
         refresh(&s);
@@ -519,6 +515,7 @@ pub(super) fn wire(state: &AppState) {
     let s = state.clone();
     state
         .composer
+        .buffer()
         .connect_cursor_position_notify(move |_| refresh(&s));
     let s = state.clone();
     state.composer.connect_has_focus_notify(move |entry| {
@@ -581,6 +578,28 @@ pub(super) fn wire(state: &AppState) {
         glib::Propagation::Proceed
     });
     state.composer.add_controller(keys);
+}
+
+fn style_composer(view: &gtk::TextView, spans: &[Mention]) {
+    let buffer = view.buffer();
+    let tag = buffer.tag_table().lookup("mention").unwrap_or_else(|| {
+        buffer
+            .create_tag(Some("mention"), &[])
+            .expect("mention tag")
+    });
+    tag.set_foreground_rgba(Some(&color(view)));
+    tag.set_weight(700);
+    tag.set_underline(gtk::pango::Underline::Single);
+    buffer.remove_tag(&tag, &buffer.start_iter(), &buffer.end_iter());
+    for span in spans.iter().take(100) {
+        if span.start < span.end && span.end <= buffer.char_count() as usize {
+            buffer.apply_tag(
+                &tag,
+                &buffer.iter_at_offset(span.start as i32),
+                &buffer.iter_at_offset(span.end as i32),
+            );
+        }
+    }
 }
 
 // Use the theme's text accent so mentions remain legible in light and dark mode.

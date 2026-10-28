@@ -317,7 +317,7 @@ pub(super) fn open_media_viewer_for(
     let (def_w, def_h) = match kind {
         ViewerKind::Video => (1100, 720),
         ViewerKind::Image => (1080, 760),
-        ViewerKind::Pdf | ViewerKind::Text => (920, 700),
+        ViewerKind::Pdf | ViewerKind::Text | ViewerKind::Markdown => (920, 700),
         _ => (720, 480),
     };
 
@@ -398,6 +398,9 @@ pub(super) fn open_media_viewer_for(
         ViewerKind::Text => {
             append_text_viewer(&body, path);
         }
+        ViewerKind::Markdown => {
+            super::markdown::append(&body, path);
+        }
         ViewerKind::Audio => {
             append_audio_viewer(state, &body, path);
         }
@@ -457,12 +460,16 @@ pub(super) enum ViewerKind {
     Video,
     Pdf,
     Text,
+    Markdown,
     Audio,
     Generic,
 }
 
 pub(super) fn viewer_kind_for(content_type: &str, path: &str, name: &str) -> ViewerKind {
     let ct = content_type.to_ascii_uppercase();
+    if super::markdown::is_markdown(name, path) {
+        return ViewerKind::Markdown;
+    }
     let lower = format!(
         "{} {}",
         path.to_ascii_lowercase(),
@@ -1940,7 +1947,7 @@ pub(super) fn apply_frames_to_picture(
             let Some(picture) = picture_weak.upgrade() else {
                 return;
             };
-            if picture.parent().is_none() {
+            if picture.parent().is_none() || !picture.is_mapped() {
                 return;
             }
             let next = (idx.get() + 1) % frames.len();
@@ -2031,7 +2038,8 @@ pub(super) fn pump_media_queue(state: &AppState) {
 
     // Keep the "Loading…" label until decode succeeds.
     let max_px = if is_sticker { 128 } else { 320 };
-    let animate = is_sticker && state.config.borrow().animations;
+    let animate = state.config.borrow().animations
+        && (is_sticker || image_path.to_ascii_lowercase().ends_with(".gif"));
     let state2 = state.clone();
     let bubble2 = bubble.clone();
     let message_id2 = message_id.clone();

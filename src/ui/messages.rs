@@ -559,7 +559,8 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
     if has_image {
         if let Some(path) = msg.image_path.as_deref() {
             let pic = make_media_picture_placeholder(is_sticker);
-            let animate = is_sticker && state.config.borrow().animations;
+            let animate = state.config.borrow().animations
+                && (is_sticker || path.to_ascii_lowercase().ends_with(".gif"));
             attach_texture_async_anim(
                 pic.clone(),
                 path.to_string(),
@@ -1104,7 +1105,7 @@ pub(super) fn append_file_card(state: &AppState, bubble: &gtk::Box, msg: &Messag
     let kind = viewer_kind_for("FILE", "", &name);
     let icon_name = match kind {
         ViewerKind::Pdf => "application-pdf-symbolic",
-        ViewerKind::Text => "text-x-generic-symbolic",
+        ViewerKind::Text | ViewerKind::Markdown => "text-x-generic-symbolic",
         ViewerKind::Image => "image-x-generic-symbolic",
         ViewerKind::Video => "video-x-generic-symbolic",
         ViewerKind::Audio => "audio-x-generic-symbolic",
