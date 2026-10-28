@@ -38,7 +38,9 @@ pub(super) struct AppState {
     pub chat_list: gtk::ListBox,
     pub message_list: virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
-    pub composer: gtk::Entry,
+    pub composer: gtk::TextView,
+    pub composer_placeholder: gtk::Label,
+    pub composer_emoji: gtk::Button,
     pub attachment_preview: gtk::Box,
     pub composer_drafts: Rc<RefCell<super::composer_drafts::Drafts>>,
     pub reply_preview: gtk::Revealer,
@@ -53,6 +55,8 @@ pub(super) struct AppState {
     pub read_pause_label: gtk::Label,
     pub read_pause_box: gtk::Box,
     pub read_once_btn: gtk::Button,
+    pub last_read_btn: gtk::Button,
+    pub last_read_position: Rc<RefCell<super::read_position::ReadPosition>>,
     pub contact_blocks: Rc<RefCell<super::contact_blocks::BlockState>>,
     pub login: Rc<login::LoginWidgets>,
     pub session_device: Rc<RefCell<String>>,
@@ -121,6 +125,8 @@ pub(super) struct AppState {
     pub settings_btn: gtk::Button,
     pub friends_btn: gtk::Button,
     pub album_btn: gtk::Button,
+    pub message_search_btn: gtk::Button,
+    pub message_search_ui: Rc<RefCell<Option<Rc<super::message_search::SearchUi>>>>,
     pub shared_media_btn: gtk::Button,
     pub shared_media_ui: Rc<RefCell<Option<Rc<super::shared_media::SharedMediaUi>>>>,
     pub album_ui: Rc<RefCell<Option<Rc<super::albums::AlbumUi>>>>,
@@ -145,6 +151,7 @@ pub(super) struct AppState {
     pub attach_btn: gtk::Button,
     pub sticker_btn: gtk::Button,
     pub sticker_popover: gtk::Popover,
+    pub sticker_dialogs: Rc<RefCell<Vec<glib::WeakRef<libadwaita::Dialog>>>>,
     pub call_btn: gtk::Button,
     pub mute_btn: gtk::Button,
     pub composer_stack: gtk::Stack,
@@ -207,6 +214,11 @@ pub(super) struct PendingNotif {
 
 #[derive(Debug, Clone)]
 pub(super) enum Pending {
+    MarkRead {
+        account: String,
+        chat_mid: String,
+        message_id: String,
+    },
     MentionMembers {
         account: String,
         chat_mid: String,
@@ -254,6 +266,10 @@ pub(super) enum Pending {
         generation: u64,
         request: super::albums::AlbumRequest,
     },
+    MessageSearch {
+        ui: std::rc::Weak<super::message_search::SearchUi>,
+        generation: u64,
+    },
     SharedMedia {
         ui: std::rc::Weak<super::shared_media::SharedMediaUi>,
         generation: u64,
@@ -291,8 +307,7 @@ pub(super) enum Pending {
         reply_draft: Option<super::replies::ReplyDraft>,
         mention_draft: Option<super::mentions::MentionDraft>,
     },
-    ListStickers,
-    ImportStickerPack(gtk::Button),
+    StickerLibrary(Rc<super::sticker_library::Request>),
     DownloadMedia {
         message_id: String,
         action: String,

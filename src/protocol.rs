@@ -20,6 +20,35 @@ pub struct Response {
     pub extra: Value,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StickerItem {
+    pub sticker_id: String,
+    pub package_id: String,
+    pub version: Option<String>,
+    pub image_path: Option<String>,
+    pub option_key: String,
+    pub personal: bool,
+    pub animated: bool,
+    pub optimized: bool,
+    pub optimization: serde_json::Value,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StickerPack {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    pub source_url: Option<String>,
+    pub import_pack: Option<String>,
+    pub image_only: bool,
+    pub incomplete: bool,
+    pub lazy: bool,
+    pub stickers: Vec<StickerItem>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Profile {
     pub mid: String,
@@ -330,6 +359,13 @@ pub enum ProtocolEvent {
         chat_mid: String,
         message_id: String,
     },
+    /// A chat's on-disk history is close to, or at, the configured limit.
+    MessageCacheLimit {
+        chat_mid: String,
+        count: u64,
+        limit: u64,
+        full: bool,
+    },
     MessageReaction {
         account_mid: String,
         chat_mid: String,
@@ -353,6 +389,12 @@ pub enum ProtocolEvent {
     SenderProfile {
         mid: String,
         name: String,
+    },
+    StickerImportProgress {
+        request_id: u64,
+        account_mid: String,
+        done: u64,
+        total: u64,
     },
     SharedMediaChanged {
         account_mid: String,
@@ -453,6 +495,23 @@ pub enum ProtocolEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_library_items_keep_stable_settings_and_photo_delivery() {
+        let pack: StickerPack = serde_json::from_value(serde_json::json!({
+            "id": "personal-pack", "name": "My PNGs", "source": "local_png", "imageOnly": true,
+            "stickers": [{ "stickerId": "one", "packageId": "personal-pack", "imagePath": "/library/a.png", "optionKey": "account/pack/one", "personal": true }]
+        })).unwrap();
+        assert!(pack.image_only);
+        assert!(!pack.lazy);
+        assert!(pack.stickers[0].personal);
+        assert_eq!(pack.stickers[0].option_key, "account/pack/one");
+        let native: StickerPack =
+            serde_json::from_value(serde_json::json!({ "id": "2", "name": "Owned", "lazy": true }))
+                .unwrap();
+        assert!(native.lazy);
+        assert!(!native.image_only);
+    }
 
     #[test]
     fn parses_event_envelope_and_extra_fields() {

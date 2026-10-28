@@ -106,6 +106,51 @@ fn perform(action: Action) -> Result<Option<Credentials>, StoreError> {
     }
 }
 
+/// Key for the encrypted message cache, created on first use and kept in the
+/// Secret Service. `None` when no keystore is usable; the sidecar then stores
+/// plaintext as before instead of blocking startup.
+pub fn cache_key() -> Option<String> {
+    let attributes = [
+        "application",
+        "dev.linegtk.LineGtk",
+        "purpose",
+        "message-cache-key",
+    ];
+    let mut lookup = Command::new("secret-tool");
+    lookup.arg("lookup").args(attributes);
+    if let Ok((true, output)) = execute(lookup, None, Duration::from_secs(45))
+        && let Ok(text) = String::from_utf8(output)
+        && valid_cache_key(text.trim())
+    {
+        return Some(text.trim().to_string());
+    }
+    let key = random_cache_key()?;
+    let mut store = Command::new("secret-tool");
+    store
+        .args(["store", "--label=LINE GTK message cache key"])
+        .args(attributes);
+    match execute(
+        store,
+        Some(key.clone().into_bytes()),
+        Duration::from_secs(45),
+    ) {
+        Ok((true, _)) => Some(key),
+        _ => None,
+    }
+}
+
+fn valid_cache_key(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn random_cache_key() -> Option<String> {
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn execute(
     mut command: Command,
     input: Option<Vec<u8>>,
@@ -165,6 +210,14 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generated_cache_keys_are_valid_and_unique() {
+        let a = random_cache_key().unwrap();
+        assert!(valid_cache_key(&a));
+        assert_ne!(a, random_cache_key().unwrap());
+        assert!(!valid_cache_key("short"));
+        assert!(!valid_cache_key(&"g".repeat(64)));
+    }
     #[test]
     fn secret_is_only_transferred_over_stdin() {
         let mut command = Command::new("/bin/cat");

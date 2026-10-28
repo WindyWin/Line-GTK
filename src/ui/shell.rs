@@ -5,7 +5,9 @@ pub struct ShellWidgets {
     pub chat_list: gtk::ListBox,
     pub message_list: super::virtual_list::VirtualMessageList,
     pub message_scroll: gtk::ScrolledWindow,
-    pub composer: gtk::Entry,
+    pub composer: gtk::TextView,
+    pub composer_placeholder: gtk::Label,
+    pub composer_emoji: gtk::Button,
     pub attachment_preview: gtk::Box,
     pub reply_preview: gtk::Revealer,
     pub reply_title: gtk::Label,
@@ -27,6 +29,7 @@ pub struct ShellWidgets {
     pub read_pause_label: gtk::Label,
     pub read_pause_box: gtk::Box,
     pub read_once_btn: gtk::Button,
+    pub last_read_btn: gtk::Button,
     pub profile_label: gtk::Label,
     pub profile_avatar: gtk::Picture,
     pub brand_label: gtk::Label,
@@ -48,6 +51,7 @@ pub struct ShellWidgets {
     pub settings_btn: gtk::Button,
     pub friends_btn: gtk::Button,
     pub album_btn: gtk::Button,
+    pub message_search_btn: gtk::Button,
     pub shared_media_btn: gtk::Button,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
@@ -410,6 +414,13 @@ pub fn build_shell_page() -> ShellWidgets {
         .visible(false)
         .build();
     chat_bar.append(&read_once_btn);
+    let last_read_btn = gtk::Button::builder()
+        .icon_name("go-jump-symbolic")
+        .tooltip_text(crate::i18n::t("jump_last_read"))
+        .css_classes(["flat", "circular"])
+        .visible(false)
+        .build();
+    chat_bar.append(&last_read_btn);
     let album_btn = gtk::Button::builder()
         .icon_name("folder-pictures-symbolic")
         .label(crate::i18n::t("albums"))
@@ -417,6 +428,12 @@ pub fn build_shell_page() -> ShellWidgets {
         .css_classes(["flat"])
         .build();
     chat_bar.append(&album_btn);
+    let message_search_btn = gtk::Button::builder()
+        .icon_name("system-search-symbolic")
+        .tooltip_text(crate::i18n::t("message_search"))
+        .css_classes(["flat", "circular"])
+        .build();
+    chat_bar.append(&message_search_btn);
     let shared_media_btn = gtk::Button::builder()
         .label(crate::i18n::t("shared_media"))
         .sensitive(false)
@@ -518,14 +535,57 @@ pub fn build_shell_page() -> ShellWidgets {
         .valign(gtk::Align::Center)
         .css_classes(["line-composer"])
         .build();
-    let composer = gtk::Entry::builder()
-        .placeholder_text("Type a message…")
-        .show_emoji_icon(true)
-        .enable_emoji_completion(true)
+    let composer = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .top_margin(7)
+        .bottom_margin(7)
+        .hexpand(true)
+        .css_classes(["line-composer-text"])
+        .build();
+    let composer_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(34)
+        .max_content_height(160)
+        .propagate_natural_height(true)
+        .hexpand(true)
+        .child(&composer)
+        .build();
+    let composer_placeholder = gtk::Label::builder()
+        .label(crate::i18n::t("type_message"))
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Start)
+        .margin_top(7)
+        .can_target(false)
+        .css_classes(["dim-label"])
+        .build();
+    let composer_overlay = gtk::Overlay::new();
+    composer_overlay.set_child(Some(&composer_scroll));
+    composer_overlay.add_overlay(&composer_placeholder);
+    let placeholder = composer_placeholder.clone();
+    composer.buffer().connect_changed(move |buffer| {
+        placeholder.set_visible(buffer.char_count() == 0);
+    });
+    let composer_emoji = gtk::Button::builder()
+        .icon_name("face-smile-symbolic")
+        .tooltip_text(crate::i18n::t("insert_emoji"))
+        .valign(gtk::Align::Center)
+        .css_classes(["flat", "circular"])
+        .build();
+    let weak = composer.downgrade();
+    composer_emoji.connect_clicked(move |_| {
+        if let Some(composer) = weak.upgrade() {
+            composer.grab_focus();
+            composer.emit_insert_emoji();
+        }
+    });
+    let composer_field = gtk::Box::builder()
         .hexpand(true)
         .valign(gtk::Align::Center)
-        .css_classes(["line-composer-entry"])
+        .css_classes(["entry", "line-composer-entry"])
         .build();
+    composer_field.append(&composer_overlay);
+    composer_field.append(&composer_emoji);
     let attach_btn = gtk::Button::builder()
         .icon_name("mail-attachment-symbolic")
         .tooltip_text("Attach file")
@@ -552,7 +612,7 @@ pub fn build_shell_page() -> ShellWidgets {
     composer_row.append(&attach_btn);
     composer_row.append(&sticker_btn);
     composer_row.append(&mic_btn);
-    composer_row.append(&composer);
+    composer_row.append(&composer_field);
     composer_row.append(&send_btn);
 
     // Recording overlay: cancel | live wave | timer | send (replaces composer; no toast)
@@ -737,11 +797,14 @@ pub fn build_shell_page() -> ShellWidgets {
 
     ShellWidgets {
         read_once_btn,
+        last_read_btn,
         page,
         chat_list,
         message_list,
         message_scroll,
         composer,
+        composer_placeholder,
+        composer_emoji,
         attachment_preview,
         reply_preview,
         reply_title,
@@ -783,6 +846,7 @@ pub fn build_shell_page() -> ShellWidgets {
         settings_btn,
         friends_btn,
         album_btn,
+        message_search_btn,
         shared_media_btn,
         side_title,
         search_entry,
@@ -1412,6 +1476,13 @@ pub fn load_css() {
             padding-bottom: 0;
             padding-left: 12px;
             padding-right: 12px;
+        }
+        .line-composer-text, .line-composer-text text {
+            background: transparent;
+        }
+        .line-composer-entry:focus-within {
+            outline: 2px solid @accent_color;
+            outline-offset: -2px;
         }
         .line-send-btn {
             min-height: 34px;
