@@ -104,7 +104,7 @@ async function ffmpeg(bytes: Uint8Array, args: string[], signal: AbortSignal) {
       ],
       stdin: "piped",
       stdout: "piped",
-      stderr: "null",
+      stderr: "piped",
       signal,
     }).spawn();
   } catch (e) {
@@ -151,14 +151,46 @@ async function ffmpeg(bytes: Uint8Array, args: string[], signal: AbortSignal) {
     }
     return result;
   })();
-  const outcomes = await Promise.allSettled([writing, reading, child.status]);
+  const readError = (async () => {
+    const reader = child.stderr.getReader();
+    const parts: Uint8Array[] = [];
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parts.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return new TextDecoder().decode(
+      parts.length === 1
+        ? parts[0]
+        : new Uint8Array(parts.flatMap((p) => [...p])),
+    ).trim();
+  })();
+  const outcomes = await Promise.allSettled([
+    writing,
+    reading,
+    child.status,
+    readError,
+  ]);
   signal.throwIfAborted();
   const read = outcomes[1], status = outcomes[2];
   if (read.status === "rejected") throw read.reason;
   if (
     outcomes[0].status === "rejected" || status.status !== "fulfilled" ||
     !status.value.success
-  ) throw new Error("sticker_optimize_failed");
+  ) {
+    const diagnostic = outcomes[3].status === "fulfilled"
+      ? outcomes[3].value.slice(-1000)
+      : "";
+    throw new Error(
+      diagnostic
+        ? `sticker_optimize_failed: ${diagnostic}`
+        : "sticker_optimize_failed",
+    );
+  }
   return read.value;
 }
 
