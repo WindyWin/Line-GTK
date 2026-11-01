@@ -34,10 +34,13 @@ import {
   guardedDecrypt,
   needsDecryptionRefresh,
   restoreCachedMessages,
+  retryKeyDecryption,
 } from "./e2ee_guard.ts";
 import * as calls from "./calls.ts";
 import { createOutgoingMedia } from "./outgoing_media.ts";
+import { createLinePollService, type PollClient } from "./line_polls.ts";
 import { patchMediaDecryption } from "./media_crypto.ts";
+import { patchGroupKeyRecovery } from "./group_key_recovery.ts";
 import { createMediaCache } from "./media_cache.ts";
 import { createStickerLibrary } from "./sticker_library.ts";
 import { createStickerService } from "./stickers.ts";
@@ -329,6 +332,9 @@ const stickers = createStickerService({
   fail,
 });
 
+const linePolls = createLinePollService(() =>
+  client as unknown as PollClient | null
+);
 const outgoingMedia = createOutgoingMedia({
   getClient: () => client,
   mediaDir,
@@ -956,8 +962,14 @@ async function fromRawTalkSafe(raw: unknown): Promise<TalkMessage> {
   );
 }
 
+const guardedClients = new WeakSet<Client>();
+
 function patchE2eeGuards() {
   if (!client) return;
+  if (guardedClients.has(client)) return;
+  guardedClients.add(client);
+  const current = client;
+  patchGroupKeyRecovery(client.base);
   patchMediaDecryption(client.base.e2ee);
   const e2ee = client.base.e2ee as unknown as {
     decryptE2EEMessage: (
@@ -965,11 +977,17 @@ function patchE2eeGuards() {
     ) => Promise<Record<string, unknown>>;
   };
   const orig = e2ee.decryptE2EEMessage.bind(e2ee);
-  e2ee.decryptE2EEMessage = guardedDecrypt(orig, () => {
-    console.error(
-      "[e2ee] メッセージを復号できません。暗号鍵の再取得が必要です。",
-    );
-  });
+  e2ee.decryptE2EEMessage = guardedDecrypt(
+    retryKeyDecryption(
+      orig,
+      () => client === current && !authDead && Boolean(current.base.authToken),
+    ),
+    () => {
+      console.error(
+        "[e2ee] メッセージを復号できません。暗号鍵の再取得が必要です。",
+      );
+    },
+  );
 }
 
 const e2eeFileNames = new Map<string, string>();
@@ -2345,6 +2363,7 @@ async function handle(req: Json) {
         "send_media",
         "send_sticker",
         "send_postback",
+        "poll_create",
         "react_message",
         "call_start",
       ].includes(method) &&
@@ -2448,6 +2467,7 @@ async function handle(req: Json) {
                 "login_invalid_password",
                 "login_email_failed",
                 "login_email_timeout",
+                "login_keys_missing",
               ].includes(code)
               ? code
               : emailLoginError(error),
@@ -2860,6 +2880,60 @@ async function handle(req: Json) {
         break;
       case "call_set_audio": {
         ok(id, calls.updateCallAudio(params));
+        break;
+      }
+      case "poll_get": {
+        try {
+          ok(
+            id,
+            await linePolls.get(
+              String(params.chatMid ?? ""),
+              String(params.pollId ?? ""),
+            ),
+          );
+        } catch (e) {
+          fail(id, e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+      case "poll_create": {
+        try {
+          const draft = (params.poll ?? {}) as Record<string, unknown>;
+          ok(
+            id,
+            await linePolls.create(String(params.chatMid ?? ""), {
+              title: String(draft.title ?? ""),
+              choices: Array.isArray(draft.choices)
+                ? draft.choices.map(String)
+                : [],
+              multiple: draft.multiple === true,
+              anonymous: draft.anonymous === true,
+              allowNewChoices: draft.allowNewChoices === true,
+              closeDate: typeof draft.closeDate === "number"
+                ? draft.closeDate
+                : null,
+            }),
+          );
+        } catch (e) {
+          fail(id, e instanceof Error ? e.message : String(e));
+        }
+        break;
+      }
+      case "poll_vote": {
+        try {
+          ok(
+            id,
+            await linePolls.vote(
+              String(params.chatMid ?? ""),
+              String(params.pollId ?? ""),
+              Array.isArray(params.choiceIds)
+                ? params.choiceIds.map(String)
+                : [],
+            ),
+          );
+        } catch (e) {
+          fail(id, e instanceof Error ? e.message : String(e));
+        }
         break;
       }
       case "send_postback": {

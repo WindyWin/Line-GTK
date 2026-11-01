@@ -104,7 +104,7 @@ async function ffmpeg(bytes: Uint8Array, args: string[], signal: AbortSignal) {
       ],
       stdin: "piped",
       stdout: "piped",
-      stderr: "null",
+      stderr: "piped",
       signal,
     }).spawn();
   } catch (e) {
@@ -151,14 +151,46 @@ async function ffmpeg(bytes: Uint8Array, args: string[], signal: AbortSignal) {
     }
     return result;
   })();
-  const outcomes = await Promise.allSettled([writing, reading, child.status]);
+  const readError = (async () => {
+    const reader = child.stderr.getReader();
+    const parts: Uint8Array[] = [];
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        parts.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return new TextDecoder().decode(
+      parts.length === 1
+        ? parts[0]
+        : new Uint8Array(parts.flatMap((p) => [...p])),
+    ).trim();
+  })();
+  const outcomes = await Promise.allSettled([
+    writing,
+    reading,
+    child.status,
+    readError,
+  ]);
   signal.throwIfAborted();
   const read = outcomes[1], status = outcomes[2];
   if (read.status === "rejected") throw read.reason;
   if (
     outcomes[0].status === "rejected" || status.status !== "fulfilled" ||
     !status.value.success
-  ) throw new Error("sticker_optimize_failed");
+  ) {
+    const diagnostic = outcomes[3].status === "fulfilled"
+      ? outcomes[3].value.slice(-1000)
+      : "";
+    throw new Error(
+      diagnostic
+        ? `sticker_optimize_failed: ${diagnostic}`
+        : "sticker_optimize_failed",
+    );
+  }
   return read.value;
 }
 
@@ -191,7 +223,11 @@ export async function optimizeStickerImage(
         dir: workDir,
         prefix: ".sticker-optimize-",
       });
-      const palette = await ffmpeg(bytes, [
+      // Older APNG demuxers require seeking, which stdin cannot provide.
+      const sourcePath = join(temporary, "source.png");
+      await Deno.writeFile(sourcePath, bytes, { mode: 0o600 });
+      input[input.length - 1] = sourcePath;
+      const palette = await ffmpeg(new Uint8Array(), [
         ...input,
         "-vf",
         `fps=${options.fps},${scale},palettegen=max_colors=${options.colors}:reserve_transparent=1`,
@@ -205,7 +241,7 @@ export async function optimizeStickerImage(
       ], signal);
       const palettePath = join(temporary, "palette.png");
       await Deno.writeFile(palettePath, palette, { mode: 0o600 });
-      output = await ffmpeg(bytes, [
+      output = await ffmpeg(new Uint8Array(), [
         ...input,
         "-i",
         palettePath,
