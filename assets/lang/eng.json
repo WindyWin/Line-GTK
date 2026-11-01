@@ -752,5 +752,22 @@
   "poll_choice_long": "An option is too long (60 characters max).",
   "poll_choice_duplicate": "Options must be different.",
   "poll_close_past": "The closing time must be in the future.",
-  "cancel": "Cancel"
+  "cancel": "Cancel",
+  "conversation_settings": "Conversation settings",
+  "group_invite_friends": "Invite friends",
+  "group_settings_refresh": "Refresh members and invitations",
+  "group_settings_loading": "Loading group information…",
+  "group_settings_failed": "Could not load group information. Use Refresh to try again.",
+  "group_pending_invitations": "Pending invitations",
+  "group_members_count": "Members ({n})",
+  "group_invitees_count": "Invited ({n})",
+  "group_member_you": "You",
+  "group_search_people": "Search members and invitations",
+  "group_no_invitations": "No pending invitations.",
+  "group_no_candidates": "All available friends are already members or invited.",
+  "group_choose_friends": "Select up to 100 friends to invite. Members and pending invitations are excluded.",
+  "group_send_invitations": "Send invitations",
+  "group_inviting": "Sending invitations…",
+  "group_invite_done": "Invitations sent.",
+  "group_invite_failed": "Could not confirm the invitations. Refresh the group before trying again."
 }

@@ -1,3 +1,4 @@
+use super::link_policy::{self, LinkKind};
 use super::*;
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,13 +12,14 @@ struct Preview {
 }
 
 pub(super) fn append(bubble: &gtk::Box, text: &str) {
-    for url in extract_urls(text).into_iter().take(4) {
+    let links = link_policy::classify_links(text)
+        .into_iter()
+        .filter(|(_, kind)| *kind != LinkKind::Skip)
+        .take(4);
+    for (url, kind) in links {
         let Ok(parsed) = reqwest::Url::parse(&url) else {
             continue;
         };
-        if !matches!(parsed.scheme(), "http" | "https") {
-            continue;
-        }
         let domain = parsed.host_str().unwrap_or(&url).to_string();
         let card = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -87,10 +89,19 @@ pub(super) fn append(bubble: &gtk::Box, text: &str) {
             .uri(&url)
             .css_classes(["flat"])
             .build();
-        actions.append(&load);
+        if kind == LinkKind::Preview {
+            actions.append(&load);
+        }
         actions.append(&open);
         card.append(&actions);
         bubble.append(&card);
+        if kind != LinkKind::Preview {
+            // Not on the preview allowlist: show the domain and an open button only,
+            // never contact the host from here.
+            title.set_visible(false);
+            description.set_visible(false);
+            continue;
+        }
 
         let title_c = title.clone();
         let description_c = description.clone();
@@ -199,15 +210,39 @@ fn queue_preview(url: String, domain: String, reply: async_channel::Sender<Resul
     let _ = queue.try_send((url, domain, reply));
 }
 
-fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
-    let client = reqwest::blocking::Client::builder()
+fn build_client(page: bool) -> Result<reqwest::blocking::Client, ()> {
+    // Every redirect hop is re-checked: pages may only bounce between allowlisted
+    // hosts, thumbnails only between https domain names. DNS answers pointing at
+    // private/loopback addresses are refused for both.
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        let allowed = if page {
+            link_policy::is_preview_url(attempt.url())
+        } else {
+            link_policy::is_image_url(attempt.url())
+        };
+        if attempt.previous().len() >= 3 || !allowed {
+            attempt.error("redirect not allowed")
+        } else {
+            attempt.follow()
+        }
+    });
+    reqwest::blocking::Client::builder()
         .user_agent("Line-GTK/0.1 (link preview)")
         .timeout(Duration::from_secs(8))
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(policy)
+        .dns_resolver(Arc::new(link_policy::PublicOnlyResolver))
         .build()
-        .map_err(|_| ())?;
+        .map_err(|_| ())
+}
+
+fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
     let parsed = reqwest::Url::parse(url).map_err(|_| ())?;
-    if let Some(preview) = fetch_oembed(&client, &parsed) {
+    if !link_policy::is_preview_url(&parsed) {
+        return Err(());
+    }
+    let client = build_client(true)?;
+    let image_client = build_client(false)?;
+    if let Some(preview) = fetch_oembed(&client, &image_client, &parsed) {
         return Ok(preview);
     }
     // YouTube pages can require consent or JavaScript; their public thumbnail
@@ -215,7 +250,7 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
     if let Some(id) = youtube_id(url) {
         let thumbnail = reqwest::Url::parse(&format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg"))
             .map_err(|_| ())?;
-        if let Some(image) = fetch_image(&client, &thumbnail) {
+        if let Some(image) = fetch_image(&image_client, &thumbnail) {
             return Ok(Preview {
                 title: crate::i18n::t("youtube_video"),
                 description: String::new(),
@@ -228,7 +263,7 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
     // TikTok short share links redirect to the canonical video URL required by
     // oEmbed. Try that even when the page itself returns a challenge/error.
     if page_url != parsed
-        && let Some(preview) = fetch_oembed(&client, &page_url)
+        && let Some(preview) = fetch_oembed(&client, &image_client, &page_url)
     {
         return Ok(preview);
     }
@@ -243,11 +278,21 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
     if !html_type {
         return Err(());
     }
+    read_page(response, &page_url, domain, |url| {
+        fetch_image(&image_client, url)
+    })
+}
+
+fn read_page(
+    page: impl Read,
+    page_url: &reqwest::Url,
+    domain: &str,
+    load_image: impl FnOnce(&reqwest::Url) -> Option<Vec<u8>>,
+) -> Result<Preview, ()> {
     // Metadata is in the page head. Read a bounded prefix rather than rejecting
     // large video pages just because their entire document exceeds the limit.
     let mut bytes = Vec::new();
-    response
-        .take(1024 * 1024)
+    page.take(1024 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
     let html = String::from_utf8_lossy(&bytes);
@@ -265,11 +310,8 @@ fn fetch(url: &str, domain: &str) -> Result<Preview, ()> {
         .or_else(|| meta(&html, "twitter:image"))
         .or_else(|| meta(&html, "twitter:image:src"))
         .and_then(|url| page_url.join(&url).ok())
-        .filter(|url| {
-            matches!(url.scheme(), "http" | "https")
-                && (page_url.scheme() != "https" || url.scheme() == "https")
-        })
-        .and_then(|url| fetch_image(&client, &url));
+        .filter(link_policy::is_image_url)
+        .and_then(|url| load_image(&url));
     Ok(Preview {
         title: compact_text(&title, 100),
         description: truncate(&description, 280),
@@ -294,7 +336,11 @@ fn oembed_url(url: &reqwest::Url) -> Option<reqwest::Url> {
     Some(endpoint)
 }
 
-fn fetch_oembed(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option<Preview> {
+fn fetch_oembed(
+    client: &reqwest::blocking::Client,
+    image_client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+) -> Option<Preview> {
     let endpoint = oembed_url(url)?;
     let response = client.get(endpoint).send().ok()?.error_for_status().ok()?;
     let mut bytes = Vec::new();
@@ -304,7 +350,7 @@ fn fetch_oembed(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Optio
     }
     let data: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let thumbnail = reqwest::Url::parse(data.get("thumbnail_url")?.as_str()?).ok()?;
-    if thumbnail.scheme() != "https" {
+    if !link_policy::is_image_url(&thumbnail) {
         return None;
     }
     Some(Preview {
@@ -315,11 +361,14 @@ fn fetch_oembed(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Optio
                 .unwrap_or_default(),
             280,
         ),
-        image: Some(fetch_image(client, &thumbnail)?),
+        image: Some(fetch_image(image_client, &thumbnail)?),
     })
 }
 
 fn fetch_image(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option<Vec<u8>> {
+    if !link_policy::is_image_url(url) {
+        return None;
+    }
     let response = client
         .get(url.clone())
         .send()
@@ -346,7 +395,11 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option
     if bytes.len() > 2 * 1024 * 1024 {
         return None;
     }
-    let reader = image::ImageReader::new(Cursor::new(&bytes))
+    image_thumbnail(&bytes)
+}
+
+fn image_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
+    let reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
     let (width, height) = reader.into_dimensions().ok()?;
@@ -358,7 +411,7 @@ fn fetch_image(client: &reqwest::blocking::Client, url: &reqwest::Url) -> Option
     {
         return None;
     }
-    let thumbnail = image::load_from_memory(&bytes).ok()?.thumbnail(320, 360);
+    let thumbnail = image::load_from_memory(bytes).ok()?.thumbnail(320, 360);
     let mut png = Cursor::new(Vec::new());
     thumbnail.write_to(&mut png, image::ImageFormat::Png).ok()?;
     Some(png.into_inner())
@@ -588,40 +641,24 @@ mod tests {
 
     #[test]
     fn large_video_pages_still_load_relative_open_graph_thumbnails() {
-        use std::io::Write;
-        use std::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let server = std::thread::spawn(move || {
-            let mut image_bytes = Cursor::new(Vec::new());
-            image::DynamicImage::new_rgb8(640, 360)
-                .write_to(&mut image_bytes, image::ImageFormat::Png)
-                .unwrap();
-            let html = format!(
-                r#"<head><meta property="og:title" content="Video &amp; title">
-                <meta property="og:image" content="/thumbnail.png"></head>{}"#,
-                " ".repeat(300 * 1024)
-            );
-            for (content_type, body) in [
-                ("text/html", html.into_bytes()),
-                ("image/png", image_bytes.into_inner()),
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                let mut request = [0; 4096];
-                assert!(stream.read(&mut request).unwrap() > 0);
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
-                stream.write_all(&body).unwrap();
-            }
-        });
-        let preview = fetch(&url, "localhost").unwrap();
+        let mut image_bytes = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(640, 360)
+            .write_to(&mut image_bytes, image::ImageFormat::Png)
+            .unwrap();
+        let html = format!(
+            r#"<head><meta property="og:title" content="Video &amp; title">
+            <meta property="og:image" content="/thumbnail.png"></head>{}"#,
+            " ".repeat(300 * 1024)
+        );
+        let page_url = reqwest::Url::parse("https://www.youtube.com/watch?v=jNQXAC9IVRw").unwrap();
+        let preview = read_page(Cursor::new(html), &page_url, "youtube.com", |url| {
+            assert_eq!(url.as_str(), "https://www.youtube.com/thumbnail.png");
+            image_thumbnail(image_bytes.get_ref())
+        })
+        .unwrap();
         assert_eq!(preview.title, "Video & title");
         let thumbnail = image::load_from_memory(&preview.image.unwrap()).unwrap();
         assert_eq!((thumbnail.width(), thumbnail.height()), (320, 180));
-        server.join().unwrap();
     }
 
     #[test]
@@ -638,5 +675,18 @@ mod tests {
             meta(r#"<meta property="og:title" content="A > B">"#, "og:title").as_deref(),
             Some("A > B")
         );
+    }
+
+    #[test]
+    fn clients_refuse_names_that_resolve_to_loopback() {
+        // `localhost` resolves to 127.0.0.1/::1, which the resolver filters out.
+        for page in [true, false] {
+            let client = build_client(page).unwrap();
+            assert!(client.get("https://localhost/").send().is_err());
+        }
+        // Non-allowlisted hosts and IP literals never reach the network.
+        assert!(fetch("https://example.com/", "example.com").is_err());
+        assert!(fetch("https://127.0.0.1/", "127.0.0.1").is_err());
+        assert!(fetch("http://www.youtube.com/", "youtube.com").is_err());
     }
 }

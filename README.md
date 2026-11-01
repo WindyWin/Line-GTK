@@ -10,17 +10,101 @@ Unofficial native LINE client for Linux, with a GTK4/Libadwaita interface and a 
 
 ## Features
 
+Everything checked below is implemented in the current Line-GTK feature set. The sections after this list describe behavior and limits in detail.
+
+**Sign-in and account**
+
 - [x] QR login as an additional device; email and password login with phone verification when needed
-- [x] Chats, messages, stickers, friends, photos, videos, voice messages, and files
-- [x] Replies, unsend, reactions, Unicode emoji, and received LINE emoji
-- [x] Chat filters and search; hide, pin, and block contacts
-- [x] Group event notices and sender names
-- [x] Albums, original photo downloads, and in-app image, video, PDF, and text viewers
-- [x] Paste and drag-and-drop attachments
-- [x] Sticker notification previews, unread sync, and recovery after sleep or network loss
-- [x] Downloads, tray, themes, Discord RPC, and Vietnamese (app default), Thai, English, and Japanese UI
-- [ ] Voice calls (work in progress)
-- [ ] Account switcher
+- [x] Optional automatic sign-in at startup, with credentials stored in the OS keyring
+- [x] Session restore, launch at login, optional start hidden in the tray, and logout
+- [x] Letter Sealing decryption, encryption-key import from the phone, group-key recovery, and key re-request from a failed message
+- [x] Message cache encryption when a keyring key is available, plus per-chat limits and cleanup warnings
+
+**Chats and messages**
+
+- [x] 1:1, group, and multi-person chats, official accounts, friends list, add friend by LINE ID, and user profiles
+- [x] Text, photos, videos, voice messages, files, stickers, Flex cards, and link preview cards
+- [x] Quoted replies, jump to the original message, jump to the last read message, and older-history paging by scrolling
+- [x] Copy a whole message or select part of it; unsend your own messages and apply unsends from other devices
+- [x] Six standard LINE reactions and LINE emoji reactions, with a who-reacted list
+- [x] Group mentions with an @ picker, @all, mention notifications, and mentioned-member profiles
+- [x] Unicode emoji input and inline display of received LINE emoji
+- [x] Native LINE text polls: view, vote, and create with multiple choice, anonymous votes, member-added options, and a closing date
+- [x] In-chat message search over saved history, 50 results per page, with jump to the message
+- [x] Chat filters, name/preview search, pinning, hiding, blocking, muting, and per-account persistence
+- [x] Read-receipt pause globally or per contact, mark read up to now, and unread sync from other devices
+- [x] Drafts, attachment previews, paste and drag-and-drop, and messages queued while reconnecting
+
+**Stickers and emoji**
+
+- [x] Sticker picker with account-owned packs, creators' packs from LINE STORE, and personal PNG/APNG packs
+- [x] Sticker import with per-file validation, progress, cancellation, retry, rename, remove, and restore of older packs
+- [x] Size and background editing, GIF conversion, optimization (resolution, frame rate, palette), and animated hover previews
+- [x] Received LINE emoji as inline images; owned LINE emoji available for reactions
+
+**Groups, media, and files**
+
+- [x] Named group notices for invitations, joins, leaves, removals, renames, and picture changes
+- [x] Group member list with search, pending invitations, profiles, and inviting up to 100 friends
+- [x] Group sender names in bubbles, quotes, and notification titles
+- [x] Conversation albums and original photo saving; shared media browser for photos, videos, links, and files
+- [x] Image viewer with zoom and drawing, video player, PDF/text/Markdown previews, and open/show-in-folder actions
+- [x] Download folders, ask-every-time saving, file-name collision handling, and download progress
+- [x] Call-history cards for incoming, outgoing, missed, and unanswered calls
+
+**Desktop, recovery, and appearance**
+
+- [x] Desktop notifications with sender/group titles, sticker images, mention titles, sound, volume, and per-chat mute
+- [x] System tray with recent chats, unread badge, mute timers, close-to-tray, and autostart
+- [x] Resume after sleep and network recovery, reconnect retries, stalled-receiver detection, and cached chats at startup
+- [x] Discord Rich Presence, themes, font and UI scaling, animations, and Vietnamese (default), Thai, English, and Japanese UI
+- [x] Cache retention, per-chat message limits, granular cache clearing, diagnostics, and protocol-engine restart
+- [x] Experimental 1:1 voice calls behind an opt-in setting; they require QR login and may be unstable
+
+### Not yet available
+
+These are native LINE features this client does not provide. The experimental voice-call option above is not a substitute for stable calling.
+
+**Calls and account**
+
+- [ ] Stable voice calls, video calls, group calls, and screen sharing
+- [ ] Call backgrounds, effects, and other calling features from the official client
+- [ ] Account switcher and multiple signed-in accounts
+- [ ] Linked-device management, account backup/restore, and migration
+- [ ] Editing your own profile (name, status message, avatar, cover) and privacy/security settings
+- [ ] Friend requests (accept/reject), favorites, delete/hide friends, and QR-code/ID discovery beyond adding a LINE ID
+- [ ] Chat backup and restore
+
+**Groups and chat**
+
+- [ ] Creating groups, leaving or deleting groups, removing members, renaming, changing group pictures, and invitation-link controls
+- [ ] Group Notes/posts and group album management
+- [ ] Forwarding and sharing messages, multi-select actions, and pinning individual messages
+- [ ] Full-text search across all chats (search is per conversation and limited to saved history)
+- [ ] Per-chat backgrounds/themes, message translation, notification quick reply, and message effects
+- [ ] Keep, Keep Memo, and saving messages to Keep
+- [ ] Official-account rich menus, buttons, and quick replies
+
+**Media and message types**
+
+- [ ] Creating, renaming, and deleting albums; adding or removing album photos; album video
+- [ ] Sending multiple photos at once, video messages, and other attachment types
+- [ ] Location and live-location sharing, contact cards, and other rich message types
+- [ ] In-app image editing beyond drawing
+
+**Stickers and emoji**
+
+- [ ] Buying and managing stickers and LINE emoji sets inside the app
+- [ ] Sending purchased LINE emoji as message content and animated LINE emoji playback
+- [ ] Publishing personal sticker packs to LINE (personal packs here are local photo collections)
+- [ ] Sticker effects, sounds, and popup animations
+
+**Polls and other LINE services**
+
+- [ ] Date and image polls, and editing, closing, or deleting polls
+- [ ] OpenChat discovery, joining, and management
+- [ ] Timeline/VOOM, LINE Today, LINE Pay, Shopping, Games, and premium subscription features
+- [ ] AI/prototype features in the official client: chat summary/search/translation, OCR translation, natural-language sticker search, AI agent, and call backgrounds
 
 ### Read receipts and unread state
 
@@ -57,6 +141,8 @@ The composer emoji button inserts Unicode emoji as text at the cursor, using the
 ### Groups, notifications, and recovery
 
 Group invitation, join, leave, and removal events appear as named notices, including events involving multiple members. Names load in the background. Events received by this computer are stored per account and interleaved with messages by time after reopening or restarting. Limits are 500 events per chat and 5,000 per account; clearing the message cache removes them. Notices cannot be replied to and their IDs are never used for read receipts. Historical group events are unavailable from the message history API, so events missed while the app was closed or disconnected appear only if LINE redelivers them. Group and multi-person bubbles show sender names, including members who are not friends, and update names and quoted sender names after background lookup.
+
+Open **⋮ → Conversation settings**, or right-click a chat and choose **Conversation settings**. Group chats show searchable members and pending invitations; click a member to view their profile. **Invite friends** lets you select up to 100 friends and send LINE invitations. The picker excludes current members, people already invited, and official accounts, and rechecks eligibility before sending. Refresh to see membership changes from other devices. Opening settings from the chat list does not open the conversation or mark it read. Pin, hide, notification, and shared-content shortcuts are also available. Invitation links, QR invitations, member removal, and group renaming are not implemented.
 
 Group notifications show **Sender (Group)** for text, photos, and stickers. Name lookup waits up to 1.2 seconds, then uses a distinct temporary member label if needed and silently updates the same notification later. Sticker notifications show a still image when the notification server supports body images. Image lookup also waits up to 1.2 seconds; a text notification may appear first and be silently updated. A dismissed notification does not reopen. Other servers use an image hint and sticker icon, with text as fallback. Notification images are transparent PNGs up to 200 × 100 pixels and are removed with the sticker cache. Clicking a notification opens the chat; mute settings still apply.
 

@@ -1,4 +1,4 @@
-use crate::protocol::{ProtocolEvent, Request, Response};
+use crate::protocol::{MessageInfo, ProtocolEvent, Request, Response};
 use anyhow::{Context, Result, anyhow};
 use async_channel::{Receiver, Sender};
 use serde_json::{Value, json};
@@ -832,6 +832,24 @@ fn read_loop<R: std::io::Read>(
                                 .to_string(),
                         },
                         "listening" => ProtocolEvent::Listening,
+                        "message_recovered" => {
+                            let Some(message) =
+                                resp.extra.get("message").cloned().and_then(|value| {
+                                    serde_json::from_value::<MessageInfo>(value).ok()
+                                })
+                            else {
+                                continue;
+                            };
+                            ProtocolEvent::MessageRecovered {
+                                account_mid: resp
+                                    .extra
+                                    .get("accountMid")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                message: Box::new(message),
+                            }
+                        }
                         "message_unsent" => {
                             let field = |key| {
                                 resp.extra
@@ -1417,6 +1435,20 @@ mod authentication_tests {
         assert!(
             matches!(rx.try_recv().unwrap(), ProtocolEvent::EmojiReady { key, path }
             if key == "5ac1bfd5040ab15980c9b435_001" && path == "/cache/emoji.png")
+        );
+    }
+
+    #[test]
+    fn recovered_message_keeps_account_and_message_identity() {
+        let (tx, rx) = async_channel::unbounded();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let generation = AtomicU64::new(1);
+        let event = b"{\"event\":\"message_recovered\",\"accountMid\":\"u-self\",\"message\":{\"id\":\"9007199254740993\",\"to\":\"c-group\",\"text\":\"recovered\",\"decryptionFailed\":false}}\n";
+        read_loop(&event[..], tx, pending, &generation, 1);
+        assert!(
+            matches!(rx.try_recv().unwrap(), ProtocolEvent::MessageRecovered { account_mid, message }
+            if account_mid == "u-self" && message.id == "9007199254740993"
+                && message.text == "recovered" && !message.decryption_failed)
         );
     }
 

@@ -80,6 +80,7 @@ import { type ChatRow, contactChatRow } from "./chat_rows.ts";
 import { createAlbumService } from "./albums.ts";
 import { createMessageSenders } from "./message_senders.ts";
 import { createUserProfiles } from "./user_profiles.ts";
+import { createConversationSettings } from "./conversation_settings.ts";
 import {
   type BootProfile,
   loadBootCache,
@@ -392,13 +393,13 @@ function invalidateMessages(chatMid: string) {
 /** Add a live message to history that was already checked this session. */
 function appendCachedMessage(chatMid: string, message: Json) {
   void sharedMedia.observe(chatMid, [{ message }]).catch(() => {});
+  void saveDiskMessages(chatMid, [message], { contiguous: true });
   const cached = msgCache.get(chatMid);
   if (!cached) return;
   msgCache.set(chatMid, {
     at: cached.at,
     messages: appendLive(cached.messages, message),
   });
-  void saveDiskMessages(chatMid, [message], { contiguous: true });
 }
 const inFlight = new Map<string, Promise<unknown>>();
 const contactIndex = new Map<
@@ -468,6 +469,11 @@ const contactBlocks = createContactBlocks({
   selfMid: myMid,
   name: (mid) => contactIndex.get(mid)?.name,
   emit: emitEvent,
+});
+
+const conversationSettings = createConversationSettings({
+  getClient: () => authDead ? null : client,
+  selfMid: myMid,
 });
 
 const userProfiles = createUserProfiles({
@@ -912,6 +918,7 @@ function bumpMediaEpoch(chatMid: string): number {
 let workGen = 0;
 function cancelBackgroundWork() {
   workGen++;
+  listener.cancelRetries();
   for (const mid of [...mediaEpoch.keys()]) {
     bumpMediaEpoch(mid);
   }
@@ -982,7 +989,8 @@ function patchE2eeGuards() {
       orig,
       () => client === current && !authDead && Boolean(current.base.authToken),
     ),
-    () => {
+    (raw) => {
+      listener.retryFailedMessage(current, raw);
       console.error(
         "[e2ee] メッセージを復号できません。暗号鍵の再取得が必要です。",
       );
@@ -2711,6 +2719,15 @@ async function handle(req: Json) {
         break;
       case "get_chat_members":
         await commands.mentionMembers(id, String(params.chatMid ?? ""));
+        break;
+      case "get_conversation_settings":
+        ok(id, await conversationSettings.details(params.chatMid));
+        break;
+      case "get_group_invite_candidates":
+        ok(id, await conversationSettings.candidates(params.chatMid));
+        break;
+      case "invite_chat_members":
+        ok(id, await conversationSettings.invite(params.chatMid, params.mids));
         break;
       case "send_message":
         await commands.sendMessage(

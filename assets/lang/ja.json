@@ -752,5 +752,22 @@
   "poll_choice_long": "選択肢が長すぎます（最大60文字）。",
   "poll_choice_duplicate": "選択肢は重複できません。",
   "poll_close_past": "終了時刻は未来にしてください。",
-  "cancel": "キャンセル"
+  "cancel": "キャンセル",
+  "conversation_settings": "トーク設定",
+  "group_invite_friends": "友だちを招待",
+  "group_settings_refresh": "メンバーと招待を更新",
+  "group_settings_loading": "グループ情報を読み込み中…",
+  "group_settings_failed": "グループ情報を取得できませんでした。更新して再試行してください。",
+  "group_pending_invitations": "招待中",
+  "group_members_count": "メンバー（{n}）",
+  "group_invitees_count": "招待中（{n}）",
+  "group_member_you": "自分",
+  "group_search_people": "メンバー・招待中の友だちを検索",
+  "group_no_invitations": "招待中の友だちはいません。",
+  "group_no_candidates": "招待できる友だちは全員参加済み、または招待中です。",
+  "group_choose_friends": "招待する友だちを100人まで選択してください。参加済み・招待中の友だちは表示されません。",
+  "group_send_invitations": "招待する",
+  "group_inviting": "招待を送信中…",
+  "group_invite_done": "招待を送信しました。",
+  "group_invite_failed": "招待の結果を確認できませんでした。グループを更新してから再試行してください。"
 }

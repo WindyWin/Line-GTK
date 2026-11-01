@@ -679,5 +679,22 @@
   "poll_choice_long": "ตัวเลือกยาวเกินไป (สูงสุด 60 ตัวอักษร)",
   "poll_choice_duplicate": "ตัวเลือกต้องไม่ซ้ำกัน",
   "poll_close_past": "เวลาปิดต้องอยู่ในอนาคต",
-  "cancel": "ยกเลิก"
+  "cancel": "ยกเลิก",
+  "conversation_settings": "ตั้งค่าการสนทนา",
+  "group_invite_friends": "เชิญเพื่อน",
+  "group_settings_refresh": "รีเฟรชสมาชิกและคำเชิญ",
+  "group_settings_loading": "กำลังโหลดข้อมูลกลุ่ม…",
+  "group_settings_failed": "โหลดข้อมูลกลุ่มไม่ได้ โปรดกดรีเฟรชเพื่อลองอีกครั้ง",
+  "group_pending_invitations": "คำเชิญที่รอดำเนินการ",
+  "group_members_count": "สมาชิก ({n})",
+  "group_invitees_count": "เชิญแล้ว ({n})",
+  "group_member_you": "คุณ",
+  "group_search_people": "ค้นหาสมาชิกและผู้ที่ได้รับเชิญ",
+  "group_no_invitations": "ไม่มีคำเชิญที่รอดำเนินการ",
+  "group_no_candidates": "เพื่อนที่พร้อมใช้งานทั้งหมดเป็นสมาชิกหรือได้รับเชิญแล้ว",
+  "group_choose_friends": "เลือกเพื่อนที่จะเชิญได้สูงสุด 100 คน ไม่รวมสมาชิกและผู้ที่ได้รับเชิญแล้ว",
+  "group_send_invitations": "ส่งคำเชิญ",
+  "group_inviting": "กำลังส่งคำเชิญ…",
+  "group_invite_done": "ส่งคำเชิญแล้ว",
+  "group_invite_failed": "ยืนยันคำเชิญไม่ได้ โปรดรีเฟรชกลุ่มก่อนลองอีกครั้ง"
 }

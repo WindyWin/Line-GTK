@@ -54,6 +54,8 @@ pub struct ShellWidgets {
     pub message_search_btn: gtk::Button,
     pub shared_media_btn: gtk::Button,
     pub poll_create_btn: gtk::Button,
+    pub conversation_settings_btn: gtk::Button,
+    pub conversation_menu: gtk::MenuButton,
     pub side_title: gtk::Label,
     pub search_entry: gtk::SearchEntry,
     pub chat_filter_bar: gtk::Box,
@@ -442,7 +444,7 @@ pub fn build_shell_page() -> ShellWidgets {
         .build();
     let conversation_menu = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text(crate::i18n::t("shared_media"))
+        .tooltip_text(crate::i18n::t("conversation_settings"))
         .css_classes(["flat"])
         .build();
     let poll_create_btn = gtk::Button::builder()
@@ -454,7 +456,15 @@ pub fn build_shell_page() -> ShellWidgets {
     menu_items.append(&shared_media_btn);
     menu_items.append(&poll_create_btn);
     let menu = gtk::Popover::new();
+    let conversation_settings_btn = gtk::Button::builder()
+        .label(crate::i18n::t("conversation_settings"))
+        .action_name("win.current-conversation-settings")
+        .css_classes(["flat"])
+        .build();
+    menu_items.prepend(&conversation_settings_btn);
     menu.set_child(Some(&menu_items));
+    let popover = menu.clone();
+    conversation_settings_btn.connect_clicked(move |_| popover.popdown());
     conversation_menu.set_popover(Some(&menu));
     for button in [&shared_media_btn, &poll_create_btn] {
         let popover = menu.clone();
@@ -860,6 +870,8 @@ pub fn build_shell_page() -> ShellWidgets {
         message_search_btn,
         shared_media_btn,
         poll_create_btn,
+        conversation_settings_btn,
+        conversation_menu,
         side_title,
         search_entry,
         chat_filter_bar,

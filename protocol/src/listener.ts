@@ -3,10 +3,12 @@ import type * as calls from "./calls.ts";
 import { conversationMid } from "./messages.ts";
 import type { ReadOperation } from "./read_receipts.ts";
 import { createReceiverWatchdog } from "./receiver_watchdog.ts";
+import { createDecryptionRetry, type RetryClock } from "./decryption_retry.ts";
 
 type Json = Record<string, unknown>;
 
 export type ListenerRuntime = {
+  retryClock?: RetryClock;
   prepareMessage?: (message: Json) => Promise<Json | null>;
   handleIncomingCall: typeof calls.handleIncomingCall;
   handleCallCancel: typeof calls.handleCallCancel;
@@ -38,7 +40,9 @@ export type ListenerRuntime = {
 };
 
 export function createListener(runtime: ListenerRuntime) {
-  const delivered = new Set<string>();
+  // Failed deliveries can be upgraded once, without replaying unread/cursor work.
+  const delivered = new Map<string, boolean>();
+  let owner: Client | null = null;
   let stopWatchdog: (() => void) | undefined;
   const {
     summarizeTalkMessage,
@@ -48,67 +52,99 @@ export function createListener(runtime: ListenerRuntime) {
     upsertChatFromContact,
     emitEvent,
   } = runtime;
+  const retries = createDecryptionRetry({
+    getClient: runtime.getClient,
+    clock: runtime.retryClock,
+    decrypt: async (client, raw) =>
+      await client.base.e2ee.decryptE2EEMessage(
+        raw as never,
+      ) as unknown as Json,
+    recovered: async (client, raw) => {
+      await deliver(
+        client,
+        new TalkMessage({ client, raw: raw as never }),
+        true,
+      );
+    },
+  });
 
-  function startListen() {
-    const client = runtime.getClient();
-    if (!client || runtime.isListening()) return;
-    runtime.setListening(true);
-
-    // Register BEFORE listen() so early ops are not missed.
-    client.on("message", async (msg) => {
-      try {
-        if (runtime.getClient() !== client) return;
-        const account = client.base.profile?.mid;
-        const tm = msg as TalkMessage;
-        let message = await summarizeTalkMessage(tm, { withMedia: false });
-        if (runtime.prepareMessage) {
-          const prepared = await runtime.prepareMessage(message);
-          if (!prepared) return;
-          message = prepared;
+  async function deliver(client: Client, tm: TalkMessage, recovered = false) {
+    try {
+      if (runtime.getClient() !== client) return;
+      const account = client.base.profile?.mid;
+      let message = await summarizeTalkMessage(tm, { withMedia: false });
+      if (runtime.prepareMessage) {
+        const prepared = await runtime.prepareMessage(message);
+        if (!prepared) return;
+        message = prepared;
+      }
+      // 交換直前に受信済みの本文は同じアカウントに限って届け、取りこぼさない。
+      const active = runtime.getClient();
+      if (recovered && active !== client) return;
+      if (
+        !active ||
+        (active !== client &&
+          (!account || active.base.profile?.mid !== account))
+      ) return;
+      if (runtime.shouldIgnoreMessage?.(message)) return;
+      const peer = conversationMid(message);
+      const successful = message.decryptionFailed !== true;
+      if (message.id) {
+        const key = `${account}:${peer}:${message.id}`;
+        const previous = delivered.get(key);
+        if (previous === true || (previous === false && !successful)) return;
+        recovered ||= previous === false;
+        delivered.set(key, successful);
+        if (delivered.size > 2048) {
+          delivered.delete(delivered.keys().next().value!);
         }
-        // 交換直前に受信済みの本文は同じアカウントに限って届け、取りこぼさない。
-        const active = runtime.getClient();
-        if (
-          !active ||
-          (active !== client &&
-            (!account || active.base.profile?.mid !== account))
-        ) return;
-        if (runtime.shouldIgnoreMessage?.(message)) return;
-        const peer = conversationMid(message);
-        if (message.id) {
-          const key = `${account}:${peer}:${message.id}`;
-          if (delivered.has(key)) return;
-          delivered.add(key);
-          if (delivered.size > 2048) {
-            delivered.delete(delivered.values().next().value!);
-          }
-        }
-        runtime.observeMessage?.(message);
-        runtime.appendMessage(peer, message);
-        // Advance box cursor so later refetch can see this message.
+      }
+      const raw = (tm.raw ?? message) as unknown as Json;
+      if (successful) retries.forget(client, raw);
+      else retries.enqueue(client, raw);
+      if (!recovered) runtime.observeMessage?.(message);
+      runtime.appendMessage(peer, message);
+      emitEvent(recovered ? "message_recovered" : "message", {
+        accountMid: account,
+        message: { ...message, imagePath: null },
+      });
+      if (!recovered) {
+        // Recovery of an older row must not move the newest-message cursor back.
         storeBoxCursor(peer, {
           messageId: message.id,
           deliveredTime: message.createdTime,
         });
-        emitEvent("message", { message: { ...message, imagePath: null } });
         await upsertChatFromMessage(message);
-        if (message.needsMedia) {
-          // Use the live TalkMessage.getData path — history refetch often misses
-          // brand-new messages and left bubbles on "Image unavailable" until restart.
-          const mediaClient = runtime.getClient();
-          if (
-            mediaClient && account && mediaClient.base.profile?.mid === account
-          ) {
-            const mediaMessage = mediaClient === client
-              ? tm
-              : new TalkMessage({ client: mediaClient, raw: tm.raw });
-            void hydrateLiveMedia(mediaMessage, message, peer);
-          }
-        }
-      } catch (e) {
-        console.error("[listen message]", e);
       }
-    });
+      if (message.needsMedia) {
+        // Use the live TalkMessage.getData path — history refetch often misses
+        // brand-new messages and left bubbles on "Image unavailable" until restart.
+        const mediaClient = runtime.getClient();
+        if (
+          mediaClient && account && mediaClient.base.profile?.mid === account
+        ) {
+          const mediaMessage = mediaClient === client
+            ? tm
+            : new TalkMessage({ client: mediaClient, raw: tm.raw });
+          void hydrateLiveMedia(mediaMessage, message, peer);
+        }
+      }
+    } catch (e) {
+      console.error("[listen message]", e);
+    }
+  }
+
+  function startListen() {
+    const client = runtime.getClient();
+    if (!client || runtime.isListening()) return;
+    if (owner !== client) {
+      retries.reset();
+      owner = client;
+    }
+    runtime.setListening(true);
+
+    // Register BEFORE listen() so early ops are not missed.
+    client.on("message", (msg) => deliver(client, msg as TalkMessage));
 
     client.on("event", (op: {
       type?: string | number;
@@ -173,5 +209,9 @@ export function createListener(runtime: ListenerRuntime) {
     emitEvent("listening");
   }
 
-  return { start: startListen };
+  return {
+    start: startListen,
+    cancelRetries: retries.reset,
+    retryFailedMessage: retries.enqueue,
+  };
 }

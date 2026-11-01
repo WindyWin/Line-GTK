@@ -94,6 +94,21 @@ pub struct BlockedContact {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ConversationPerson {
+    pub mid: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationDetails {
+    pub chat_mid: String,
+    pub name: String,
+    pub members: Vec<ConversationPerson>,
+    pub invitees: Vec<ConversationPerson>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct UserProfile {
     pub mid: String,
     #[serde(default)]
@@ -375,6 +390,10 @@ pub enum ProtocolEvent {
         reaction: Option<MessageReaction>,
     },
     Message(Box<MessageInfo>),
+    MessageRecovered {
+        account_mid: String,
+        message: Box<MessageInfo>,
+    },
     Chats {
         chats: Vec<ChatInfo>,
         cached: bool,

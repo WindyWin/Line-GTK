@@ -752,5 +752,22 @@
   "poll_choice_long": "Lựa chọn quá dài (tối đa 60 ký tự).",
   "poll_choice_duplicate": "Các lựa chọn phải khác nhau.",
   "poll_close_past": "Thời gian kết thúc phải ở tương lai.",
-  "cancel": "Hủy"
+  "cancel": "Hủy",
+  "conversation_settings": "Cài đặt cuộc trò chuyện",
+  "group_invite_friends": "Mời bạn bè",
+  "group_settings_refresh": "Làm mới thành viên và lời mời",
+  "group_settings_loading": "Đang tải thông tin nhóm…",
+  "group_settings_failed": "Không thể tải thông tin nhóm. Nhấn làm mới để thử lại.",
+  "group_pending_invitations": "Lời mời đang chờ",
+  "group_members_count": "Thành viên ({n})",
+  "group_invitees_count": "Đã mời ({n})",
+  "group_member_you": "Bạn",
+  "group_search_people": "Tìm thành viên và người được mời",
+  "group_no_invitations": "Không có lời mời đang chờ.",
+  "group_no_candidates": "Tất cả bạn bè hiện có đã tham gia hoặc đã được mời.",
+  "group_choose_friends": "Chọn tối đa 100 bạn bè để mời. Thành viên và người đã được mời không có trong danh sách.",
+  "group_send_invitations": "Gửi lời mời",
+  "group_inviting": "Đang gửi lời mời…",
+  "group_invite_done": "Đã gửi lời mời.",
+  "group_invite_failed": "Không thể xác nhận lời mời. Hãy làm mới nhóm trước khi thử lại."
 }

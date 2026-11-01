@@ -18,6 +18,12 @@ pub(super) fn pump_events(state: AppState) {
 
 pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
     match ev {
+        ProtocolEvent::MessageRecovered {
+            account_mid,
+            message,
+        } => {
+            recover_message(state, &account_mid, &message);
+        }
         ProtocolEvent::MessageUnsent {
             account_mid,
             chat_mid,
@@ -732,6 +738,18 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 sticker_library::response(state, &request, ok, &result, error.as_deref());
                 return;
             }
+            if let Some(Pending::ConversationSettings {
+                account,
+                chat_mid,
+                generation,
+                request,
+            }) = pending
+            {
+                conversation_settings::response(
+                    state, &account, &chat_mid, generation, request, ok, &result,
+                );
+                return;
+            }
             if let Some(Pending::MentionMembers {
                 account,
                 chat_mid,
@@ -1075,6 +1093,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
                 Some(
                     Pending::MentionMembers { .. }
                     | Pending::StickerLibrary(_)
+                    | Pending::ConversationSettings { .. }
                     | Pending::Album { .. }
                     | Pending::SharedMedia { .. }
                     | Pending::MessageSearch { .. }
@@ -1099,6 +1118,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::Exited(code) => {
             resume_sync::cancel(state);
             albums::close(state);
+            conversation_settings::close();
             shared_media::close(state);
             sticker_library::close(state);
             hidden_chats::close(state);
@@ -1173,6 +1193,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    conversation_settings::close();
     shared_media::close(state);
     sticker_library::close(state);
     hidden_chats::close(state);
@@ -1275,6 +1296,7 @@ pub(super) fn show_login(state: &AppState, hint: &str) {
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
+    conversation_settings::close();
     shared_media::close(state);
     sticker_library::close(state);
     hidden_chats::close(state);

@@ -92,6 +92,12 @@ pub(super) fn wire_context(state: &AppState, row: &gtk::ListBoxRow, chat: &ChatI
     let block_state = state.clone();
     let popup = Rc::new(move |row: &gtk::ListBoxRow, x: f64, y: f64| {
         let menu = gio::Menu::new();
+        let settings = gio::MenuItem::new(Some(&crate::i18n::t("conversation_settings")), None);
+        settings.set_action_and_target_value(
+            Some("win.conversation-settings"),
+            Some(&mid.to_variant()),
+        );
+        menu.append_item(&settings);
         let item = gio::MenuItem::new(Some(&crate::i18n::t("hide_chat")), None);
         item.set_action_and_target_value(Some("win.hide-chat"), Some(&mid.to_variant()));
         menu.append_item(&item);

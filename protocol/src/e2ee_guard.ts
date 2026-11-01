@@ -55,14 +55,14 @@ export function retryKeyDecryption(
 // 復号できない行も履歴に残す。本文や暗号鍵をログに出さない。
 export function guardedDecrypt(
   decrypt: (message: RawMessage) => Promise<RawMessage>,
-  onFailure: () => void,
+  onFailure: (raw: RawMessage) => void,
 ) {
   return async (raw: RawMessage): Promise<RawMessage> => {
     const message = normalizeRaw(raw);
     try {
       return await decrypt(message);
     } catch {
-      onFailure();
+      onFailure(message);
       return {
         ...message,
         text: "",

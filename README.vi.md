@@ -10,17 +10,101 @@
 
 ## Tính năng
 
+Mọi mục được đánh dấu [x] bên dưới đã có trong bản Line-GTK hiện tại. Các phần sau mô tả chi tiết hành vi và giới hạn.
+
+**Đăng nhập và tài khoản**
+
 - [x] Đăng nhập QR như thiết bị bổ sung; đăng nhập email và mật khẩu, xác minh trên điện thoại khi cần
-- [x] Trò chuyện, tin nhắn, sticker, bạn bè, ảnh, video, tin nhắn thoại và tệp
-- [x] Trả lời trích dẫn, thu hồi tin nhắn, biểu cảm, emoji Unicode và hiển thị emoji LINE nhận được
-- [x] Lọc và tìm kiếm cuộc trò chuyện; ẩn, ghim và chặn liên hệ
-- [x] Thông báo sự kiện nhóm và tên người gửi
-- [x] Album, tải ảnh gốc và trình xem ảnh, video, PDF, văn bản trong ứng dụng
-- [x] Dán và kéo thả tệp đính kèm
-- [x] Xem trước sticker trong thông báo, đồng bộ chưa đọc, khôi phục sau chế độ ngủ hoặc mất mạng
-- [x] Tải xuống, khay hệ thống, giao diện, Discord RPC; giao diện tiếng Việt (mặc định), Thái, Anh và Nhật
-- [ ] Gọi thoại (đang phát triển)
-- [ ] Chuyển đổi tài khoản
+- [x] Tự động đăng nhập khi khởi động (tùy chọn), lưu thông tin trong kho khóa hệ điều hành
+- [x] Khôi phục phiên, chạy khi đăng nhập, tùy chọn khởi động ẩn trong khay, và đăng xuất
+- [x] Giải mã Letter Sealing, nhập khóa mã hóa từ điện thoại, khôi phục khóa nhóm và yêu cầu lại khóa từ tin lỗi
+- [x] Mã hóa bộ nhớ đệm tin nhắn khi có khóa trong kho khóa hệ điều hành, giới hạn theo cuộc trò chuyện và cảnh báo dọn bớt
+
+**Trò chuyện và tin nhắn**
+
+- [x] Trò chuyện 1:1, nhóm, nhiều người, tài khoản chính thức; danh sách bạn bè, thêm bạn bằng LINE ID và hồ sơ người dùng
+- [x] Văn bản, ảnh, video, tin nhắn thoại, tệp, sticker, thẻ Flex và thẻ xem trước liên kết
+- [x] Trả lời trích dẫn, mở tin gốc, nhảy đến tin đã đọc cuối và tải lịch sử cũ khi cuộn
+- [x] Sao chép toàn bộ hoặc một phần tin nhắn; thu hồi tin đã gửi và áp dụng thu hồi từ thiết bị khác
+- [x] Sáu biểu cảm LINE chuẩn và biểu cảm emoji LINE, kèm danh sách người đã biểu cảm
+- [x] Nhắc tên thành viên nhóm bằng @, @all, thông báo khi được nhắc và mở hồ sơ người được nhắc
+- [x] Chèn emoji Unicode và hiển thị emoji LINE nhận được trong nội dung
+- [x] Poll LINE gốc: xem, bình chọn và tạo poll văn bản với nhiều lựa chọn, ẩn danh, cho thành viên thêm lựa chọn và hạn chót
+- [x] Tìm tin nhắn trong cuộc trò chuyện trên lịch sử đã lưu, 50 kết quả mỗi trang, nhảy đến tin
+- [x] Lọc cuộc trò chuyện, tìm theo tên/bản xem trước, ghim, ẩn, chặn, tắt tiếng và lưu theo tài khoản
+- [x] Tạm dừng đã đọc toàn cục hoặc theo liên hệ, đánh dấu đã đọc đến hiện tại và đồng bộ chưa đọc từ thiết bị khác
+- [x] Bản nháp, xem trước tệp đính kèm, dán và kéo thả, và xếp tin nhắn chờ khi mất kết nối
+
+**Sticker và emoji**
+
+- [x] Bộ chọn sticker với bộ đã sở hữu, bộ của nhà sáng tạo từ LINE STORE và bộ PNG/APNG cá nhân
+- [x] Nhập sticker với kiểm tra từng tệp, tiến trình, hủy, thử lại, đổi tên, xóa và khôi phục bộ cũ
+- [x] Chỉnh kích thước và nền, chuyển GIF, tối ưu (độ phân giải, khung hình, bảng màu) và xem trước động khi rê chuột
+- [x] Emoji LINE nhận được hiển thị trong nội dung; emoji LINE đã sở hữu dùng được cho biểu cảm
+
+**Nhóm, media và tệp**
+
+- [x] Thông báo nhóm có tên cho mời, tham gia, rời, xóa thành viên, đổi tên và đổi ảnh nhóm
+- [x] Danh sách thành viên nhóm có tìm kiếm, lời mời đang chờ, hồ sơ và mời tối đa 100 bạn
+- [x] Tên người gửi trong bong bóng nhóm, trích dẫn và tiêu đề thông báo
+- [x] Album cuộc trò chuyện và lưu ảnh gốc; trình duyệt media chung cho ảnh, video, liên kết và tệp
+- [x] Trình xem ảnh có thu phóng và vẽ, trình phát video, xem trước PDF/văn bản/Markdown, mở tệp và mở thư mục
+- [x] Thư mục tải xuống, hỏi mỗi lần lưu, xử lý trùng tên và tiến trình tải
+- [x] Thẻ lịch sử cuộc gọi đến, đi, nhỡ và không trả lời
+
+**Desktop, khôi phục và giao diện**
+
+- [x] Thông báo desktop với tên người gửi/nhóm, ảnh sticker, tiêu đề nhắc tên, âm thanh, âm lượng và tắt tiếng theo cuộc trò chuyện
+- [x] Khay hệ thống với cuộc trò chuyện gần đây, huy hiệu chưa đọc, hẹn giờ tắt tiếng, thu nhỏ vào khay và tự chạy khi đăng nhập
+- [x] Khôi phục sau ngủ/mất mạng, thử lại kết nối, phát hiện luồng nhận bị treo và khôi phục cuộc trò chuyện đã lưu khi khởi động
+- [x] Discord Rich Presence, giao diện, tỷ lệ phông/chữ, hiệu ứng và tiếng Việt (mặc định), Thái, Anh, Nhật
+- [x] Giữ bộ nhớ đệm, giới hạn tin nhắn mỗi cuộc trò chuyện, xóa cache theo phần, chẩn đoán và khởi động lại tiến trình giao thức
+- [x] Gọi thoại 1:1 thử nghiệm sau khi bật tùy chọn; cần đăng nhập QR và có thể không ổn định
+
+### Chưa hỗ trợ
+
+Đây là các tính năng LINE gốc mà ứng dụng chưa có. Tùy chọn gọi thoại thử nghiệm ở trên không thay thế gọi thoại ổn định.
+
+**Cuộc gọi và tài khoản**
+
+- [ ] Gọi thoại ổn định, gọi video, gọi nhóm và chia sẻ màn hình
+- [ ] Nền, hiệu ứng và các tính năng gọi khác như ứng dụng chính thức
+- [ ] Chuyển đổi tài khoản và đăng nhập nhiều tài khoản
+- [ ] Quản lý thiết bị liên kết, sao lưu/khôi phục tài khoản và chuyển dữ liệu
+- [ ] Sửa hồ sơ cá nhân (tên, trạng thái, ảnh đại diện, ảnh bìa) và thiết lập quyền riêng tư/bảo mật
+- [ ] Chấp nhận/từ chối lời mời kết bạn, bạn thân, xóa/ẩn bạn và tìm bằng mã QR/ID ngoài thêm LINE ID
+- [ ] Sao lưu và khôi phục lịch sử trò chuyện
+
+**Nhóm và trò chuyện**
+
+- [ ] Tạo nhóm, rời/xóa nhóm, xóa thành viên, đổi tên, đổi ảnh nhóm và quản lý liên kết mời
+- [ ] Note/bài đăng nhóm và quản lý album nhóm
+- [ ] Chuyển tiếp/chia sẻ tin nhắn, thao tác nhiều tin và ghim từng tin nhắn
+- [ ] Tìm toàn văn trên mọi cuộc trò chuyện (hiện chỉ tìm trong một cuộc trò chuyện và lịch sử đã lưu)
+- [ ] Nền/giao diện riêng cho cuộc trò chuyện, dịch tin nhắn, trả lời nhanh từ thông báo và hiệu ứng tin nhắn
+- [ ] Keep, Keep Memo và lưu tin nhắn vào Keep
+- [ ] Menu phong phú của tài khoản chính thức, nút và trả lời nhanh
+
+**Media và loại tin nhắn**
+
+- [ ] Tạo, đổi tên, xóa album; thêm/xóa ảnh album; video trong album
+- [ ] Gửi nhiều ảnh cùng lúc, tin nhắn video và các loại tệp đính kèm khác
+- [ ] Chia sẻ vị trí/vị trí trực tiếp, danh thiếp và các loại tin nhắn phong phú khác
+- [ ] Chỉnh sửa ảnh trong ứng dụng ngoài vẽ
+
+**Sticker và emoji**
+
+- [ ] Mua và quản lý sticker, bộ emoji LINE trong ứng dụng
+- [ ] Gửi emoji LINE đã mua dưới dạng nội dung tin nhắn và phát emoji LINE động
+- [ ] Đăng bộ sticker cá nhân lên LINE (bộ cá nhân ở đây chỉ là bộ ảnh cục bộ)
+- [ ] Hiệu ứng, âm thanh và hoạt ảnh popup của sticker
+
+**Poll và dịch vụ LINE khác**
+
+- [ ] Poll ngày và ảnh, sửa, đóng hoặc xóa poll
+- [ ] Khám phá, tham gia và quản lý OpenChat
+- [ ] Timeline/VOOM, LINE Today, LINE Pay, Shopping, Games và tính năng gói Premium
+- [ ] Tính năng AI/prototype của ứng dụng chính thức: tóm tắt/tìm kiếm/dịch tin nhắn, dịch OCR, tìm sticker bằng ngôn ngữ tự nhiên, AI agent và nền cuộc gọi
 
 ### Thông báo đã đọc và trạng thái chưa đọc
 
@@ -58,7 +142,7 @@ Sau khi máy thức dậy, ứng dụng đợi hai giây rồi kết nối lại
 
 ### Media và album
 
-Nhấn nút phát trên ảnh thu nhỏ video để mở trình xem có điều khiển phát/tạm dừng, vị trí, thời gian và âm lượng. Có thể phát lại sau khi kết thúc, lưu video gốc hoặc đóng để dừng. Cần backend media GTK và codec phù hợp. Nếu không phát được, dùng **Thử lại**, **Mở bằng ứng dụng khác** hoặc tải xuống. Nếu bản gốc trên LINE đã hết hạn, ứng dụng báo lỗi thay vì lưu ảnh thu nhỏ như video. Video trong album và bản xem trước sticker động chưa được hỗ trợ.
+Nhấn nút phát trên ảnh thu nhỏ video để mở trình xem có điều khiển phát/tạm dừng, vị trí, thời gian và âm lượng. Có thể phát lại sau khi kết thúc, lưu video gốc hoặc đóng để dừng. Cần backend media GTK và codec phù hợp. Nếu không phát được, dùng **Thử lại**, **Mở bằng ứng dụng khác** hoặc tải xuống. Nếu bản gốc trên LINE đã hết hạn, ứng dụng báo lỗi thay vì lưu ảnh thu nhỏ như video. Video trong album chưa được hỗ trợ.
 
 Dùng **Album** ở đầu cuộc trò chuyện để mở album của nó, hoặc **Tất cả cuộc trò chuyện** để xem toàn bộ. Khi chưa chọn cuộc trò chuyện, danh sách tổng hiện mặc định. Mở ảnh để phóng to và lưu bản gốc từ ảnh hoặc trình xem. Vị trí lưu và hộp thoại theo thiết lập tải ảnh hiện có; lưu thông thường không ghi đè tệp trùng tên. Ảnh gốc được tải từng đợt 12 ảnh, tối đa ba lượt đồng thời, và dùng lại từ bộ nhớ đệm. Hỗ trợ JPEG, PNG, GIF, WebP; tối đa 50 MB mỗi ảnh. Video trong album được đánh dấu chưa hỗ trợ; chưa thể tạo album hoặc thêm/xóa ảnh. Dùng **Thử lại** khi tải lỗi hoặc làm mới thông tin album đã cũ.
 

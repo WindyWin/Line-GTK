@@ -161,6 +161,45 @@ fn update_pending(batch: &RenderBatch, msg: &MessageInfo) -> bool {
     }
 }
 
+/// Upgrade an existing failed row without appending, notifications or read changes.
+pub(super) fn recover_message(state: &AppState, account: &str, msg: &MessageInfo) {
+    if !*state.session_ready.borrow()
+        || state.self_mid.borrow().as_deref() != Some(account)
+        || msg.id.is_empty()
+        || msg.decryption_failed
+    {
+        return;
+    }
+    let msg = unsend::masked(state, msg);
+    if msg.content_type == "UNSENT" {
+        return;
+    }
+    let chat = msg.to.clone(); // Only group/room encrypted envelopes are retried.
+    chat_snapshots::recover(account, &chat, &msg);
+    if state.current_chat.borrow().as_deref() != Some(chat.as_str()) {
+        return;
+    }
+    let pending = state.render_batch.borrow().clone();
+    let updated_pending = pending
+        .as_ref()
+        .is_some_and(|batch| update_pending(batch, &msg));
+    let failed_row = state
+        .reply_messages
+        .borrow()
+        .get(&msg.id)
+        .is_some_and(|old| old.decryption_failed);
+    if failed_row {
+        replace_shown_message(state, &msg);
+    }
+    if (failed_row || updated_pending)
+        && let Some((mid, messages)) = state.msg_list_fp.borrow_mut().as_mut()
+        && mid == &chat
+        && let Some(old) = messages.iter_mut().find(|old| old.id == msg.id)
+    {
+        *old = msg;
+    }
+}
+
 /// Swap the rows of a shown message for ones built from `msg`.
 fn replace_shown_message(state: &AppState, msg: &MessageInfo) -> bool {
     let last_day = state.last_msg_day.borrow().clone();

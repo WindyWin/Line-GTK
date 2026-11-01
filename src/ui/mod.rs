@@ -13,6 +13,7 @@ mod composer;
 mod composer_drafts;
 mod composer_media;
 mod contact_blocks;
+mod conversation_settings;
 mod diagnostics;
 mod downloads;
 mod emojis;
@@ -21,6 +22,7 @@ mod friends;
 mod hidden_chats;
 mod history;
 mod line_polls;
+mod link_policy;
 mod link_previews;
 mod login;
 mod markdown;
@@ -282,6 +284,8 @@ fn build_ui(
         message_search_ui: Rc::new(RefCell::new(None)),
         shared_media_btn: shell.shared_media_btn,
         poll_create_btn: shell.poll_create_btn,
+        conversation_settings_btn: shell.conversation_settings_btn,
+        conversation_menu: shell.conversation_menu,
         shared_media_ui: Rc::new(RefCell::new(None)),
         hidden_chats_ui: Rc::new(RefCell::new(None)),
         friends_ui: Rc::new(RefCell::new(None)),
@@ -363,6 +367,7 @@ fn build_ui(
     hidden_chats::wire(&state);
     contact_blocks::wire(&state);
     pinned_chats::wire(&state);
+    conversation_settings::wire(&state);
     apply_ui_language(&state);
     apply_ui_motion(&state);
     wire_sidebar(&state);
@@ -1264,6 +1269,12 @@ fn apply_ui_language(state: &AppState) {
         .poll_create_btn
         .set_label(&crate::i18n::t("poll_create"));
     state
+        .conversation_settings_btn
+        .set_label(&crate::i18n::t("conversation_settings"));
+    state
+        .conversation_menu
+        .set_tooltip_text(Some(&crate::i18n::t("conversation_settings")));
+    state
         .album_btn
         .set_tooltip_text(Some(&crate::i18n::t("albums")));
     state.side_title.set_text(&crate::i18n::t("chats"));
@@ -1385,19 +1396,6 @@ fn youtube_id(url: &str) -> Option<String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
     .then_some(id)
-}
-
-fn extract_urls(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for token in text.split_whitespace() {
-        let t = token.trim_matches(|c: char| {
-            matches!(c, ')' | '(' | ']' | '[' | '.' | ',' | ';' | '"' | '\'')
-        });
-        if t.starts_with("http://") || t.starts_with("https://") {
-            out.push(t.to_string());
-        }
-    }
-    out
 }
 
 /// Drag-and-drop files/images onto the conversation (chat + composer).
@@ -1569,6 +1567,7 @@ fn wire_actions(state: &AppState) {
                 Rc::new(move || {
                     auto_login::manual_logout(&s2);
                     albums::close(&s2);
+                    conversation_settings::close();
                     shared_media::close(&s2);
                     sticker_library::close(&s2);
                     message_search::close(&s2);
@@ -1612,6 +1611,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move |_on: bool| {
                     albums::close(&s2);
+                    conversation_settings::close();
                     shared_media::close(&s2);
                     sticker_library::close(&s2);
                     message_search::close(&s2);
@@ -1844,6 +1844,7 @@ fn open_chat_for_history(state: &AppState, chat: &ChatInfo) -> bool {
 }
 
 fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
+    conversation_settings::close();
     chat_snapshots::leave(state);
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
@@ -2018,6 +2019,7 @@ fn restart_login(state: &AppState) {
     user_profile::update_header(state, None);
     resume_sync::cancel(state);
     albums::close(state);
+    conversation_settings::close();
     shared_media::close(state);
     sticker_library::close(state);
     message_search::close(state);

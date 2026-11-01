@@ -143,6 +143,17 @@ impl Snapshots {
         }
     }
 
+    fn recover(&mut self, account: &str, chat: &str, message: &MessageInfo) {
+        let key = Self::key(account, chat);
+        if let Some((_, list)) = self.entries.iter_mut().find(|(k, _)| *k == key)
+            && let Some(old) = list
+                .iter_mut()
+                .find(|old| old.id == message.id && old.decryption_failed)
+        {
+            *old = message.clone();
+        }
+    }
+
     fn forget(&mut self, account: &str, chat: &str) {
         let key = Self::key(account, chat);
         self.entries.retain(|(k, _)| *k != key);
@@ -184,6 +195,10 @@ pub(super) fn push_live(state: &AppState, chat: &str, message: &MessageInfo) {
     }
 }
 
+pub(super) fn recover(account: &str, chat: &str, message: &MessageInfo) {
+    SNAPSHOTS.with(|s| s.borrow_mut().recover(account, chat, message));
+}
+
 pub(super) fn forget(state: &AppState, chat: &str) {
     if let Some(account) = account(state) {
         SNAPSHOTS.with(|s| s.borrow_mut().forget(&account, chat));
@@ -221,6 +236,25 @@ mod tests {
             diff_messages(&range(1, 40), &range(1, 40)),
             MessageDiff::Unchanged
         );
+    }
+
+    #[test]
+    fn recovered_snapshot_replaces_only_failed_rows_in_the_matching_account() {
+        let mut snapshots = Snapshots::default();
+        let mut failed = msg(1);
+        failed.decryption_failed = true;
+        failed.text.clear();
+        snapshots.put("u-self", "c-group", &[failed.clone(), msg(2)]);
+        snapshots.put("u-other", "c-group", &[failed]);
+        snapshots.recover("u-self", "c-group", &msg(1));
+        assert_eq!(snapshots.get("u-self", "c-group"), Some(range(1, 2)));
+        assert!(snapshots.get("u-other", "c-group").unwrap()[0].decryption_failed);
+        // Late recovery cannot overwrite an unsent or already updated message.
+        let mut unsent = msg(1);
+        unsent.content_type = "UNSENT".into();
+        snapshots.put("u-self", "c-group", &[unsent.clone()]);
+        snapshots.recover("u-self", "c-group", &msg(1));
+        assert_eq!(snapshots.get("u-self", "c-group"), Some(vec![unsent]));
     }
 
     fn patch(diff: MessageDiff) -> Patch {
