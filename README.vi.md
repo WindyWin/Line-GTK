@@ -99,9 +99,8 @@ Mọi mục được đánh dấu [x] bên dưới đã có trong bản Line-GTK
 - [ ] Đăng bộ sticker cá nhân lên LINE (bộ cá nhân ở đây chỉ là bộ ảnh cục bộ)
 - [ ] Hiệu ứng, âm thanh và hoạt ảnh popup của sticker
 
-**Poll và dịch vụ LINE khác**
+**Dịch vụ LINE khác**
 
-- [ ] Poll ngày và ảnh, sửa, đóng hoặc xóa poll
 - [ ] Khám phá, tham gia và quản lý OpenChat
 - [ ] Timeline/VOOM, LINE Today, LINE Pay, Shopping, Games và tính năng gói Premium
 - [ ] Tính năng AI/prototype của ứng dụng chính thức: tóm tắt/tìm kiếm/dịch tin nhắn, dịch OCR, tìm sticker bằng ngôn ngữ tự nhiên, AI agent và nền cuộc gọi

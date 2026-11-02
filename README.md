@@ -99,9 +99,8 @@ These are native LINE features this client does not provide. The experimental vo
 - [ ] Publishing personal sticker packs to LINE (personal packs here are local photo collections)
 - [ ] Sticker effects, sounds, and popup animations
 
-**Polls and other LINE services**
+**Other LINE services**
 
-- [ ] Date and image polls, and editing, closing, or deleting polls
 - [ ] OpenChat discovery, joining, and management
 - [ ] Timeline/VOOM, LINE Today, LINE Pay, Shopping, Games, and premium subscription features
 - [ ] AI/prototype features in the official client: chat summary/search/translation, OCR translation, natural-language sticker search, AI agent, and call backgrounds
