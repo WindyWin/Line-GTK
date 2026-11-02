@@ -103,21 +103,36 @@ impl ReadReceipts {
     }
 
     pub fn count(&self, chat_mid: &str, id: &str, self_mid: &str) -> usize {
-        let Some(id) = message_id(id) else {
-            return 0;
-        };
+        self.matching_readers(chat_mid, id, self_mid).count()
+    }
+
+    pub fn readers(&self, chat_mid: &str, id: &str, self_mid: &str) -> Vec<String> {
+        let mut result: Vec<_> = self
+            .matching_readers(chat_mid, id, self_mid)
+            .map(str::to_owned)
+            .collect();
+        result.sort_unstable();
+        result
+    }
+
+    fn matching_readers<'a>(
+        &'a self,
+        chat_mid: &'a str,
+        id: &str,
+        self_mid: &'a str,
+    ) -> impl Iterator<Item = &'a str> {
+        let id = message_id(id);
         self.chats
             .get(chat_mid)
-            .map(|readers| {
-                readers
-                    .iter()
-                    .filter(|(user, ranges)| {
-                        valid_reader(chat_mid, user, self_mid)
-                            && ranges.iter().any(|(start, end)| *start <= id && id <= *end)
+            .into_iter()
+            .flat_map(|readers| readers.iter())
+            .filter(move |(user, ranges)| {
+                valid_reader(chat_mid, user, self_mid)
+                    && id.is_some_and(|id| {
+                        ranges.iter().any(|(start, end)| *start <= id && id <= *end)
                     })
-                    .count()
             })
-            .unwrap_or(0)
+            .map(|(user, _)| user.as_str())
     }
 }
 
@@ -190,5 +205,38 @@ mod tests {
         receipts.observe("c-group", "u-one", "140", "u-self");
         assert_eq!(receipts.count("c-group", "115", "u-self"), 0);
         assert_eq!(receipts.count("c-group", "140", "u-self"), 1);
+    }
+
+    #[test]
+    fn reader_names_match_counts_and_keep_message_chat_and_account_boundaries() {
+        let mut receipts = ReadReceipts::default();
+        receipts.apply_snapshot(
+            "c-group",
+            &[
+                reader("u-two", "9007199254740993", "9007199254740995"),
+                reader("u-one", "9007199254740993", "9007199254740993"),
+                reader("u-two", "9007199254740993", "9007199254740995"),
+                reader("u-self", "0", "9999999999999999"),
+            ],
+            "u-self",
+        );
+        let id = "9007199254740993";
+        assert_eq!(
+            receipts.readers("c-group", id, "u-self"),
+            ["u-one", "u-two"]
+        );
+        assert_eq!(
+            receipts.readers("c-group", "9007199254740994", "u-self"),
+            ["u-two"]
+        );
+        assert!(receipts.readers("c-other", id, "u-self").is_empty());
+        assert!(
+            receipts
+                .readers("c-group", "pending-1", "u-self")
+                .is_empty()
+        );
+        assert!(receipts.readers("c-group", id, "").is_empty());
+        receipts.clear();
+        assert!(receipts.readers("c-group", id, "u-other").is_empty());
     }
 }

@@ -475,6 +475,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         ProtocolEvent::SenderProfile { mid, name } => message_senders::apply(state, mid, name),
         ProtocolEvent::EmojiReady { key, path } => emojis::ready(state, key, path),
         ProtocolEvent::AvatarReady { mid, avatar_path } => {
+            read_details::avatar_ready(state, &mid, &avatar_path);
             mentions::avatar_ready(state, &mid, &avatar_path);
             user_profile::avatar_ready(&mid, &avatar_path);
             user_profile::header_avatar_ready(state, &mid, &avatar_path);
@@ -1116,6 +1117,7 @@ pub(super) fn handle_event(state: &AppState, ev: ProtocolEvent) {
         }
         ProtocolEvent::Error(e) => toast(state, &e),
         ProtocolEvent::Exited(code) => {
+            read_details::close();
             resume_sync::cancel(state);
             albums::close(state);
             conversation_settings::close();
@@ -1182,6 +1184,8 @@ pub(super) fn recover_sidecar(state: &AppState) {
 }
 
 pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
+    read_details::close();
+    state.reader_avatars.borrow_mut().clear();
     let saved_view = cache_boot::active(state);
     chat_snapshots::clear();
     contact_blocks::reset(state);
@@ -1284,6 +1288,8 @@ pub(super) fn show_shell_restoring(state: &AppState) {
 }
 
 pub(super) fn show_login(state: &AppState, hint: &str) {
+    read_details::close();
+    state.reader_avatars.borrow_mut().clear();
     read_position::reset(state);
     cache_boot::abort(state);
     state.shared_media_btn.set_sensitive(false);

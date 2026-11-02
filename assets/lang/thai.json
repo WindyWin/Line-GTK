@@ -292,6 +292,8 @@
   "status_sent": "ส่งแล้ว",
   "status_read": "อ่านแล้ว",
   "status_read_count": "อ่านแล้ว {n}",
+  "readers_title": "ผู้ที่อ่านแล้ว",
+  "readers_show": "ดูว่าใครอ่านข้อความนี้แล้ว",
   "status_read_unconfirmed": "ส่งแล้ว ยังไม่ได้ยืนยันการอ่าน",
   "search": "ค้นหา",
   "voice_message": "ข้อความเสียง",

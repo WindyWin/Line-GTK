@@ -76,14 +76,17 @@ function receiptFixture(response: unknown = []) {
   } as unknown as Client;
   let current: Client | null = client;
   const events: { event: string; payload: Record<string, unknown> }[] = [];
+  const readers: string[][] = [];
   const service = createReadReceipts({
     getClient: () => current,
     selfMid: () => "u-self",
     emit: (event, payload) => events.push({ event, payload }),
+    resolveReaders: (mids) => readers.push(mids),
   });
   return {
     service,
     events,
+    readers,
     requests: () => requests,
     replace: () => {
       current = null;
@@ -101,6 +104,7 @@ Deno.test("再表示時の既読範囲を取得し、同時の照会は1回に�
     fixture.service.refresh("u-peer"),
   ]);
   assertEquals(fixture.requests(), 1);
+  assertEquals(fixture.readers, [["u-peer"]]);
   assertEquals(fixture.events, [{
     event: "read_ranges",
     payload: {
@@ -121,6 +125,7 @@ Deno.test("ログアウト後の遅い応答を捨て、照会失敗では既読
   fixture.replace();
   await pending;
   assertEquals(fixture.events, []);
+  assertEquals(fixture.readers, []);
   const events: unknown[] = [];
   const service = createReadReceipts({
     getClient: () => ({
@@ -134,6 +139,7 @@ Deno.test("ログアウト後の遅い応答を捨て、照会失敗では既読
     } as unknown as Client),
     selfMid: () => "u-self",
     emit: (event) => events.push(event),
+    resolveReaders: () => {},
   });
   await service.refresh("u-peer");
   assertEquals(events, []);
@@ -180,6 +186,7 @@ Deno.test("ライブの既読は名前と数値のイベントを受け付け、
       messageId: "9007199254740993",
     },
   }]);
+  assertEquals(fixture.readers, [["u-peer"]]);
 });
 
 Deno.test("グループのライブ既読後に、読んだ範囲も再照会する", async () => {

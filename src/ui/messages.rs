@@ -694,28 +694,17 @@ fn append_message_rows(state: &AppState, msg: &MessageInfo, live: bool) {
         }
 
         let tracks_receipt = !msg.content_type.eq_ignore_ascii_case("CALL");
-        let (text, tooltip, read) = if tracks_receipt {
-            receipt_status(state, &msg.id, msg.created_time)
-        } else {
-            (time_txt.clone(), String::new(), false)
-        };
-        let status = gtk::Label::builder()
-            .label(text)
-            .halign(gtk::Align::End)
-            .tooltip_text(tooltip)
-            .css_classes(if read {
-                vec!["line-msg-status", "line-msg-status-read"]
-            } else {
-                vec!["line-msg-status"]
-            })
-            .build();
         if tracks_receipt && !msg.id.is_empty() {
-            state
-                .receipt_slots
-                .borrow_mut()
-                .insert(msg.id.clone(), status.clone());
+            col.append(&read_details::metadata(state, msg));
+        } else {
+            col.append(
+                &gtk::Label::builder()
+                    .label(&time_txt)
+                    .halign(gtk::Align::End)
+                    .css_classes(["line-msg-status"])
+                    .build(),
+            );
         }
-        col.append(&status);
         outer.append(&gtk::Box::builder().hexpand(true).build());
         outer.append(&col);
     } else {
@@ -1659,6 +1648,7 @@ pub(super) fn clear_messages(state: &AppState) {
     state.media_slots.borrow_mut().clear();
     state.media_msgs.borrow_mut().clear();
     state.receipt_slots.borrow_mut().clear();
+    read_details::close();
     state.sender_labels.borrow_mut().clear();
     state.msg_created.borrow_mut().clear();
     state.pending_rows.borrow_mut().clear();

@@ -12,6 +12,17 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 15));
 }
 
+Deno.test("readers without messages resolve names once and exclude self and invalid IDs", async () => {
+  const f = fixture();
+  f.service.resolve(["u-reader", "u-reader", "u-self", "c-group", ""]);
+  await settle();
+  assertEquals(f.batches, [["u-reader"]]);
+  assertEquals(f.events, [{ mid: "u-reader", name: "名前:u-reader" }]);
+  f.service.resolve(["u-reader"]);
+  await settle();
+  assertEquals(f.batches, [["u-reader"]]);
+});
+
 Deno.test("history event actors and targets resolve names even without envelope senders", async () => {
   const f = fixture();
   f.service.observe([{
@@ -26,7 +37,9 @@ Deno.test("history event actors and targets resolve names even without envelope 
   await settle();
   assertEquals(f.batches.flat().sort(), ["u-alice", "u-bob", "u-charlie"]);
 });
-function fixture() {
+function fixture(
+  options: Partial<Parameters<typeof createMessageSenders>[0]> = {},
+) {
   let clock = 0;
   let mid = "u-self";
   const events: Array<{ mid: string; name: string }> = [];
@@ -61,6 +74,7 @@ function fixture() {
       knownName: (mid) => known.get(mid),
       emit: (mid, name) => events.push({ mid, name }),
       now: () => clock,
+      ...options,
     }),
     talk,
     events,
@@ -79,6 +93,63 @@ function fixture() {
     },
   };
 }
+
+Deno.test("reader avatars load for known names, reuse cache, and cap concurrent downloads", async () => {
+  const pictures: Array<{ mid: string; path: string }> = [];
+  const loading: string[] = [];
+  const finish: Array<() => void> = [];
+  let active = 0;
+  let peak = 0;
+  const f = fixture({
+    avatarPathFor: (mid) => {
+      loading.push(mid);
+      peak = Math.max(peak, ++active);
+      return new Promise((resolve) =>
+        finish.push(() => {
+          active--;
+          resolve(`/avatars/${mid}.png`);
+        })
+      );
+    },
+    emitAvatar: (mid, path) => pictures.push({ mid, path }),
+  });
+  f.known.set("u-one", "Known reader");
+  f.service.resolve(["u-one", "u-two", "u-three", "u-four", "u-five"], true);
+  await settle();
+  assertEquals(loading.length, 2);
+  while (finish.length) {
+    finish.shift()!();
+    await settle();
+  }
+  assertEquals(peak, 2);
+  assertEquals(pictures.length, 5);
+  f.service.resolve(["u-one"], true);
+  await settle();
+  assertEquals(loading.length, 5);
+  assertEquals(pictures.at(-1), { mid: "u-one", path: "/avatars/u-one.png" });
+});
+
+Deno.test("late reader avatar downloads are discarded after account changes and logout", async () => {
+  for (const logout of [false, true]) {
+    const pictures: string[] = [];
+    let finish!: (value: string) => void;
+    const f = fixture({
+      avatarPathFor: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      emitAvatar: (mid) => pictures.push(mid),
+    });
+    f.service.resolve(["u-reader"], true);
+    await settle();
+    if (logout) f.logout();
+    else f.changeSession();
+    f.service.resolve([], true);
+    finish("/avatars/previous-account.png");
+    await settle();
+    assertEquals(pictures, []);
+  }
+});
 
 Deno.test("グループ・複数人トークの送信者と引用元だけを取得し、本文を変更しない", async () => {
   const f = fixture();

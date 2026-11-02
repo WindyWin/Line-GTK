@@ -1388,6 +1388,18 @@ pub fn load_css() {
             font-weight: 600;
             color: @accent_color;
         }
+        .line-readers {
+            min-height: 24px;
+            min-width: 24px;
+            padding: 2px 3px;
+            border-radius: 999px;
+        }
+        .line-reader-overflow {
+            font-size: 0.78em;
+            font-weight: 600;
+            margin-left: 3px;
+            margin-right: 3px;
+        }
         .line-message-sender {
             font-size: 0.82em;
             font-weight: 600;

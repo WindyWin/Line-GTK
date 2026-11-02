@@ -36,6 +36,7 @@ mod notifications;
 mod pinned_chats;
 mod poll_create;
 mod reactions;
+mod read_details;
 mod read_pause;
 mod read_position;
 mod replies;
@@ -249,6 +250,7 @@ fn build_ui(
         media_slots: Rc::new(RefCell::new(HashMap::new())),
         media_msgs: Rc::new(RefCell::new(HashMap::new())),
         receipt_slots: Rc::new(RefCell::new(HashMap::new())),
+        reader_avatars: Rc::new(RefCell::new(HashMap::new())),
         msg_created: Rc::new(RefCell::new(HashMap::new())),
         last_msg_day: Rc::new(RefCell::new(None)),
         seen_msg_ids: Rc::new(RefCell::new(HashSet::new())),
@@ -1845,6 +1847,7 @@ fn open_chat_for_history(state: &AppState, chat: &ChatInfo) -> bool {
 
 fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
     conversation_settings::close();
+    read_details::close();
     chat_snapshots::leave(state);
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));

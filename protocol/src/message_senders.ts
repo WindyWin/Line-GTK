@@ -7,9 +7,19 @@ type Runtime = {
   selfMid: () => string;
   knownName: (mid: string) => string | undefined;
   emit: (mid: string, name: string) => void;
+  knownPicturePath?: (mid: string) => string | null | undefined;
+  avatarPathFor?: (
+    mid: string,
+    picturePath?: string | null,
+  ) => Promise<string | null>;
+  emitAvatar?: (mid: string, path: string) => void;
   now?: () => number;
 };
-type Profile = { name: string | null; until: number };
+type Profile = {
+  name: string | null;
+  until: number;
+  picturePath?: string | null;
+};
 
 function userMid(value: unknown): value is string {
   return typeof value === "string" && /^u[^\s]{1,128}$/.test(value);
@@ -31,6 +41,11 @@ export function createMessageSenders(runtime: Runtime) {
   const profiles = new Map<string, Profile>();
   const queue = new Map<string, boolean>();
   const pending = new Map<string, number>();
+  const wantedAvatars = new Set<string>();
+  const avatarQueue = new Map<string, string | null | undefined>();
+  const avatarPending = new Map<string, number>();
+  const avatars = new Map<string, { path: string | null; until: number }>();
+  let activeAvatars = 0;
 
   function sync() {
     const client = runtime.getClient();
@@ -42,15 +57,72 @@ export function createMessageSenders(runtime: Runtime) {
       profiles.clear();
       queue.clear();
       pending.clear();
+      wantedAvatars.clear();
+      avatarQueue.clear();
+      avatarPending.clear();
+      avatars.clear();
     }
     return client && mid ? client : null;
   }
 
-  function publish(mid: string, name: string | null) {
+  function publish(
+    mid: string,
+    name: string | null,
+    picturePath?: string | null,
+  ) {
     profiles.delete(mid);
-    profiles.set(mid, { name, until: now() + (name ? 600_000 : 60_000) });
+    profiles.set(mid, {
+      name,
+      until: now() + (name ? 600_000 : 60_000),
+      picturePath,
+    });
     while (profiles.size > 5000) profiles.delete(profiles.keys().next().value!);
     if (name) runtime.emit(mid, name);
+    if (wantedAvatars.has(mid)) queueAvatar(mid, picturePath);
+  }
+
+  function queueAvatar(mid: string, picturePath?: string | null) {
+    if (!runtime.avatarPathFor || picturePath === undefined) return;
+    const cached = avatars.get(mid);
+    if (cached && cached.until > now()) {
+      if (cached.path) runtime.emitAvatar?.(mid, cached.path);
+      return;
+    }
+    if (!avatarPending.has(mid)) avatarQueue.set(mid, picturePath);
+    pumpAvatars();
+  }
+
+  function pumpAvatars() {
+    const client = sync();
+    if (!client || !runtime.avatarPathFor) return;
+    while (activeAvatars < 2 && avatarQueue.size) {
+      const [mid, picturePath] = avatarQueue.entries().next().value!;
+      avatarQueue.delete(mid);
+      const generation = epoch;
+      const sessionMid = ownerMid;
+      avatarPending.set(mid, generation);
+      activeAvatars++;
+      void (async () => {
+        try {
+          const path = await runtime.avatarPathFor!(mid, picturePath);
+          if (
+            epoch !== generation || runtime.getClient() !== client ||
+            runtime.selfMid() !== sessionMid
+          ) return;
+          avatars.set(mid, { path, until: now() + (path ? 600_000 : 60_000) });
+          while (avatars.size > 5000) {
+            avatars.delete(avatars.keys().next().value!);
+          }
+          if (path) runtime.emitAvatar?.(mid, path);
+        } catch {
+          // Missing pictures leave the reader's initials visible and remain retryable.
+        } finally {
+          if (avatarPending.get(mid) === generation) avatarPending.delete(mid);
+          activeAvatars--;
+          pumpAvatars();
+        }
+      })();
+    }
   }
 
   function schedule() {
@@ -99,6 +171,7 @@ export function createMessageSenders(runtime: Runtime) {
               mid,
               nameOf(contact?.displayNameOverridden, mid) ||
                 nameOf(contact?.displayName, mid),
+              contact?.picturePath ?? null,
             );
           }
         } catch {
@@ -134,17 +207,29 @@ export function createMessageSenders(runtime: Runtime) {
       const reply = message.replyTo as Json | null | undefined;
       if (reply && !reply.mine && userMid(reply.from)) mids.add(reply.from);
     }
-    for (const mid of mids) {
+    resolve([...mids]);
+  }
+
+  function resolve(mids: string[], withAvatars = false) {
+    if (!sync()) return;
+    for (const mid of new Set(mids)) {
+      if (!userMid(mid)) continue;
       if (mid === ownerMid) continue;
+      if (withAvatars) wantedAvatars.add(mid);
       const cached = profiles.get(mid);
       if (cached && cached.until > now()) {
         if (cached.name) runtime.emit(mid, cached.name);
-        continue;
+        if (!withAvatars) continue;
+        if (cached.picturePath !== undefined) {
+          queueAvatar(mid, cached.picturePath);
+          continue;
+        }
       }
       const known = !cached ? nameOf(runtime.knownName(mid), mid) : null;
       if (known) {
-        publish(mid, known);
-        continue;
+        const picturePath = runtime.knownPicturePath?.(mid);
+        publish(mid, known, picturePath);
+        if (!withAvatars || picturePath !== undefined) continue;
       }
       if (!pending.has(mid)) queue.set(mid, false);
     }
@@ -159,5 +244,5 @@ export function createMessageSenders(runtime: Runtime) {
     schedule();
   }
 
-  return { observe, refresh };
+  return { observe, resolve, refresh };
 }

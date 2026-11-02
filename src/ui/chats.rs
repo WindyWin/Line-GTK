@@ -676,16 +676,10 @@ pub(super) fn toggle_chat_mute(state: &AppState) {
 // 表示している行だけを更新し、スクロール位置と本文は維持する。
 pub(super) fn refresh_read_labels(state: &AppState) {
     let times = state.msg_created.borrow();
-    for (id, label) in state.receipt_slots.borrow().iter() {
-        let (text, tooltip, read) = receipt_status(state, id, times.get(id).copied().unwrap_or(0));
-        label.set_text(&text);
-        label.set_tooltip_text(Some(&tooltip));
-        if read {
-            label.add_css_class("line-msg-status-read");
-        } else {
-            label.remove_css_class("line-msg-status-read");
-        }
+    for (id, slot) in state.receipt_slots.borrow_mut().iter_mut() {
+        read_details::update(state, slot, id, times.get(id).copied().unwrap_or(0));
     }
+    read_details::refresh(state);
 }
 
 pub(super) fn receipt_status(

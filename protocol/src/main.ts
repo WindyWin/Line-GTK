@@ -417,6 +417,10 @@ const messageSenders = createMessageSenders({
   selfMid: myMid,
   knownName: (mid) => contactIndex.get(mid)?.name,
   emit: (mid, name) => emitEvent("sender_profile", { mid, name }),
+  knownPicturePath: (mid) => contactIndex.get(mid)?.picturePath,
+  avatarPathFor,
+  emitAvatar: (mid, avatarPath) =>
+    emitEvent("avatar_ready", { mid, avatarPath }),
 });
 const emojiService = createEmojiService({
   directory: mediaDir,
@@ -445,6 +449,7 @@ const readReceipts = createReadReceipts({
   getClient: () => client,
   selfMid: myMid,
   emit: emitEvent,
+  resolveReaders: (mids) => messageSenders.resolve(mids, true),
 });
 
 const unreadSync = createUnreadSync({

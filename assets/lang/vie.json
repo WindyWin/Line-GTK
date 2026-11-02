@@ -292,6 +292,8 @@
   "status_sent": "Đã gửi",
   "status_read": "Đã đọc",
   "status_read_count": "{n} người đã đọc",
+  "readers_title": "Người đã đọc",
+  "readers_show": "Xem ai đã đọc tin nhắn này",
   "status_read_unconfirmed": "Đã gửi; chưa xác nhận trạng thái đã đọc",
   "search": "Tìm kiếm",
   "voice_message": "Tin nhắn thoại",
