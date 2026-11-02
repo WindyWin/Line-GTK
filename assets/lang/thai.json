@@ -523,7 +523,7 @@
   "mention_all": "สมาชิกทุกคน",
   "mention_members": "สมาชิกกลุ่ม",
   "mention_loading": "กำลังโหลดสมาชิก…",
-  "mention_load_failed": "โหลดสมาชิกไม่สำเร็จ คลิกเพื่อลองอีกครั้ง",
+  "mention_load_failed": "โหลดสมาชิกไม่สำเร็จ ลองใหม่ (F5)",
   "mention_no_members": "ไม่พบสมาชิกที่ตรงกัน",
   "notification_group_mention": "{sender} กล่าวถึงคุณใน {group}",
   "reply_open_original": "เปิดข้อความต้นฉบับ",

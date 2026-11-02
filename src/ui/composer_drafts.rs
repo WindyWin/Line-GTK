@@ -7,34 +7,84 @@ pub(super) struct Scope {
     generation: u64,
 }
 
+#[derive(Clone, Default)]
+struct Draft {
+    text: String,
+    cursor: i32,
+    mentions: Vec<crate::protocol::Mention>,
+    reply: Option<replies::ReplyTarget>,
+    paths: Vec<PathBuf>,
+}
+
 #[derive(Default)]
 pub(super) struct Drafts {
     scope: Scope,
-    paths: Vec<PathBuf>,
+    current: Draft,
+    saved: HashMap<String, (u64, Draft)>,
+    next_generation: u64,
 }
 
 impl Drafts {
     fn bind(&mut self, account: Option<String>, chat: Option<String>) -> bool {
-        if self.scope.account != account || self.scope.chat != chat {
-            self.clear();
-            self.scope.account = account;
-            self.scope.chat = chat;
-            return true;
+        if self.scope.account == account && self.scope.chat == chat {
+            return false;
         }
-        false
+        if self.scope.account != account {
+            self.saved.clear();
+            self.current = Draft::default();
+        } else if let Some(previous) = self.scope.chat.take() {
+            self.saved.insert(
+                previous,
+                (self.scope.generation, std::mem::take(&mut self.current)),
+            );
+        }
+        let saved = chat.as_ref().and_then(|chat| self.saved.remove(chat));
+        self.scope.account = account;
+        self.scope.chat = chat;
+        if let Some((generation, draft)) = saved {
+            self.scope.generation = generation;
+            self.current = draft;
+        } else {
+            self.current = Draft::default();
+            self.invalidate();
+        }
+        true
     }
 
-    fn clear(&mut self) {
-        self.paths.clear();
-        self.scope.generation = self.scope.generation.wrapping_add(1);
+    fn invalidate(&mut self) {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        self.scope.generation = self.next_generation;
+    }
+
+    fn cancel_attachments(&mut self) {
+        self.current.paths.clear();
+        self.invalidate();
+    }
+
+    fn reset(&mut self) {
+        self.saved.clear();
+        self.current = Draft::default();
+        self.invalidate();
     }
 
     fn stage(&mut self, scope: &Scope, path: PathBuf) -> bool {
-        if self.scope != *scope || scope.chat.is_none() {
+        let Some(chat) = scope.chat.as_ref() else {
             return false;
+        };
+        if self.scope == *scope {
+            self.current.paths.push(path);
+            return true;
         }
-        self.paths.push(path);
-        true
+        // Clipboard reads can finish after navigating away. Keep the result
+        // with the originating chat, unless it was cancelled or logged out.
+        if self.scope.account == scope.account
+            && let Some((generation, draft)) = self.saved.get_mut(chat)
+            && *generation == scope.generation
+        {
+            draft.paths.push(path);
+            return true;
+        }
+        false
     }
 }
 
@@ -43,13 +93,32 @@ fn confirm(paths: &mut Vec<PathBuf>, mut send: impl FnMut(&PathBuf) -> bool) {
 }
 
 pub(super) fn sync(state: &AppState) {
-    let changed = state.composer_drafts.borrow_mut().bind(
-        state.self_mid.borrow().clone(),
-        state.current_chat.borrow().clone(),
-    );
-    if changed {
-        refresh(state);
+    let account = state.self_mid.borrow().clone();
+    let chat = state.current_chat.borrow().clone();
+    {
+        let mut drafts = state.composer_drafts.borrow_mut();
+        if drafts.scope.account == account && drafts.scope.chat == chat {
+            return;
+        }
+        if drafts.scope.account == account && drafts.scope.chat.is_some() {
+            drafts.current.text = state.composer.text().to_string();
+            drafts.current.cursor = state.composer.position();
+            drafts.current.mentions = mentions::snapshot(state);
+            drafts.current.reply = state.reply_target.borrow().clone();
+        }
+        drafts.bind(account.clone(), chat.clone());
     }
+    let draft = state.composer_drafts.borrow().current.clone();
+    mentions::restore_composer(state, &draft.text, draft.cursor, &draft.mentions);
+    *state.reply_target.borrow_mut() = draft.reply.filter(|target| {
+        chat.as_deref() == Some(target.chat_mid.as_str())
+            && !state.unsent_ids.borrow().contains(&(
+                account.clone().unwrap_or_default(),
+                target.quote.message_id.clone(),
+            ))
+    });
+    replies::refresh(state);
+    refresh(state);
 }
 
 pub(super) fn scope(state: &AppState) -> Scope {
@@ -59,20 +128,29 @@ pub(super) fn scope(state: &AppState) -> Scope {
 
 pub(super) fn stage(state: &AppState, scope: &Scope, path: PathBuf) {
     sync(state);
-    if *state.session_ready.borrow() && state.composer_drafts.borrow_mut().stage(scope, path) {
+    let staged = state.composer_drafts.borrow_mut().stage(scope, path);
+    if staged && state.composer_drafts.borrow().scope == *scope {
         refresh(state);
     }
 }
 
 pub(super) fn cancel(state: &AppState) {
-    state.composer_drafts.borrow_mut().clear();
+    sync(state);
+    state.composer_drafts.borrow_mut().cancel_attachments();
+    refresh(state);
+}
+
+pub(super) fn reset(state: &AppState) {
+    state.composer_drafts.borrow_mut().reset();
+    mentions::restore_composer(state, "", 0, &[]);
+    replies::cancel(state);
     refresh(state);
 }
 
 /// Returns false when attachments must wait for the session to recover.
 pub(super) fn send(state: &AppState) -> bool {
     sync(state);
-    if state.composer_drafts.borrow().paths.is_empty() {
+    if state.composer_drafts.borrow().current.paths.is_empty() {
         return true;
     }
     if !*state.session_ready.borrow() {
@@ -82,14 +160,19 @@ pub(super) fn send(state: &AppState) -> bool {
     // Sending can rebuild the message view and sync the draft scope. Do not
     // hold a RefCell borrow across that work.
     let scope = state.composer_drafts.borrow().scope.clone();
-    let mut paths = std::mem::take(&mut state.composer_drafts.borrow_mut().paths);
+    let mut paths = std::mem::take(&mut state.composer_drafts.borrow_mut().current.paths);
     confirm(&mut paths, |path| {
         try_send_local_media_path(state, path.clone())
     });
     if state.composer_drafts.borrow().scope == scope {
-        state.composer_drafts.borrow_mut().paths.splice(0..0, paths);
+        state
+            .composer_drafts
+            .borrow_mut()
+            .current
+            .paths
+            .splice(0..0, paths);
     }
-    let sent = state.composer_drafts.borrow().paths.is_empty();
+    let sent = state.composer_drafts.borrow().current.paths.is_empty();
     refresh(state);
     sent
 }
@@ -99,7 +182,8 @@ pub(super) fn refresh(state: &AppState) {
     while let Some(child) = preview.first_child() {
         preview.remove(&child);
     }
-    let paths = state.composer_drafts.borrow().paths.clone();
+    let paths = state.composer_drafts.borrow().current.paths.clone();
+    let scope = state.composer_drafts.borrow().scope.clone();
     preview.set_visible(!paths.is_empty());
     if paths.is_empty() {
         return;
@@ -147,8 +231,15 @@ pub(super) fn refresh(state: &AppState) {
             .build();
         remove.update_property(&[gtk::accessible::Property::Label(&remove_label)]);
         let s = state.clone();
+        let scope = scope.clone();
         remove.connect_clicked(move |_| {
-            s.composer_drafts.borrow_mut().paths.remove(index);
+            {
+                let mut drafts = s.composer_drafts.borrow_mut();
+                if drafts.scope != scope || index >= drafts.current.paths.len() {
+                    return;
+                }
+                drafts.current.paths.remove(index);
+            }
             refresh(&s);
             s.composer.grab_focus();
         });
@@ -167,60 +258,5 @@ pub(super) fn refresh(state: &AppState) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn draft() -> Drafts {
-        let mut draft = Drafts::default();
-        draft.bind(Some("account-a".into()), Some("chat-a".into()));
-        draft
-    }
-
-    #[test]
-    fn paste_waits_for_confirmation_and_retains_failed_sends() {
-        let mut draft = draft();
-        let scope = draft.scope.clone();
-        assert!(draft.stage(&scope, "one.png".into()));
-        assert!(draft.stage(&scope, "two.png".into()));
-        assert_eq!(draft.paths.len(), 2);
-        let mut sent = Vec::new();
-        confirm(&mut draft.paths, |path| {
-            sent.push(path.clone());
-            path == &PathBuf::from("one.png")
-        });
-        assert_eq!(sent, vec![PathBuf::from("one.png"), "two.png".into()]);
-        assert_eq!(draft.paths, vec![PathBuf::from("two.png")]);
-        confirm(&mut draft.paths, |_| true);
-        assert!(draft.paths.is_empty());
-    }
-
-    #[test]
-    fn cancel_discards_draft_and_in_flight_pastes() {
-        let mut draft = draft();
-        let scope = draft.scope.clone();
-        draft.stage(&scope, "one.png".into());
-        draft.clear();
-        assert!(!draft.stage(&scope, "late.png".into()));
-        confirm(&mut draft.paths, |_| {
-            panic!("cancelled attachments must not send")
-        });
-    }
-
-    #[test]
-    fn chat_and_account_changes_discard_drafts_and_stale_reads() {
-        for (account, chat) in [
-            (Some("account-a"), Some("chat-b")),
-            (Some("account-b"), Some("chat-a")),
-            (Some("account-a"), None),
-        ] {
-            let mut draft = draft();
-            let scope = draft.scope.clone();
-            draft.stage(&scope, "one.png".into());
-            draft.bind(account.map(str::to_owned), chat.map(str::to_owned));
-            assert!(draft.paths.is_empty());
-            assert!(!draft.stage(&scope, "late.png".into()));
-            draft.bind(scope.account.clone(), scope.chat.clone());
-            assert!(!draft.stage(&scope, "late-after-return.png".into()));
-        }
-    }
-}
+#[path = "composer_drafts_test.rs"]
+mod tests;

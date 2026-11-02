@@ -1193,7 +1193,7 @@ pub(super) fn on_logged_in(state: &AppState, result: &serde_json::Value) {
     user_profile::update_header(state, None);
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
-    mentions::reset(state);
+    mentions::reset_lookup(state);
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);
@@ -1298,7 +1298,7 @@ pub(super) fn show_login(state: &AppState, hint: &str) {
     chat_snapshots::clear();
     *state.unread_sync.borrow_mut() = unread_sync::UnreadSync::default();
     state.notif_pending.borrow_mut().clear();
-    mentions::reset(state);
+    mentions::reset_lookup(state);
     resume_sync::cancel(state);
     state.sender_names.borrow_mut().clear();
     albums::close(state);

@@ -610,7 +610,7 @@
   "mention_all": "Tất cả thành viên",
   "mention_members": "Thành viên nhóm",
   "mention_loading": "Đang tải thành viên…",
-  "mention_load_failed": "Không tải được thành viên. Nhấn để thử lại.",
+  "mention_load_failed": "Không tải được thành viên. Thử lại (F5).",
   "mention_no_members": "Không tìm thấy thành viên phù hợp",
   "notification_group_mention": "{sender} đã nhắc đến bạn trong {group}",
   "reply_open_original": "Mở tin nhắn gốc",

@@ -1,7 +1,7 @@
 use super::*;
 use crate::protocol::Mention;
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Deserialize)]
 struct Member {
     mid: String,
     name: String,
@@ -27,32 +27,39 @@ fn candidates(members: &[Member], account: Option<&str>, term: &str) -> Vec<Memb
                 .filter(|m| account != Some(m.mid.as_str()) && m.name.to_lowercase().contains(term))
                 .cloned(),
         )
-        .take(30)
         .collect()
 }
 
 pub(super) fn avatar_ready(state: &AppState, mid: &str, path: &str) {
-    let updated = {
+    let avatar = {
         let mut data = state.mentions.borrow_mut();
-        let mut updated = false;
         for member in data.members.iter_mut().flatten() {
             if member.mid == mid {
                 member.avatar_path = Some(path.to_string());
-                updated = true;
             }
         }
-        updated
+        for member in &mut data.candidates {
+            if member.mid == mid {
+                member.avatar_path = Some(path.to_string());
+            }
+        }
+        data.avatars.get(mid).cloned()
     };
-    if updated
-        && state
-            .mentions
-            .borrow()
-            .popover
-            .as_ref()
-            .is_some_and(|p| p.is_visible())
-    {
-        refresh(state);
+    if let Some(avatar) = avatar {
+        attach_texture_async(avatar, path.to_string(), 80);
     }
+}
+
+#[derive(Clone)]
+struct PickerUi {
+    popover: gtk::Popover,
+    list: gtk::ListBox,
+    scroll: gtk::ScrolledWindow,
+    status: gtk::Box,
+    status_label: gtk::Label,
+    spinner: gtk::Spinner,
+    retry: gtk::Button,
+    keys: gtk::EventControllerKey,
 }
 
 #[derive(Default)]
@@ -66,8 +73,9 @@ pub(super) struct MentionState {
     generation: u64,
     replacing: bool,
     dismissed: bool,
-    popover: Option<gtk::Popover>,
-    list: Option<gtk::ListBox>,
+    picker: Option<PickerUi>,
+    query: Option<(usize, String)>,
+    avatars: HashMap<String, gtk::Picture>,
 }
 
 #[derive(Debug, Clone)]
@@ -136,11 +144,14 @@ pub(super) fn reset(state: &AppState) {
     style_composer(&state.composer, &[]);
     data.members = None;
     data.candidates.clear();
+    data.query = None;
+    data.avatars.clear();
     data.loading = false;
     data.failed = false;
     data.dismissed = true;
-    if let Some(popover) = &data.popover {
-        popover.popdown();
+    if let Some(ui) = &data.picker {
+        ui.popover.popdown();
+        ui.spinner.set_spinning(false);
     }
 }
 
@@ -149,6 +160,27 @@ pub(super) fn restore(state: &AppState, spans: &[Mention]) {
     data.text = state.composer.text().to_string();
     data.spans = spans.to_vec();
     style_composer(&state.composer, &data.spans);
+}
+
+pub(super) fn snapshot(state: &AppState) -> Vec<Mention> {
+    state.mentions.borrow().spans.clone()
+}
+
+pub(super) fn restore_composer(state: &AppState, text: &str, cursor: i32, spans: &[Mention]) {
+    reset(state);
+    // Restoring text/cursor emits GTK signals. Suppress lookups and span edits
+    // until the entire conversation's draft has been installed.
+    state.mentions.borrow_mut().replacing = true;
+    state.composer.set_text(text);
+    state.composer.set_position(cursor);
+    restore(state, spans);
+    state.mentions.borrow_mut().replacing = false;
+}
+
+pub(super) fn reset_lookup(state: &AppState) {
+    let spans = snapshot(state);
+    reset(state);
+    restore(state, &spans);
 }
 
 pub(super) fn restore_failed(state: &AppState, draft: &MentionDraft) {
@@ -187,6 +219,9 @@ pub(super) fn outgoing(state: &AppState) -> (String, Vec<Mention>) {
 }
 
 fn request_members(state: &AppState) {
+    if !*state.session_ready.borrow() {
+        return;
+    }
     let Some(chat_mid) = state.current_chat.borrow().clone() else {
         return;
     };
@@ -257,7 +292,8 @@ fn refresh(state: &AppState) {
         if data.replacing {
             return;
         }
-        !data.dismissed
+        state.composer.has_focus()
+            && !data.dismissed
             && state
                 .current_chat
                 .borrow()
@@ -266,42 +302,105 @@ fn refresh(state: &AppState) {
             && query(&text, cursor, &data.spans).is_some()
     };
     if !active {
-        if let Some(popover) = &state.mentions.borrow().popover {
-            popover.popdown();
+        if let Some(ui) = &state.mentions.borrow().picker {
+            ui.popover.popdown();
+            ui.spinner.set_spinning(false);
         }
         return;
     }
     request_members(state);
-    let (popover, list, candidates, status) = {
+    let (ui, options, status, rebuild, selected) = {
         let mut data = state.mentions.borrow_mut();
-        let Some((_, term)) = query(&text, cursor, &data.spans) else {
+        let Some(query) = query(&text, cursor, &data.spans) else {
             return;
         };
-        let Some(popover) = data.popover.clone() else {
+        let Some(ui) = data.picker.clone() else {
             return;
         };
-        let Some(list) = data.list.clone() else {
-            return;
-        };
-        data.candidates = candidates(
+        let previous = ui
+            .list
+            .selected_row()
+            .and_then(|row| data.candidates.get(row.index() as usize))
+            .map(|member| (member.mid.clone(), member.all));
+        let options = candidates(
             data.members.as_deref().unwrap_or_default(),
             state.self_mid.borrow().as_deref(),
-            &term,
+            &query.1,
         );
-        let status = if data.loading {
-            "mention_loading"
-        } else if data.failed {
-            "mention_load_failed"
+        let changed_query = data.query.as_ref() != Some(&query);
+        let rebuild = changed_query || data.candidates != options;
+        let selected = if changed_query {
+            0
         } else {
-            "mention_no_members"
+            previous
+                .and_then(|(mid, all)| options.iter().position(|m| m.mid == mid && m.all == all))
+                .unwrap_or(0)
         };
-        (popover, list, data.candidates.clone(), status)
+        data.query = Some(query);
+        data.candidates = options.clone();
+        let status = if data.loading || (data.members.is_none() && !data.failed) {
+            Some("mention_loading")
+        } else if data.failed {
+            Some("mention_load_failed")
+        } else if options.is_empty() {
+            Some("mention_no_members")
+        } else {
+            None
+        };
+        (ui, options, status, rebuild, selected)
     };
-    while let Some(child) = list.first_child() {
-        list.remove(&child);
+    ui.status.set_visible(status.is_some());
+    ui.status_label
+        .set_label(&status.map(crate::i18n::t).unwrap_or_default());
+    ui.spinner.set_visible(status == Some("mention_loading"));
+    ui.spinner.set_spinning(status == Some("mention_loading"));
+    ui.retry.set_visible(status == Some("mention_load_failed"));
+    ui.retry.set_tooltip_text(Some(&crate::i18n::t("retry")));
+    ui.retry
+        .update_property(&[gtk::accessible::Property::Label(&crate::i18n::t("retry"))]);
+    ui.scroll.set_visible(!options.is_empty());
+    if rebuild {
+        rebuild_list(state, &ui, options, selected);
     }
-    let show_status = candidates.is_empty() || status != "mention_no_members";
-    for member in candidates {
+    let rect = state
+        .composer
+        .iter_location(&state.composer.buffer().iter_at_offset(cursor as i32));
+    let (x, y) =
+        state
+            .composer
+            .buffer_to_window_coords(gtk::TextWindowType::Widget, rect.x(), rect.y());
+    ui.popover.set_pointing_to(Some(&gdk::Rectangle::new(
+        x,
+        y,
+        rect.width().max(1),
+        rect.height(),
+    )));
+    if state.composer.is_mapped() {
+        ui.popover.popup();
+    }
+}
+
+fn scroll_to_selected(list: &gtk::ListBox, scroll: &gtk::ScrolledWindow) {
+    if let Some(row) = list.selected_row()
+        && let Some(bounds) = row.compute_bounds(list)
+        && bounds.height() > 0.0
+    {
+        scroll
+            .vadjustment()
+            .clamp_page(bounds.y() as f64, (bounds.y() + bounds.height()) as f64);
+    }
+}
+
+fn rebuild_list(state: &AppState, ui: &PickerUi, options: Vec<Member>, selected: usize) {
+    let mut names = HashMap::new();
+    for member in state.mentions.borrow().members.iter().flatten() {
+        *names.entry(member.name.clone()).or_insert(0) += 1;
+    }
+    state.mentions.borrow_mut().avatars.clear();
+    while let Some(child) = ui.list.first_child() {
+        ui.list.remove(&child);
+    }
+    for member in options {
         let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         row_box.set_margin_top(6);
         row_box.set_margin_bottom(6);
@@ -334,6 +433,11 @@ fn refresh(state: &AppState) {
             );
         } else {
             avatar_frame.append(&avatar);
+            state
+                .mentions
+                .borrow_mut()
+                .avatars
+                .insert(member.mid.clone(), avatar);
         }
         row_box.append(&avatar_frame);
         let row_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -352,21 +456,14 @@ fn refresh(state: &AppState) {
             label.set_tooltip_text(Some(&member.mid));
         }
         row_content.append(&label);
-        let same_name = state
-            .mentions
-            .borrow()
-            .members
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .filter(|m| m.name == member.name)
-            .count()
-            > 1;
+        let same_name = names.get(&member.name).is_some_and(|count| *count > 1);
         if same_name && !member.all {
             row_content.append(
                 &gtk::Label::builder()
                     .label(&member.mid)
                     .xalign(0.0)
+                    .max_width_chars(32)
+                    .ellipsize(gtk::pango::EllipsizeMode::Middle)
                     .css_classes(["dim-label", "caption"])
                     .build(),
             );
@@ -375,28 +472,22 @@ fn refresh(state: &AppState) {
             .focusable(false)
             .child(&row_box)
             .build();
-        list.append(&row);
+        ui.list.append(&row);
     }
-    list.select_row(list.row_at_index(0).as_ref());
-    if show_status {
-        let label = gtk::Label::builder()
-            .label(crate::i18n::t(status))
-            .wrap(true)
-            .margin_top(12)
-            .margin_bottom(12)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        let row = gtk::ListBoxRow::builder()
-            .selectable(false)
-            .activatable(status == "mention_load_failed")
-            .child(&label)
-            .build();
-        list.append(&row);
-    }
-    if state.composer.is_mapped() {
-        popover.popup();
-    }
+    ui.list
+        .select_row(ui.list.row_at_index(selected as i32).as_ref());
+    // Newly built rows need an allocation before their bounds can be used.
+    let ui = ui.clone();
+    ui.list.clone().add_tick_callback(move |_, _| {
+        let Some(row) = ui.list.selected_row() else {
+            return glib::ControlFlow::Break;
+        };
+        if row.height() == 0 {
+            return glib::ControlFlow::Continue;
+        }
+        scroll_to_selected(&ui.list, &ui.scroll);
+        glib::ControlFlow::Break
+    });
 }
 
 fn choose(state: &AppState, index: usize) {
@@ -445,8 +536,8 @@ fn choose(state: &AppState, index: usize) {
         style_composer(&state.composer, &data.spans);
         data.replacing = false;
         data.dismissed = true;
-        if let Some(popover) = &data.popover {
-            popover.popdown();
+        if let Some(ui) = &data.picker {
+            ui.popover.popdown();
         }
     }
     state.composer.grab_focus();
@@ -459,17 +550,44 @@ pub(super) fn wire(state: &AppState) {
         .build();
     let scroll = gtk::ScrolledWindow::builder()
         .min_content_width(260)
+        .max_content_width(360)
         .max_content_height(260)
         .propagate_natural_height(true)
         .propagate_natural_width(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .child(&list)
         .build();
+    let spinner = gtk::Spinner::new();
+    let status_label = gtk::Label::builder()
+        .wrap(true)
+        .xalign(0.0)
+        .hexpand(true)
+        .max_width_chars(32)
+        .build();
+    let retry = gtk::Button::builder()
+        .icon_name("view-refresh-symbolic")
+        .focusable(false)
+        .css_classes(["flat", "circular"])
+        .build();
+    let status = gtk::Box::builder()
+        .spacing(8)
+        .margin_top(8)
+        .margin_bottom(8)
+        .margin_start(8)
+        .margin_end(8)
+        .build();
+    status.append(&spinner);
+    status.append(&status_label);
+    status.append(&retry);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.set_size_request(300, -1);
+    content.append(&status);
+    content.append(&scroll);
     let popover = gtk::Popover::builder()
         .autohide(false)
         .has_arrow(false)
         .position(gtk::PositionType::Top)
-        .child(&scroll)
+        .child(&content)
         .build();
     popover.set_focusable(false);
     list.set_focusable(false);
@@ -478,8 +596,22 @@ pub(super) fn wire(state: &AppState) {
     popover.update_property(&[gtk::accessible::Property::Label(&crate::i18n::t(
         "mention_members",
     ))]);
-    state.mentions.borrow_mut().popover = Some(popover.clone());
-    state.mentions.borrow_mut().list = Some(list.clone());
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let ui = PickerUi {
+        popover: popover.clone(),
+        list: list.clone(),
+        scroll,
+        status,
+        status_label,
+        spinner,
+        retry: retry.clone(),
+        keys: keys.clone(),
+    };
+    *state.mentions.borrow_mut() = MentionState {
+        picker: Some(ui.clone()),
+        ..MentionState::default()
+    };
     let weak = popover.downgrade();
     state.composer.connect_destroy(move |_| {
         if let Some(popover) = weak.upgrade() {
@@ -488,14 +620,18 @@ pub(super) fn wire(state: &AppState) {
     });
     let s = state.clone();
     list.connect_row_activated(move |_, row| {
-        if row.index() as usize >= s.mentions.borrow().candidates.len()
-            && s.mentions.borrow().failed
-        {
-            s.mentions.borrow_mut().failed = false;
-            refresh(&s);
-        } else {
-            choose(&s, row.index() as usize);
+        choose(&s, row.index() as usize);
+    });
+    let selected_scroll = ui.scroll.downgrade();
+    list.connect_row_selected(move |list, _| {
+        if let Some(scroll) = selected_scroll.upgrade() {
+            scroll_to_selected(list, &scroll);
         }
+    });
+    let s = state.clone();
+    retry.connect_clicked(move |_| {
+        s.mentions.borrow_mut().failed = false;
+        refresh(&s);
     });
     let s = state.clone();
     state.composer.buffer().connect_changed(move |_| {
@@ -519,14 +655,12 @@ pub(super) fn wire(state: &AppState) {
         .connect_cursor_position_notify(move |_| refresh(&s));
     let s = state.clone();
     state.composer.connect_has_focus_notify(move |entry| {
-        if !entry.has_focus()
-            && let Some(popover) = &s.mentions.borrow().popover
-        {
-            popover.popdown();
+        if entry.has_focus() {
+            refresh(&s);
+        } else if let Some(ui) = &s.mentions.borrow().picker {
+            ui.popover.popdown();
         }
     });
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let s = state.clone();
     keys.connect_key_pressed(move |_, key, _, modifiers| {
         if modifiers.intersects(
@@ -537,47 +671,51 @@ pub(super) fn wire(state: &AppState) {
         ) {
             return glib::Propagation::Proceed;
         }
-        let (popover, list, count) = {
+        let (ui, count, failed) = {
             let data = s.mentions.borrow();
-            (
-                data.popover.clone(),
-                data.list.clone(),
-                data.candidates.len(),
-            )
+            (data.picker.clone(), data.candidates.len(), data.failed)
         };
-        if !popover.is_some_and(|p| p.is_visible()) {
+        let Some(ui) = ui.filter(|ui| ui.popover.is_visible()) else {
             return glib::Propagation::Proceed;
-        }
+        };
         if key == gdk::Key::Escape {
             let mut data = s.mentions.borrow_mut();
             data.dismissed = true;
-            if let Some(popover) = &data.popover {
-                popover.popdown();
-            }
+            ui.popover.popdown();
             return glib::Propagation::Stop;
         }
-        let Some(list) = list else {
-            return glib::Propagation::Proceed;
-        };
-        if count > 0 {
-            let selected = list.selected_row().map(|r| r.index()).unwrap_or(0);
-            if key == gdk::Key::Down || key == gdk::Key::Up {
+        if failed && key == gdk::Key::F5 {
+            s.mentions.borrow_mut().failed = false;
+            refresh(&s);
+            return glib::Propagation::Stop;
+        }
+        let selected = ui.list.selected_row().map(|r| r.index()).unwrap_or(0);
+        if key == gdk::Key::Down || key == gdk::Key::Up {
+            if count > 0 {
                 let next = if key == gdk::Key::Down {
                     (selected + 1) % count as i32
                 } else {
                     (selected - 1).rem_euclid(count as i32)
                 };
-                list.select_row(list.row_at_index(next).as_ref());
-                return glib::Propagation::Stop;
+                ui.list.select_row(ui.list.row_at_index(next).as_ref());
             }
-            if key == gdk::Key::Return || key == gdk::Key::KP_Enter || key == gdk::Key::Tab {
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::Return
+            || key == gdk::Key::KP_Enter
+            || (key == gdk::Key::Tab && count > 0)
+        {
+            if count > 0 {
                 choose(&s, selected as usize);
-                return glib::Propagation::Stop;
+            } else if failed {
+                s.mentions.borrow_mut().failed = false;
+                refresh(&s);
             }
+            return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
-    state.composer.add_controller(keys);
+    state.composer.add_controller(ui.keys);
 }
 
 fn style_composer(view: &gtk::TextView, spans: &[Mention]) {
@@ -727,6 +865,10 @@ pub(super) fn mentions_account(message: &MessageInfo, account: Option<&str>) -> 
                 .any(|mention| mention.all || mention.mid == mid)
         })
 }
+
+#[cfg(test)]
+#[path = "mentions_test.rs"]
+mod picker_tests;
 
 #[cfg(test)]
 mod tests {

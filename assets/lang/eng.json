@@ -610,7 +610,7 @@
   "mention_all": "All members",
   "mention_members": "Group members",
   "mention_loading": "Loading members…",
-  "mention_load_failed": "Could not load members. Click to retry.",
+  "mention_load_failed": "Could not load members. Retry (F5).",
   "mention_no_members": "No matching members",
   "notification_group_mention": "{sender} mentioned you in {group}",
   "reply_open_original": "Open original message",

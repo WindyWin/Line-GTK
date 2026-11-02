@@ -1568,6 +1568,7 @@ fn wire_actions(state: &AppState) {
                 let s2 = s.clone();
                 Rc::new(move || {
                     auto_login::manual_logout(&s2);
+                    composer_drafts::reset(&s2);
                     albums::close(&s2);
                     conversation_settings::close();
                     shared_media::close(&s2);
@@ -1846,15 +1847,14 @@ fn open_chat_for_history(state: &AppState, chat: &ChatInfo) -> bool {
 }
 
 fn prepare_chat_header(state: &AppState, chat: &ChatInfo) {
-    conversation_settings::close();
     read_details::close();
+    conversation_settings::close();
     chat_snapshots::leave(state);
     // Also select when user opens a chat manually.
     select_sidebar_chat(state, Some(chat.mid.as_str()));
     state.current_chat.borrow_mut().replace(chat.mid.clone());
     read_position::open(state, chat);
     composer_drafts::sync(state);
-    mentions::reset(state);
     read_pause::refresh_once_button(state);
     hide_upload_progress(state);
     {
