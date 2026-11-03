@@ -1,4 +1,11 @@
 {
+  "history_older_ready": "Cuộn lên để xem tin nhắn cũ",
+  "history_newer_ready": "Cuộn xuống để xem tin nhắn mới hơn",
+  "history_older_loading": "Đang tải tin nhắn cũ…",
+  "history_newer_loading": "Đang tải tin nhắn mới hơn…",
+  "history_waiting": "Đang chờ kết nối…",
+  "history_failed": "Không thể tải lịch sử tin nhắn.",
+  "history_start": "Không còn tin nhắn cũ hơn",
   "jump_last_read": "Đến tin nhắn đã đọc gần nhất",
   "auto_login_title": "Tự động đăng nhập khi khởi động",
   "auto_login_remember": "Lưu thông tin và đăng nhập khi khởi động",

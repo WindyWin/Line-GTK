@@ -9,6 +9,15 @@ pub enum Edge {
     Bottom,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryStatus {
+    Ready,
+    Loading,
+    Waiting,
+    Failed,
+    Exhausted,
+}
+
 /// The message a row belongs to, so a window of messages can be trimmed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Owner {
@@ -27,13 +36,14 @@ type EdgeHandler = Rc<dyn Fn(Edge)>;
 type StagedRows = Vec<(gtk::Widget, Option<Owner>)>;
 
 struct Edges {
-    top: gtk::Box,
-    bottom: gtk::Box,
+    top: Sentinel,
+    bottom: Sentinel,
     top_on: Cell<bool>,
     bottom_on: Cell<bool>,
     top_bound: Cell<bool>,
     bottom_bound: Cell<bool>,
     handler: RefCell<Option<EdgeHandler>>,
+    retry_handler: RefCell<Option<EdgeHandler>>,
 }
 
 impl Edges {
@@ -49,24 +59,73 @@ impl Edges {
     }
 }
 
-fn sentinel() -> gtk::Box {
-    let spinner = gtk::Spinner::builder()
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .build();
-    let row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .halign(gtk::Align::Fill)
-        .height_request(44)
-        .css_classes(["line-history-sentinel"])
-        .build();
-    row.append(&spinner);
-    row
+struct Sentinel {
+    row: gtk::Box,
+    spinner: gtk::Spinner,
+    label: gtk::Label,
+    retry: gtk::Button,
 }
 
-fn set_spinning(row: &gtk::Box, on: bool) {
-    if let Some(spinner) = row.first_child().and_downcast::<gtk::Spinner>() {
-        spinner.set_spinning(on);
+impl Sentinel {
+    fn new() -> Self {
+        let spinner = gtk::Spinner::builder()
+            .width_request(20)
+            .height_request(20)
+            .valign(gtk::Align::Center)
+            .accessible_role(gtk::AccessibleRole::Presentation)
+            .css_classes(["accent"])
+            .visible(false)
+            .build();
+        let label = gtk::Label::builder()
+            .wrap(true)
+            .justify(gtk::Justification::Center)
+            .accessible_role(gtk::AccessibleRole::Status)
+            .build();
+        let retry = gtk::Button::builder()
+            .label(crate::i18n::t("retry"))
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .spacing(8)
+            .build();
+        content.append(&spinner);
+        content.append(&label);
+        content.append(&retry);
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .height_request(52)
+            .margin_start(8)
+            .margin_end(8)
+            .css_classes(["line-history-sentinel"])
+            .build();
+        row.append(&content);
+        Self {
+            row,
+            spinner,
+            label,
+            retry,
+        }
+    }
+
+    fn update(&self, edge: Edge, status: HistoryStatus) {
+        let key = match (edge, status) {
+            (Edge::Top, HistoryStatus::Ready) => "history_older_ready",
+            (Edge::Bottom, HistoryStatus::Ready) => "history_newer_ready",
+            (Edge::Top, HistoryStatus::Loading) => "history_older_loading",
+            (Edge::Bottom, HistoryStatus::Loading) => "history_newer_loading",
+            (_, HistoryStatus::Waiting) => "history_waiting",
+            (_, HistoryStatus::Failed) => "history_failed",
+            (_, HistoryStatus::Exhausted) => "history_start",
+        };
+        self.label.set_text(&crate::i18n::t(key));
+        self.spinner.set_visible(status == HistoryStatus::Loading);
+        self.spinner.set_spinning(status == HistoryStatus::Loading);
+        self.retry.set_visible(status == HistoryStatus::Failed);
     }
 }
 
@@ -90,14 +149,26 @@ impl VirtualMessageList {
         let store = gtk::gio::ListStore::new::<gtk::glib::BoxedAnyObject>();
         let selection = gtk::NoSelection::new(Some(store.clone()));
         let edges = Rc::new(Edges {
-            top: sentinel(),
-            bottom: sentinel(),
+            top: Sentinel::new(),
+            bottom: Sentinel::new(),
             top_on: Cell::new(false),
             bottom_on: Cell::new(false),
             top_bound: Cell::new(false),
             bottom_bound: Cell::new(false),
             handler: RefCell::new(None),
+            retry_handler: RefCell::new(None),
         });
+        for (edge, sentinel) in [(Edge::Top, &edges.top), (Edge::Bottom, &edges.bottom)] {
+            let weak = Rc::downgrade(&edges);
+            sentinel.retry.connect_clicked(move |_| {
+                if let Some(edges) = weak.upgrade() {
+                    let handler = edges.retry_handler.borrow().clone();
+                    if let Some(handler) = handler {
+                        handler(edge);
+                    }
+                }
+            });
+        }
         let factory = gtk::SignalListItemFactory::new();
         let bind_edges = edges.clone();
         factory.connect_bind(move |_, object| {
@@ -109,10 +180,10 @@ impl VirtualMessageList {
             };
             let widget = item.borrow::<gtk::Widget>().clone();
             list_item.set_child(Some(&widget));
-            if widget == *bind_edges.top.upcast_ref::<gtk::Widget>() {
+            if widget == *bind_edges.top.row.upcast_ref::<gtk::Widget>() {
                 bind_edges.top_bound.set(true);
                 bind_edges.fire_later(Edge::Top);
-            } else if widget == *bind_edges.bottom.upcast_ref::<gtk::Widget>() {
+            } else if widget == *bind_edges.bottom.row.upcast_ref::<gtk::Widget>() {
                 bind_edges.bottom_bound.set(true);
                 bind_edges.fire_later(Edge::Bottom);
             }
@@ -121,9 +192,9 @@ impl VirtualMessageList {
         factory.connect_unbind(move |_, object| {
             if let Some(list_item) = object.downcast_ref::<gtk::ListItem>() {
                 if let Some(child) = list_item.child() {
-                    if child == *unbind_edges.top.upcast_ref::<gtk::Widget>() {
+                    if child == *unbind_edges.top.row.upcast_ref::<gtk::Widget>() {
                         unbind_edges.top_bound.set(false);
-                    } else if child == *unbind_edges.bottom.upcast_ref::<gtk::Widget>() {
+                    } else if child == *unbind_edges.bottom.row.upcast_ref::<gtk::Widget>() {
                         unbind_edges.bottom_bound.set(false);
                     }
                 }
@@ -157,6 +228,10 @@ impl VirtualMessageList {
 
     pub fn set_edge_handler(&self, handler: impl Fn(Edge) + 'static) {
         *self.edges.handler.borrow_mut() = Some(Rc::new(handler));
+    }
+
+    pub fn set_retry_handler(&self, handler: impl Fn(Edge) + 'static) {
+        *self.edges.retry_handler.borrow_mut() = Some(Rc::new(handler));
     }
 
     /// Rows added until the next `None` belong to this message.
@@ -285,8 +360,8 @@ impl VirtualMessageList {
         self.edges.bottom_on.set(false);
         self.edges.top_bound.set(false);
         self.edges.bottom_bound.set(false);
-        set_spinning(&self.edges.top, false);
-        set_spinning(&self.edges.bottom, false);
+        self.edges.top.update(Edge::Top, HistoryStatus::Ready);
+        self.edges.bottom.update(Edge::Bottom, HistoryStatus::Ready);
     }
 
     pub fn first_child(&self) -> Option<gtk::Widget> {
@@ -320,7 +395,7 @@ impl VirtualMessageList {
     }
 
     pub fn set_sentinel(&self, edge: Edge, on: bool) {
-        let (flag, row) = match edge {
+        let (flag, sentinel) = match edge {
             Edge::Top => (&self.edges.top_on, &self.edges.top),
             Edge::Bottom => (&self.edges.bottom_on, &self.edges.bottom),
         };
@@ -333,13 +408,15 @@ impl VirtualMessageList {
             (Edge::Bottom, false) => self.owners.borrow().len().saturating_sub(1),
         };
         if on {
-            self.store
-                .insert(at as u32, &Self::object(row.upcast_ref::<gtk::Widget>()));
+            self.store.insert(
+                at as u32,
+                &Self::object(sentinel.row.upcast_ref::<gtk::Widget>()),
+            );
             self.owners.borrow_mut().insert(at, None);
         } else {
             self.store.remove(at as u32);
             self.owners.borrow_mut().remove(at);
-            set_spinning(row, false);
+            sentinel.spinner.set_spinning(false);
             match edge {
                 Edge::Top => self.edges.top_bound.set(false),
                 Edge::Bottom => self.edges.bottom_bound.set(false),
@@ -348,10 +425,10 @@ impl VirtualMessageList {
         flag.set(on);
     }
 
-    pub fn set_sentinel_loading(&self, edge: Edge, loading: bool) {
+    pub fn set_sentinel_status(&self, edge: Edge, status: HistoryStatus) {
         match edge {
-            Edge::Top => set_spinning(&self.edges.top, loading),
-            Edge::Bottom => set_spinning(&self.edges.bottom, loading),
+            Edge::Top => self.edges.top.update(edge, status),
+            Edge::Bottom => self.edges.bottom.update(edge, status),
         }
     }
 

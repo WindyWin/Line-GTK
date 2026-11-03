@@ -1,4 +1,11 @@
 {
+  "history_older_ready": "Scroll up for older messages",
+  "history_newer_ready": "Scroll down for newer messages",
+  "history_older_loading": "Loading older messages…",
+  "history_newer_loading": "Loading newer messages…",
+  "history_waiting": "Waiting for connection…",
+  "history_failed": "Could not load message history.",
+  "history_start": "No older messages available",
   "jump_last_read": "Jump to last read message",
   "auto_login_title": "Sign in automatically at startup",
   "auto_login_remember": "Save credentials and sign in at startup",

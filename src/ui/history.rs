@@ -1,4 +1,4 @@
-use super::virtual_list::{Edge, Trimmed};
+use super::virtual_list::{Edge, HistoryStatus, Trimmed};
 use super::*;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -54,6 +54,31 @@ impl HistoryWindow {
         match edge {
             Edge::Top => &mut self.older_request,
             Edge::Bottom => &mut self.newer_request,
+        }
+    }
+
+    fn failures(&self, edge: Edge) -> u8 {
+        match edge {
+            Edge::Top => self.older_failures,
+            Edge::Bottom => self.newer_failures,
+        }
+    }
+
+    fn status(&self, edge: Edge, connected: bool) -> HistoryStatus {
+        let (has_more, request) = match edge {
+            Edge::Top => (self.has_more_older, self.older_request),
+            Edge::Bottom => (self.has_more_newer, self.newer_request),
+        };
+        if !has_more {
+            HistoryStatus::Exhausted
+        } else if request.is_some() {
+            HistoryStatus::Loading
+        } else if self.failures(edge) > 0 {
+            HistoryStatus::Failed
+        } else if !connected {
+            HistoryStatus::Waiting
+        } else {
+            HistoryStatus::Ready
         }
     }
 }
@@ -412,6 +437,24 @@ pub(super) fn wire(state: &AppState) {
     state
         .message_list
         .set_edge_handler(move |edge| on_edge(&s, edge));
+    let s = state.clone();
+    state.message_list.set_retry_handler(move |edge| {
+        {
+            let mut history = s.history.borrow_mut();
+            match edge {
+                Edge::Top => {
+                    history.older_failures = 0;
+                    history.older_ready_at = None;
+                }
+                Edge::Bottom => {
+                    history.newer_failures = 0;
+                    history.newer_ready_at = None;
+                }
+            }
+        }
+        restore_sentinels(&s);
+        on_edge(&s, edge);
+    });
     // A sentinel only reports when it first comes into view. Watching the
     // scroll position as well keeps paging going when it stays attached.
     let s = state.clone();
@@ -469,11 +512,19 @@ pub(super) fn arm(state: &AppState) {
 pub(super) fn restore_sentinels(state: &AppState) {
     let history = state.history.borrow();
     if !history.armed {
+        state.message_list.set_sentinel(Edge::Top, false);
+        state.message_list.set_sentinel(Edge::Bottom, false);
         return;
+    }
+    let connected = *state.session_ready.borrow();
+    for edge in [Edge::Top, Edge::Bottom] {
+        state
+            .message_list
+            .set_sentinel_status(edge, history.status(edge, connected));
     }
     state
         .message_list
-        .set_sentinel(Edge::Top, history.has_more_older);
+        .set_sentinel(Edge::Top, state.message_list.message_count() > 0);
     state
         .message_list
         .set_sentinel(Edge::Bottom, history.has_more_newer);
@@ -552,8 +603,12 @@ fn on_edge(state: &AppState, edge: Edge) {
 }
 
 fn request(state: &AppState, edge: Edge) {
+    if state.history.borrow().failures(edge) >= MAX_FAILURES {
+        return;
+    }
     // Saved messages only: older pages need the login, so look again later.
     if !*state.session_ready.borrow() {
+        restore_sentinels(state);
         recheck_after(state, edge, Duration::from_secs(1));
         return;
     }
@@ -616,11 +671,12 @@ fn request(state: &AppState, edge: Edge) {
                     nav.pages += 1;
                 }
             }
-            state.message_list.set_sentinel_loading(edge, true);
+            restore_sentinels(state);
             tracing::info!(?edge, anchor = %anchor.id, "[history] requested a page");
         }
         Err(e) => {
             eprintln!("[history] request failed: {e}");
+            page_failed(state, edge);
             if state.history.borrow_mut().navigation.take().is_some() {
                 toast(state, &crate::i18n::t("reply_original_unavailable"));
             }
@@ -632,13 +688,44 @@ fn request(state: &AppState, edge: Edge) {
 /// list whose sentinel never leaves the view.
 fn recheck_after(state: &AppState, edge: Edge, wait: Duration) {
     let s = state.clone();
+    let generation = *state.history_request_generation.borrow();
+    let chat = state.current_chat.borrow().clone();
+    let account = state.self_mid.borrow().clone();
     glib::timeout_add_local_once(wait + Duration::from_millis(20), move || {
+        if generation != *s.history_request_generation.borrow()
+            || chat != *s.current_chat.borrow()
+            || account != *s.self_mid.borrow()
+        {
+            return;
+        }
         if *s.scroll_pinning.borrow() {
             recheck_after(&s, edge, Duration::from_millis(200));
         } else if s.message_list.sentinel_in_view(edge) || near_edge(&s, edge) {
             on_edge(&s, edge);
         }
     });
+}
+
+fn page_failed(state: &AppState, edge: Edge) {
+    let retry = {
+        let mut history = state.history.borrow_mut();
+        let failures = match edge {
+            Edge::Top => &mut history.older_failures,
+            Edge::Bottom => &mut history.newer_failures,
+        };
+        *failures = failures.saturating_add(1);
+        let retry = *failures < MAX_FAILURES;
+        let ready_at = Some(Instant::now() + RETRY_DELAY);
+        match edge {
+            Edge::Top => history.older_ready_at = ready_at,
+            Edge::Bottom => history.newer_ready_at = ready_at,
+        }
+        retry
+    };
+    restore_sentinels(state);
+    if retry {
+        recheck_after(state, edge, RETRY_DELAY);
+    }
 }
 
 /// A reply to `fetch_older_messages` / `fetch_newer_messages`.
@@ -668,7 +755,6 @@ pub(super) fn response(
         }
         *request = None;
     }
-    state.message_list.set_sentinel_loading(edge, false);
     if generation != *state.history_request_generation.borrow()
         || state.current_chat.borrow().as_deref() != Some(chat_mid.as_str())
     {
@@ -676,24 +762,7 @@ pub(super) fn response(
     }
     if !ok {
         tracing::warn!(?edge, "[history] page request failed");
-        let retry = {
-            let mut history = state.history.borrow_mut();
-            let failures = match edge {
-                Edge::Top => &mut history.older_failures,
-                Edge::Bottom => &mut history.newer_failures,
-            };
-            *failures = failures.saturating_add(1);
-            let retry = *failures < MAX_FAILURES;
-            let ready_at = Some(Instant::now() + RETRY_DELAY);
-            match edge {
-                Edge::Top => history.older_ready_at = ready_at,
-                Edge::Bottom => history.newer_ready_at = ready_at,
-            }
-            retry
-        };
-        if retry {
-            recheck_after(state, edge, RETRY_DELAY);
-        }
+        page_failed(state, edge);
         return;
     }
     {
@@ -768,7 +837,7 @@ fn apply_older(state: &AppState, messages: Vec<MessageInfo>, has_more: bool) {
     let fresh = unseen(state, messages);
     if fresh.is_empty() {
         state.history.borrow_mut().has_more_older = false;
-        state.message_list.set_sentinel(Edge::Top, false);
+        restore_sentinels(state);
         return;
     }
     let oldest = state.message_list.edge_owner(true, |_| true);
@@ -987,6 +1056,10 @@ fn restore_anchor(state: &AppState, anchor: Anchor) {
         glib::ControlFlow::Continue
     });
 }
+
+#[cfg(test)]
+#[path = "history_test.rs"]
+mod integration_tests;
 
 #[cfg(test)]
 mod navigation_tests {
